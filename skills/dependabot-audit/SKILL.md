@@ -227,6 +227,20 @@ evidence table, reasoning, what would change the verdict, and the **un-run** mer
 command. Lead with evidence; the recommendation is a conclusion drawn from it,
 not a headline it decorates.
 
+**Mark each row's provenance**, and reuse only where it is legitimate. What
+invalidates a row is not how old it is but what it depends on:
+
+- **Registry and CI rows — always fresh.** A release or an advisory can land
+  mid-session, CI can re-run, a required context can be added. These are one
+  call each, so reuse buys nothing and risks reporting a world that moved.
+- **Changelog rows — reusable.** Published release notes are immutable.
+- **Reproduction rows — reusable only against an unchanged head SHA**, with the
+  Phase 5 worktree check passing. State that basis in the column.
+
+The inversion is worth internalizing: the **cheap** evidence is what must be
+fresh, and a full test suite is the only kind expensive enough to be worth
+reusing at all. Re-running everything is nearly always the right default.
+
 Verdicts are one of:
 
 - **Merge as-is** — clean and current.
