@@ -76,6 +76,33 @@ This is deliberate. An unverified verifier is worse than none: it emits confiden
 green output nobody checks. Don't extend the script to an ecosystem you don't
 have a repo to test it against.
 
+## Tests
+
+```
+python3 -m unittest discover -s tests -v
+```
+
+18 cases, stdlib only, no network — they run offline and free. Every case
+corresponds to a defect that actually shipped, or to a failure the audit exists
+to detect: a corrupted hash, a size mismatch, a yanked release, an artifact
+missing from the registry, a lagging version, a marker-constrained pin that must
+*not* read as stale, a package pinned at two versions under different
+resolution-markers, and a requested name that isn't in the lockfile.
+
+The theme is **silent** failure. An audit that reports success while verifying
+less than it claimed is worse than one that crashes, so the assertions target
+what gets *reported*, not just what gets returned.
+
+Each test was mutation-checked against the original buggy implementation to
+confirm it discriminates — a suite that only ever passes proves nothing.
+
+**Not covered:** the skill's prose. These tests exercise `audit.py`, the
+deterministic half. Whether the model actually *follows* Phase 6, or stops on an
+unexpected file in the diff, is behavioral and belongs in `claude plugin eval`
+— which is in early access and unavailable on this account. That gap is real:
+the one defect found by running the skill end-to-end (Phase 6 improvising a
+check-name parse) lived in the prose, where these tests cannot reach.
+
 ## Read-only
 
 The skill declares `tools: Read, Grep, Glob, Bash`. That withholds `Edit` and

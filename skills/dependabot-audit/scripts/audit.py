@@ -75,6 +75,23 @@ def derive_changed(packages: list[dict[str, Any]], baseline_path: str) -> list[s
     return changed
 
 
+def select_targets(
+    packages: list[dict[str, Any]], changed: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Lockfile entries matching the requested names, plus the names not found.
+
+    A name can map to SEVERAL entries — one package pinned at different versions
+    under different resolution-markers — so this returns every match. Selecting
+    through a name->entry mapping keeps one and drops the rest, and the dropped
+    artifacts go unverified while the output still looks complete.
+    """
+    wanted = {_normalize(n) for n in changed}
+    targets = [p for p in packages if _normalize(p["name"]) in wanted]
+    found = {_normalize(p["name"]) for p in targets}
+    unmatched = [n for n in changed if _normalize(n) not in found]
+    return targets, unmatched
+
+
 def _sortable(version: str) -> tuple[int, ...]:
     """Best-effort numeric version key; non-numeric segments sort as -1."""
     parts = []
@@ -263,13 +280,7 @@ def main() -> int:
     else:
         changed = [n.strip() for n in args.changed.split(",") if n.strip()]
 
-    # A name can map to SEVERAL entries (one package pinned at different versions
-    # under different resolution-markers) — take them all, or the audit silently
-    # skips one and its artifacts go unverified.
-    wanted = {_normalize(n) for n in changed}
-    targets = [p for p in packages if _normalize(p["name"]) in wanted]
-    found = {_normalize(p["name"]) for p in targets}
-    unmatched = [n for n in changed if _normalize(n) not in found]
+    targets, unmatched = select_targets(packages, changed)
 
     if unmatched:
         print(
