@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "rickhg12hs-tools",
+  "description": "Personal Claude Code plugins.",
+  "owner": {
+    "name": "Richard Graham"
+  },
+  "plugins": [
+    {
+      "name": "dependabot-audit",
+      "description": "Audit an automated dependency-bump PR and produce an evidence-backed merge recommendation. Read-only: it reports, it never merges.",
+      "author": {
+        "name": "Richard Graham"
+      },
+      "category": "security",
+      "source": "./"
+    }
+  ]
+}
