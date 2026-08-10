@@ -70,6 +70,17 @@ something non-required is unsettled. `BLOCKED` is the state that matters.
 **A run is `success` only if every job is.** Find the *latest* run for the SHA —
 a duplicate event can cancel an earlier run, and `cancelled` is not `failure`.
 
+**Check names contain spaces and ampersands.** Post-processing `gh pr checks`
+with whitespace-splitting tools mangles them — `awk '{print $1}'` turns
+`Lint & type-check` into `Lint`, and you end up confidently reporting on a check
+that does not exist. Query structured output (`--json statusCheckRollup`) and
+match names as whole strings.
+
+**A check that never reported produces no row.** Filtering a rollup by name
+yields nothing for a context that was never posted, which looks identical to
+"not printed because it passed". Count returned rows against the required list
+and treat any absence as *unreported*, not green.
+
 **Neutral / "skipping" security-scan results are normal** on diffs that do not
 touch the scanned surface. Not a failure, and usually not a required check.
 

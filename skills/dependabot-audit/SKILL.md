@@ -119,6 +119,17 @@ git fetch origin pull/<N>/head:pr-<N>
 git worktree add <scratch>/pr-<N> pr-<N>
 ```
 
+If a worktree from an earlier run is already there, **prove it still points at
+this PR's head before reusing it** — a stale worktree silently audits the wrong
+commit and every result downstream is wrong:
+
+```bash
+git -C <scratch>/pr-<N> log --oneline -1     # must be the PR head
+git -C <scratch>/pr-<N> status --porcelain   # must be empty
+```
+
+If either check fails, `git worktree remove` it and recreate.
+
 Install **frozen** (`uv sync --locked`, `npm ci`, `cargo build --locked`) — that
 proves the lockfile is self-consistent and resolves nothing. Then run the repo's
 own gates from Phase 0, and its full test suite.
@@ -134,9 +145,30 @@ Confirm the green you are trusting belongs to **this** commit:
 gh run list --commit <full-40-char-sha> --workflow <ci>.yml
 ```
 
-A short SHA silently matches nothing and reads as "CI never ran". Check the
-required contexts from Phase 0 individually — a repo can have far more jobs than
-required checks, and only the required ones gate merge.
+A short SHA silently matches nothing and reads as "CI never ran".
+
+Then check the Phase 0 required contexts **individually** — a repo can have far
+more jobs than required checks, and only the required ones gate merge. Paste the
+Phase 0 list into `$req`:
+
+```bash
+gh pr view <N> --json statusCheckRollup --jq '
+  [.statusCheckRollup[] | {name:(.name//.context), state:(.conclusion//.state)}] as $all
+  | ["Lint & type-check","Test (ubuntu-latest, Python 3.10)"] as $req
+  | ($req | map(. as $r | ($all[] | select(.name==$r) | "\(.state)  \($r)")))[]'
+
+# and the totals, to catch anything unsettled:
+gh pr view <N> --json statusCheckRollup --jq \
+  '[.statusCheckRollup[]|(.conclusion//.state)]|group_by(.)|map("\(.[0]): \(length)")|join("  ")'
+```
+
+Two ways to misread that output. **A required context that never reported
+produces no line at all** — the `select` matches nothing — so count the lines
+against `$req` and treat a missing one as "not reported", never as green. And
+**do not post-process `gh pr checks` with whitespace-splitting tools**: real
+check names contain spaces and ampersands, so `awk '{print $1}'` turns
+`Lint & type-check` into `Lint` and quietly reports on a check that does not
+exist.
 
 `references/traps.md` covers the state-reporting gotchas: stale `CLEAN`,
 `UNSTABLE` being mergeable, neutral CodeQL, and why a bot rebase does not
