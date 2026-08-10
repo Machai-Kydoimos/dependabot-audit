@@ -25,9 +25,13 @@ All three are observed in the wild. The procedure exists for them.
 ## Install
 
 ```
-/plugin marketplace add <this repo's git URL>
+/plugin marketplace add https://github.com/Machai-Kydoimos/dependabot-audit
 /plugin install dependabot-audit
 ```
+
+The repo is **private to the Machai-Kydoimos organization**, so installing it
+requires git credentials with access — org members should have `gh auth login`
+done, or an SSH key on their account, before running the first command.
 
 ## Use
 

@@ -1,9 +1,9 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "rickhg12hs-tools",
-  "description": "Personal Claude Code plugins.",
+  "name": "machai-kydoimos",
+  "description": "Machai Kydoimos Claude Code plugins.",
   "owner": {
-    "name": "Richard Graham"
+    "name": "Machai-Kydoimos"
   },
   "plugins": [
     {
