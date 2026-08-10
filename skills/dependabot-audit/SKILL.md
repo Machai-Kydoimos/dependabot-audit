@@ -80,8 +80,28 @@ Verify every artifact the lockfile pins for the changed packages against the liv
 registry: sha256/integrity, size, URL, and yanked status.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py" uv.lock --changed <pkg>
+S="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py"
+
+# grouped bumps are the common case — audit every package together
+python3 "$S" uv.lock --changed pkg-a,pkg-b,pkg-c
+
+# better: derive the set instead of naming it (see below)
+python3 "$S" uv.lock --changed-vs base.uv.lock
 ```
+
+**Do not read the package names off the PR title.** A grouped bump is titled
+"with 3 updates" and names none of them, and a bot may group everything (check
+the `groups:` key you read in Phase 0). Derive the set from the lockfile diff
+against the **merge base** — not the current default branch, or unrelated drift
+that landed after the PR branched gets attributed to this PR:
+
+```bash
+git show "$(git merge-base <default> pr-<N>):uv.lock" > base.uv.lock
+python3 "$S" uv.lock --changed-vs base.uv.lock
+```
+
+The script exits **2** if a name you asked for is not in the lockfile, rather
+than auditing the rest and looking successful.
 
 For PyPI that one invocation covers this phase **plus the mechanical half of
 Phases 2 and 3** — it also reports the registry's true latest version with
@@ -158,8 +178,8 @@ this PR's head before reusing it** — a stale worktree silently audits the wron
 commit and every result downstream is wrong:
 
 ```bash
-git -C <scratch>/pr-<N> log --oneline -1     # must be the PR head
-git -C <scratch>/pr-<N> status --porcelain   # must be empty
+git -C "$SCRATCH/pr-<N>" log --oneline -1     # must be the PR head
+git -C "$SCRATCH/pr-<N>" status --porcelain   # must be empty
 ```
 
 If either check fails, `git worktree remove` it and recreate.

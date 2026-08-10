@@ -11,16 +11,23 @@ Three checks, no judgment:
   vulns       an OSV batch query across every PyPI-sourced package in the lock
 
 Usage:
-    audit.py <uv.lock> [--changed pkg[,pkg...]] [--json]
+    audit.py <uv.lock> [--changed pkg[,pkg...] | --changed-vs <baseline.lock>] [--json]
+
+`--changed-vs` derives the changed set by diffing against the base branch's
+lockfile, which is the reliable way to handle a grouped bump — a grouped PR title
+says "with 3 updates" and names none of them.
 
 Exit status: 0 = nothing to report, 1 = at least one discrepancy, stale version,
-or known vulnerability. Requires Python 3.11+ (tomllib) and network access.
+or known vulnerability, 2 = usage/lookup error (including a requested package
+that is not in the lockfile — never audit fewer packages than asked in silence).
+Requires Python 3.11+ (tomllib) and network access.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tomllib
 import urllib.error
@@ -39,6 +46,33 @@ def _get_json(url: str, payload: bytes | None = None) -> Any:
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310
         return json.load(resp)
+
+
+def _normalize(name: str) -> str:
+    """PEP 503 name normalization, so Pillow/pillow and foo_bar/foo-bar match."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def derive_changed(packages: list[dict[str, Any]], baseline_path: str) -> list[str]:
+    """Packages added or version-changed relative to a baseline lockfile.
+
+    Compares (name, version) *pairs*, not a name->version mapping: a lockfile may
+    legitimately pin one package at several versions under different
+    resolution-markers, and collapsing those by name reports a spurious change.
+    Removals are not reported — there is nothing left to verify for them.
+    """
+    base_pairs = {
+        (_normalize(p["name"]), p["version"])
+        for p in pypi_sourced(load_lock(baseline_path))
+    }
+    seen: set[str] = set()
+    changed: list[str] = []
+    for p in packages:
+        if (_normalize(p["name"]), p["version"]) not in base_pairs:
+            if p["name"] not in seen:
+                seen.add(p["name"])
+                changed.append(p["name"])
+    return changed
 
 
 def _sortable(version: str) -> tuple[int, ...]:
@@ -126,6 +160,10 @@ def check_currency(entry: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any
         "locked": locked,
         "latest": latest,
         "current": locked == latest,
+        # An entry pinned under resolution-markers (e.g. the last release that
+        # supported an older Python) is *expected* to trail the registry. Flagging
+        # it as stale invites a follow-up bump that can never be made.
+        "constrained": bool(entry.get("resolution-markers")),
         "locked_published": published(locked),
         "latest_published": published(latest),
         "gap": [
@@ -176,6 +214,11 @@ def render(report: dict[str, Any]) -> None:
         if cur["current"]:
             print(f"=== {cur['name']}: locked {cur['locked']} IS the latest\n")
             continue
+        if cur["constrained"]:
+            print(f"=== {cur['name']}: locked {cur['locked']}, registry latest "
+                  f"{cur['latest']} — CONSTRAINED by resolution-markers")
+            print("      expected to trail the registry; not a staleness finding\n")
+            continue
         print(f"=== {cur['name']}: locked {cur['locked']}, "
               f"registry latest {cur['latest']}  <-- NOT CURRENT")
         for rel in cur["gap"]:
@@ -200,31 +243,63 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lock", help="path to uv.lock")
     parser.add_argument("--changed", default="", help="comma-separated bumped packages")
+    parser.add_argument(
+        "--changed-vs",
+        metavar="BASELINE_LOCK",
+        help="derive the changed set by diffing against the base branch's lockfile "
+        "(more reliable than reading a grouped PR title, which names no packages)",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     args = parser.parse_args()
 
     packages = pypi_sourced(load_lock(args.lock))
-    changed = [n.strip() for n in args.changed.split(",") if n.strip()]
-    targets = [p for p in packages if p["name"] in changed]
 
-    if changed and not targets:
-        print(f"error: none of {changed} found in {args.lock}", file=sys.stderr)
+    if args.changed_vs:
+        changed = derive_changed(packages, args.changed_vs)
+        print(
+            f"derived {len(changed)} changed package(s) vs {args.changed_vs}: "
+            f"{', '.join(changed) or '(none)'}\n"
+        )
+    else:
+        changed = [n.strip() for n in args.changed.split(",") if n.strip()]
+
+    # A name can map to SEVERAL entries (one package pinned at different versions
+    # under different resolution-markers) — take them all, or the audit silently
+    # skips one and its artifacts go unverified.
+    wanted = {_normalize(n) for n in changed}
+    targets = [p for p in packages if _normalize(p["name"]) in wanted]
+    found = {_normalize(p["name"]) for p in targets}
+    unmatched = [n for n in changed if _normalize(n) not in found]
+
+    if unmatched:
+        print(
+            f"error: not found in {args.lock}: {', '.join(unmatched)}\n"
+            "       An audit that silently checks fewer packages than it was asked to "
+            "is worse than no audit.\n"
+            "       Fix the names (or use --changed-vs) and re-run.",
+            file=sys.stderr,
+        )
         return 2
 
     report: dict[str, Any] = {"lock": args.lock, "provenance": [], "currency": []}
+    meta_cache: dict[str, Any] = {}
     for entry in targets:
-        try:
-            meta = _get_json(PYPI.format(name=entry["name"]))
-        except urllib.error.URLError as exc:
-            print(f"error: PyPI lookup failed for {entry['name']}: {exc}", file=sys.stderr)
-            return 2
+        key = _normalize(entry["name"])
+        if key not in meta_cache:
+            try:
+                meta_cache[key] = _get_json(PYPI.format(name=entry["name"]))
+            except urllib.error.URLError as exc:
+                print(f"error: PyPI lookup failed for {entry['name']}: {exc}",
+                      file=sys.stderr)
+                return 2
+        meta = meta_cache[key]
         report["provenance"].append(check_provenance(entry, meta))
         report["currency"].append(check_currency(entry, meta))
 
     report["vulns"] = check_vulns(packages)
     report["clean"] = (
         all(p["ok"] for p in report["provenance"])
-        and all(c["current"] for c in report["currency"])
+        and all(c["current"] or c["constrained"] for c in report["currency"])
         and not report["vulns"]["hits"]
     )
 

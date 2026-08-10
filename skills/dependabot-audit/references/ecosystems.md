@@ -25,6 +25,12 @@ Metadata by hand: `https://pypi.org/pypi/<pkg>/json` →
 `.info.version` (latest), `.releases["<ver>"][]` with `.digests.sha256`, `.size`,
 `.url`, `.yanked`, `.upload_time_iso_8601`.
 
+**`uv.lock` can contain several `[[package]]` blocks with the same name**, each
+carrying its own `resolution-markers` — typically the last release supporting an
+older Python alongside the current one. The script handles this; if you verify by
+hand, do not assume one block per name, and do not report a marker-constrained
+block as stale.
+
 **Auditor trap.** `pip-audit` audits the environment of the interpreter it runs
 under. Activating a virtualenv does **not** redirect a `pip-audit` installed
 elsewhere — it will happily audit the system Python and report on distro

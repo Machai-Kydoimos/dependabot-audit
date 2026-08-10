@@ -44,6 +44,24 @@ runs a strictly smaller check than a CI step invoking the same tool over the
 whole repo. A clean local hook run is not evidence that CI will pass. Compare the
 two invocations explicitly.
 
+## Lockfile shape
+
+**A package name is not a unique key.** A lockfile can pin the *same* package at
+several versions under different environment constraints — uv's
+`resolution-markers`, npm's nested `node_modules` entries, Cargo's semver-major
+duplicates. Any tool that builds a name→entry mapping silently keeps one and
+drops the rest, so its artifacts go unverified while the output looks complete.
+Key by **(name, version)**, and expect a name lookup to return a *list*.
+
+Observed: a `uv.lock` pinning `rpds-py` at both `0.30.0` (Python < 3.11) and
+`2026.6.3` — 231 artifacts across the two entries, of which a name-keyed audit
+checked 116.
+
+**A constrained pin is not a stale pin.** An entry held back by an environment
+marker — the last release supporting an older interpreter — trails the registry
+permanently and by design. Reporting it as "not current" invites a follow-up bump
+that can never be made. Check for the constraint before calling it stale.
+
 ## Registry and pinning
 
 **Annotated tags need dereferencing.** For an action pinned by SHA,
