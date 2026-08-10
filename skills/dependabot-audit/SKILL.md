@@ -38,9 +38,29 @@ Deriving costs one call each.
 
 ```bash
 gh pr view <N> --json number,title,headRefOid,mergeStateStatus,files,author,createdAt
-gh api repos/:owner/:repo/branches/<default>/protection --jq '.required_status_checks.contexts[]'
+
+# derive the default branch — never assume "main"
+DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
+gh api "repos/:owner/:repo/branches/$DEFAULT/protection" --jq '.required_status_checks.contexts[]'
+
 cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
 ```
+
+**Derive the branch name; never type it.** A failed protection call and a repo
+with no protection both yield *no contexts*, so if stderr is discarded or the
+output is skimmed only for the list, they are indistinguishable — and Phase 6
+then verifies nothing while the report still says CI is green. Read the status
+and message, which separate three genuinely different situations (all verified):
+
+| Response | Meaning |
+|---|---|
+| `404 Branch not found` | wrong branch name — your mistake, fix and re-run |
+| `404 Branch not protected` | correct branch, no protection configured |
+| `403 Upgrade to GitHub Pro…` | correct branch, but branch protection is unavailable on this plan (a private repo on a free plan) |
+
+Only the first is an error on your part. The other two are **findings**: the repo
+has no enforced required checks, which changes what a green CI run is worth. Say
+so explicitly in the report rather than omitting the row.
 
 Then read the CI workflow and the pre-commit config to learn the repo's **own**
 verification commands — do not assume `pytest`/`npm test`. Note where each tool
@@ -63,9 +83,13 @@ registry: sha256/integrity, size, URL, and yanked status.
 python3 "${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py" uv.lock --changed <pkg>
 ```
 
-That script covers PyPI/`uv.lock`. For npm, Cargo, Go, and GitHub Actions, follow
-the per-registry recipes in `references/ecosystems.md` — they are short API
-comparisons you can run directly.
+For PyPI that one invocation covers this phase **plus the mechanical half of
+Phases 2 and 3** — it also reports the registry's true latest version with
+publish timestamps, and runs the OSV batch across the whole lockfile. Read its
+output there rather than repeating those queries by hand.
+
+For npm, Cargo, Go, and GitHub Actions, follow the per-registry recipes in
+`references/ecosystems.md` — they are short API comparisons you can run directly.
 
 ## Phase 2 — Currency
 
@@ -93,6 +117,10 @@ Batch-query OSV across the whole locked set, then corroborate with the
 ecosystem's own auditor. Expect this to agree with Phase 2 only sometimes — that
 divergence is the point, not a contradiction.
 
+**For PyPI the OSV half is already done** — the Phase 1 script ran it. Read that
+result instead of issuing a second query; what remains here is the ecosystem
+auditor.
+
 See `references/ecosystems.md` for the auditor invocations and their traps; the
 Python one in particular audits the wrong interpreter if invoked casually.
 
@@ -115,9 +143,15 @@ Not "is it safe" but **"does it change what this repo's gates accept"**.
 In an isolated worktree, so the user's working tree is untouched:
 
 ```bash
+SCRATCH=${SCRATCH:-$(mktemp -d)}          # any directory OUTSIDE the repo
 git fetch origin pull/<N>/head:pr-<N>
-git worktree add <scratch>/pr-<N> pr-<N>
+git worktree add "$SCRATCH/pr-<N>" pr-<N>
 ```
+
+Use a harness-provided scratch directory if you have one; otherwise `mktemp -d`.
+**Never place it inside the repo under audit** — it pollutes `git status`, and a
+gate that walks the tree (a linter, a formatter, a test collector) will descend
+into a full second copy of the project and report on it.
 
 If a worktree from an earlier run is already there, **prove it still points at
 this PR's head before reusing it** — a stale worktree silently audits the wrong
@@ -136,6 +170,18 @@ own gates from Phase 0, and its full test suite.
 
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.
+
+**Close the loop.** A worktree is registered in the *user's* repo, so an audit
+that walks away leaves litter behind — and they accumulate, one per PR audited.
+Either remove it when finished, or keep it deliberately and say so in the report
+so the user knows it is there:
+
+```bash
+git worktree remove "$SCRATCH/pr-<N>"     # and: git branch -D pr-<N>
+```
+
+Keeping it is reasonable when a follow-up run is likely; silently keeping it is
+not.
 
 ## Phase 6 — CI verification
 

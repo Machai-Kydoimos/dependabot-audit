@@ -44,3 +44,6 @@ verdict is robust and why.
 **Not merged.** When you want it: `gh pr merge <N> --squash`
 
 For a follow-up: a separate branch, never a push onto the bot's branch.
+
+If the reproduction worktree was kept rather than removed, name it here with its
+cleanup command — never leave one registered in the user's repo unannounced.

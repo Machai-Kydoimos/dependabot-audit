@@ -81,6 +81,16 @@ yields nothing for a context that was never posted, which looks identical to
 "not printed because it passed". Count returned rows against the required list
 and treat any absence as *unreported*, not green.
 
+**"No required checks" and "you asked the wrong question" look the same.**
+Querying branch protection for a branch that does not exist returns an empty
+context list, exactly like a branch with no protection — so a mistyped or
+guessed branch name silently turns the whole required-checks verification into a
+no-op. The HTTP status and message do separate the cases (`404 Branch not
+found` = wrong branch; `404 Branch not protected` = genuinely unprotected;
+`403 Upgrade to GitHub Pro…` = protection unavailable on that plan, e.g. a
+private repo on a free plan), but only if you read them instead of discarding
+stderr.
+
 **Neutral / "skipping" security-scan results are normal** on diffs that do not
 touch the scanned surface. Not a failure, and usually not a required check.
 
