@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+
+# Not a real lockfile. This repo has no dependencies — audit.py is stdlib-only
+# so it runs under whatever bare python3 the repo under audit has. uv writes an
+# empty one anyway whenever `uv run` is invoked here without --no-project,
+# purely because pyproject.toml exists to configure the linters.
+uv.lock

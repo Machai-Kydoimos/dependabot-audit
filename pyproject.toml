@@ -1,0 +1,54 @@
+# This plugin has no build step and no dependencies: audit.py is stdlib-only so
+# it runs under whatever bare `python3` the repo under audit happens to have.
+# There is deliberately no [project] table — this file exists to configure the
+# linters, and to give the `# noqa` directives in the source something to mean.
+#
+# Note for anyone reaching for uv here: the mere presence of this file makes
+# `uv run` treat the directory as a project and write a uv.lock that locks
+# nothing, with requires-python taken from whichever interpreter you happened to
+# invoke rather than this script's real 3.11 floor. Use `uv run --no-project`,
+# which is the only thing that suppresses it — `[tool.uv] managed = false` does
+# not (tested). The stray lockfile is gitignored either way.
+
+# ── Ruff (linter + formatter) ────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"        # tomllib
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # flake8-bugbear
+    "SIM",      # flake8-simplify
+    "RUF",      # ruff's own rules
+    # The whole job of this script is fetching URLs and comparing what comes
+    # back, so the security rules are the relevant ones -- and S310 in
+    # particular is already annotated in the source. Without S selected that
+    # annotation silences nothing while reading as a considered decision.
+    "S",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S101: assert is how a test asserts.
+# E501: the lockfile fixture embeds a real-shaped URL and a 64-character sha256
+#       in one TOML inline table, which the format does not allow wrapping.
+#       Line length there is a property of the data, not of authored prose.
+"tests/*" = ["S101", "E501"]
+
+# ── mypy (static type checker) ───────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+files = ["skills/dependabot-audit/scripts", "tests"]
+mypy_path = "skills/dependabot-audit/scripts"
+strict = true
+
+[[tool.mypy.overrides]]
+# Test functions and their calls to each other are exempt, matching the policy
+# in the repos this plugin audits. The script itself is checked under full
+# strict, and passes.
+module = ["test_audit"]
+disallow_untyped_defs = false
+disallow_untyped_calls = false

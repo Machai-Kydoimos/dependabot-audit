@@ -1,0 +1,44 @@
+# Local gates, and the only enforcing ones. Branch protection and rulesets are
+# both unavailable on this repo's plan (private repo, free org), so a CI check
+# can never be made required — CI here is advisory, and these hooks are what can
+# actually stop a bad commit. Install with: pre-commit install
+#
+# The pinned `rev:`s are the single source of truth for tool versions: CI runs
+# `pre-commit run --all-files` rather than its own `pip install ruff mypy`, so
+# there is no second pin to drift from. (The sibling fpga-board-sim repo uses
+# local `uv run` hooks for exactly the same reason inverted — there a uv.lock
+# already owns the versions, so a mirror `rev:` would be the competing pin. This
+# repo has no lockfile and no dependencies by design, so the rev is the only one.)
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.2
+    hooks:
+      # Lint before format, per Astral's ordering guidance, so `--fix` output is
+      # then reformatted.
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.0
+    hooks:
+      # mirrors-mypy builds an isolated environment, which is normally the reason
+      # to avoid it: a project's own dependencies are missing from it and
+      # expressions silently degrade to Any. audit.py imports nothing outside the
+      # stdlib, so there is nothing to miss.
+      - id: mypy
+        args: []
+        pass_filenames: false     # `files` in pyproject.toml picks the scope
+
+  - repo: local
+    hooks:
+      # Hooks see only staged files, but the suite is stdlib-only, reaches no
+      # network, and finishes in milliseconds — and a change to the skill prose
+      # can invalidate a test's premise just as a change to the script can. So it
+      # always runs, rather than only when a .py file happens to be staged.
+      - id: unittest
+        name: unittest (stdlib, no network)
+        entry: python3 -m unittest discover -s tests
+        language: system
+        pass_filenames: false
+        always_run: true

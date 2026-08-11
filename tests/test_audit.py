@@ -14,6 +14,7 @@ assert on what gets reported, not just on what gets returned.
 from __future__ import annotations
 
 import contextlib
+import email.message
 import io
 import json
 import pathlib
@@ -28,7 +29,7 @@ sys.path.insert(
     0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
 )
 
-from audit import (  # noqa: E402
+from audit import (
     _get_json,
     _normalize,
     check_currency,
@@ -213,9 +214,7 @@ class TestProvenance(unittest.TestCase):
         self.assertIn("not present on PyPI", result["error"])
 
     def test_sdist_is_verified_too_not_only_wheels(self):
-        pkg = entry(
-            "p", "1.0", sdist=artifact("p-1.0.tar.gz", digest="b" * 64), wheels=[]
-        )
+        pkg = entry("p", "1.0", sdist=artifact("p-1.0.tar.gz", digest="b" * 64), wheels=[])
         meta = pypi_meta("1.0", [pypi_file("p-1.0.tar.gz", digest="a" * 64)])
         result = check_provenance(pkg, meta)
         self.assertFalse(result["ok"])
@@ -293,9 +292,7 @@ class TestCurrency(unittest.TestCase):
                 pypi_file("p-1.0.tar.gz", uploaded="2026-03-01T09:00:00Z"),
             ],
         )
-        self.assertEqual(
-            check_currency(pkg, meta)["locked_published"], "2026-03-01T09:00:00Z"
-        )
+        self.assertEqual(check_currency(pkg, meta)["locked_published"], "2026-03-01T09:00:00Z")
 
     def test_prereleases_are_not_listed_in_the_gap(self):
         """A bot never proposes an rc, so listing one sends the reader to a
@@ -418,7 +415,7 @@ source = {{ editable = "." }}
             contextlib.redirect_stderr(err),
         ):
             try:
-                code = main()
+                code: int | str | None = main()
             except SystemExit as exc:  # fail() raises rather than returns
                 code = exc.code
         return code, out.getvalue(), err.getvalue()
@@ -473,9 +470,7 @@ class TestMainContract(_MainHarness):
     def test_json_mode_stays_parseable_alongside_changed_vs(self):
         """--changed-vs is the mode the skill recommends, so its diagnostic line
         must not land on stdout in front of the JSON."""
-        base = write_lock(
-            self, self.LOCK.replace('version = "0.2.53"', 'version = "0.2.52"', 1)
-        )
+        base = write_lock(self, self.LOCK.replace('version = "0.2.53"', 'version = "0.2.52"', 1))
         code, out, _ = self._run(
             [write_lock(self, self.LOCK), "--changed-vs", base, "--json"],
             meta=self._meta(),
@@ -538,7 +533,8 @@ class TestRetry(unittest.TestCase):
 
     def _http_error(self, code):
         # HTTPError is a file object; closing it keeps the suite ResourceWarning-free.
-        exc = urllib.error.HTTPError(self.URL, code, "simulated", {}, None)
+        hdrs = email.message.Message()
+        exc = urllib.error.HTTPError(self.URL, code, "simulated", hdrs, None)
         self.addCleanup(exc.close)
         return exc
 
