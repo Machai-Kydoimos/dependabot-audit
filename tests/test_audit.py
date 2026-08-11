@@ -32,6 +32,7 @@ from audit import (  # noqa: E402
     check_currency,
     check_provenance,
     derive_changed,
+    fork_context,
     main,
     pypi_sourced,
     select_targets,
@@ -242,18 +243,107 @@ class TestCurrency(unittest.TestCase):
         self.assertEqual([r["version"] for r in result["gap"]], ["1.1", "1.2"])
         self.assertEqual(result["gap"][0]["published"], "2026-02-01T00:00:00Z")
 
-    def test_marker_constrained_pin_is_not_reported_as_stale(self):
-        """A pin held back by an environment marker trails the registry by design."""
-        pkg = entry("rpds-py", "0.30.0", markers=["python_full_version < '3.11'"])
-        meta = pypi_meta(
-            "0.30.0",
+    def _split(self):
+        """A package uv forked: rpds-py's real shape, both blocks marker-stamped."""
+        return pypi_meta(
+            "2020.1.1",
             [],
             latest="2026.6.3",
-            releases={"0.30.0": [pypi_file("x.whl")], "2026.6.3": [pypi_file("y.whl")]},
+            releases={
+                "0.30.0": [pypi_file("a.whl", uploaded="2019-01-01T00:00:00Z")],
+                "2020.1.1": [pypi_file("b.whl", uploaded="2020-01-01T00:00:00Z")],
+                "2026.6.3": [pypi_file("c.whl", uploaded="2026-06-03T00:00:00Z")],
+            },
         )
-        result = check_currency(pkg, meta)
+
+    def test_held_back_fork_is_not_reported_as_stale(self):
+        """The lower fork of a split package trails the registry by design."""
+        pkg = entry("rpds-py", "0.30.0", markers=["python_full_version < '3.11'"])
+        result = check_currency(pkg, self._split(), pins=2, newest=False)
         self.assertFalse(result["current"])
-        self.assertTrue(result["constrained"], "must not read as a staleness finding")
+        self.assertTrue(result["held_back"], "must not read as a staleness finding")
+
+    def test_newest_fork_is_still_checked_for_staleness(self):
+        """Shipped bug: uv stamps markers on *every* fork, so both were exempted.
+
+        The highest pin is the one that actually gets installed on a current
+        interpreter. Letting its markers excuse a gap hides staleness on the only
+        pin a follow-up bump could ever move.
+        """
+        pkg = entry("rpds-py", "2020.1.1", markers=["python_full_version >= '3.11'"])
+        result = check_currency(pkg, self._split(), pins=2, newest=True)
+        self.assertTrue(result["constrained"])
+        self.assertFalse(result["held_back"], "markers must not excuse the live pin")
+        self.assertEqual([r["version"] for r in result["gap"]], ["2026.6.3"])
+
+    def test_publish_time_is_the_earliest_artifact_not_an_arbitrary_one(self):
+        """PyPI lists a version's files in no useful order.
+
+        The currency question is whether the version existed before the PR was
+        opened, and a wheel built by CI can land hours after its sdist — so the
+        wrong artifact's timestamp answers the question wrongly.
+        """
+        pkg = entry("p", "1.0")
+        meta = pypi_meta(
+            "1.0",
+            [
+                pypi_file("p-1.0-py3-none-any.whl", uploaded="2026-03-01T12:00:00Z"),
+                pypi_file("p-1.0.tar.gz", uploaded="2026-03-01T09:00:00Z"),
+            ],
+        )
+        self.assertEqual(
+            check_currency(pkg, meta)["locked_published"], "2026-03-01T09:00:00Z"
+        )
+
+    def test_prereleases_are_not_listed_in_the_gap(self):
+        """A bot never proposes an rc, so listing one sends the reader to a
+        changelog that cannot be the answer."""
+        pkg = entry("p", "1.2.3")
+        meta = pypi_meta(
+            "1.2.3",
+            [],
+            latest="1.3.0",
+            releases={
+                "1.2.3": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
+                "1.3.0rc1": [pypi_file("b.whl", uploaded="2026-02-01T00:00:00Z")],
+                "1.3.0": [pypi_file("c.whl", uploaded="2026-03-01T00:00:00Z")],
+            },
+        )
+        gap = check_currency(pkg, meta)["gap"]
+        self.assertEqual([r["version"] for r in gap], ["1.3.0"])
+
+    def test_post_releases_still_enter_the_gap(self):
+        """The pre-release filter must not swallow a release a bot can propose."""
+        pkg = entry("p", "1.0")
+        meta = pypi_meta(
+            "1.0",
+            [],
+            latest="1.0.post1",
+            releases={
+                "1.0": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
+                "1.0.post1": [pypi_file("b.whl", uploaded="2026-02-01T00:00:00Z")],
+            },
+        )
+        gap = check_currency(pkg, meta)["gap"]
+        self.assertEqual([r["version"] for r in gap], ["1.0.post1"])
+
+    def test_gap_is_ordered_by_publish_time_not_version(self):
+        """The report tells the reader to compare the *earliest* against the PR's
+        createdAt, so the first row has to be the earliest — and a patch on an
+        older line can be published after a higher version."""
+        pkg = entry("p", "1.0")
+        meta = pypi_meta(
+            "1.0",
+            [],
+            latest="1.10",
+            releases={
+                "1.0": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
+                "1.10": [pypi_file("c.whl", uploaded="2026-02-01T00:00:00Z")],
+                "1.9": [pypi_file("b.whl", uploaded="2026-03-01T00:00:00Z")],
+            },
+        )
+        gap = check_currency(pkg, meta)["gap"]
+        self.assertEqual([r["version"] for r in gap], ["1.10", "1.9"])
 
     def test_unconstrained_pin_is_not_marked_constrained(self):
         pkg = entry("p", "1.0")
@@ -266,6 +356,22 @@ class TestCurrency(unittest.TestCase):
         result = check_currency(pkg, meta)
         self.assertTrue(result["current"])
         self.assertEqual(result["gap"], [])
+
+
+FORK_PINS = {"rpds-py": ["0.30.0", "2026.6.3"], "rumdl": ["0.2.53"]}
+
+
+class TestForkContext(unittest.TestCase):
+    """Which pin of a forked package is the live one."""
+
+    def test_highest_pin_of_a_fork_is_the_newest(self):
+        self.assertEqual(fork_context(entry("rpds-py", "2026.6.3"), FORK_PINS), (2, True))
+
+    def test_lower_pin_of_a_fork_is_not(self):
+        self.assertEqual(fork_context(entry("rpds-py", "0.30.0"), FORK_PINS), (2, False))
+
+    def test_a_lone_pin_is_its_own_newest(self):
+        self.assertEqual(fork_context(entry("rumdl", "0.2.53"), FORK_PINS), (1, True))
 
 
 class TestMainContract(unittest.TestCase):

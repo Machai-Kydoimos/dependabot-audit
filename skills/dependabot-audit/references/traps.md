@@ -57,10 +57,18 @@ Observed: a `uv.lock` pinning `rpds-py` at both `0.30.0` (Python < 3.11) and
 `2026.6.3` — 231 artifacts across the two entries, of which a name-keyed audit
 checked 116.
 
-**A constrained pin is not a stale pin.** An entry held back by an environment
-marker — the last release supporting an older interpreter — trails the registry
-permanently and by design. Reporting it as "not current" invites a follow-up bump
-that can never be made. Check for the constraint before calling it stale.
+**A constrained pin is not a stale pin — but only the *lower* fork is
+constrained.** An entry held back by an environment marker (the last release
+supporting an older interpreter) trails the registry permanently and by design,
+and reporting it as "not current" invites a follow-up bump that can never be
+made. The trap is the correction: uv stamps `resolution-markers` on **every**
+block of a forked package, including the highest one — the pin that actually gets
+installed on a current interpreter and *is* expected to track the registry. Treat
+the presence of markers as an exemption and you exempt the only pin a bump could
+ever move, so staleness on it becomes invisible.
+
+Compare against the package's other pins, not against the markers alone: the
+highest pin is live, the rest are held back.
 
 ## Registry and pinning
 

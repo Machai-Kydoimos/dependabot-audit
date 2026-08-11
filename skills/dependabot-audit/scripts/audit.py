@@ -166,32 +166,81 @@ def check_provenance(entry: dict[str, Any], meta: dict[str, Any]) -> dict[str, A
     return result
 
 
-def check_currency(entry: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-    """Report the registry's true latest version alongside the locked one."""
+_PRERELEASE = re.compile(r"(a|b|c|rc|alpha|beta|pre|preview|dev)\d*$", re.IGNORECASE)
+
+
+def _is_prerelease(version: str) -> bool:
+    """Crude PEP 440 pre-release / dev test; `packaging` is not available here.
+
+    Tail-anchored on purpose, so `1.0.post1` — a real release a bot can propose —
+    survives while `1.3.0rc1`, which one never will, is dropped.
+    """
+    return bool(_PRERELEASE.search(version))
+
+
+def fork_context(entry: dict[str, Any], pins: dict[str, list[str]]) -> tuple[int, bool]:
+    """How often this package is pinned in the lock, and whether this is the highest.
+
+    uv forks a package into several `[[package]]` blocks when different parts of
+    the resolution need different versions.
+    """
+    versions = pins.get(_normalize(entry["name"])) or [entry["version"]]
+    highest = max(_sortable(v) for v in versions)
+    return len(versions), _sortable(entry["version"]) >= highest
+
+
+def check_currency(
+    entry: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    pins: int = 1,
+    newest: bool = True,
+) -> dict[str, Any]:
+    """Report the registry's true latest version alongside the locked one.
+
+    `pins` and `newest` place the entry among the lockfile's pins of the same
+    package, which is what decides whether `resolution-markers` excuse a gap.
+    """
     name, locked = entry["name"], entry["version"]
     latest = meta["info"]["version"]
-
     releases = meta.get("releases", {})
+
+    def published(version: str) -> str | None:
+        # The *earliest* artifact, not an arbitrary one. The currency question is
+        # whether this version existed before the PR was opened, and wheels built
+        # by CI can land hours after the sdist they accompany.
+        stamps = [
+            f["upload_time_iso_8601"]
+            for f in releases.get(version) or []
+            if f.get("upload_time_iso_8601")
+        ]
+        return min(stamps, default=None)
+
     gap = [
         v
         for v in releases
-        if releases[v] and _sortable(locked) < _sortable(v) <= _sortable(latest)
+        if releases[v]
+        and not _is_prerelease(v)
+        and _sortable(locked) < _sortable(v) <= _sortable(latest)
     ]
-    gap.sort(key=_sortable)
+    # Ordered by publish time, because that is the comparison the report asks the
+    # reader to make. _sortable breaks ties and covers an absent timestamp.
+    gap.sort(key=lambda v: (published(v) or "", _sortable(v)))
 
-    def published(version: str) -> str | None:
-        files = releases.get(version) or []
-        return files[0].get("upload_time_iso_8601") if files else None
-
+    constrained = bool(entry.get("resolution-markers"))
     return {
         "name": name,
         "locked": locked,
         "latest": latest,
         "current": locked == latest,
-        # An entry pinned under resolution-markers (e.g. the last release that
-        # supported an older Python) is *expected* to trail the registry. Flagging
-        # it as stale invites a follow-up bump that can never be made.
-        "constrained": bool(entry.get("resolution-markers")),
+        "constrained": constrained,
+        "pins": pins,
+        # uv stamps resolution-markers on *every* block of a forked package, so
+        # the markers alone cannot say which pin is expected to trail. A lower
+        # fork is held back by design; the highest is the live pin, and its
+        # markers excuse nothing. Exempting both hides staleness on the one that
+        # matters — the failure this key exists to avoid.
+        "held_back": constrained and not newest,
         "locked_published": published(locked),
         "latest_published": published(latest),
         "gap": [
@@ -242,17 +291,24 @@ def render(report: dict[str, Any]) -> None:
         if cur["current"]:
             print(f"=== {cur['name']}: locked {cur['locked']} IS the latest\n")
             continue
-        if cur["constrained"]:
+        if cur["held_back"]:
             print(f"=== {cur['name']}: locked {cur['locked']}, registry latest "
-                  f"{cur['latest']} — CONSTRAINED by resolution-markers")
-            print("      expected to trail the registry; not a staleness finding\n")
+                  f"{cur['latest']} — HELD BACK by resolution-markers")
+            print(f"      behind a higher pin of the same package ({cur['pins']} in "
+                  "the lock); expected to")
+            print("      trail the registry, so not a staleness finding\n")
             continue
         print(f"=== {cur['name']}: locked {cur['locked']}, "
               f"registry latest {cur['latest']}  <-- NOT CURRENT")
+        if cur["constrained"]:
+            print(f"      pinned under resolution-markers, but this is the newest of "
+                  f"{cur['pins']} pin(s):")
+            print("      the markers excuse the gap only if they exclude the "
+                  "environment you target")
         for rel in cur["gap"]:
             mark = " (yanked)" if rel["yanked"] else ""
             print(f"      {rel['version']:12s} published {rel['published']}{mark}")
-        print("      compare the earliest of these against the PR's createdAt\n")
+        print("      earliest first; compare it against the PR's createdAt\n")
 
     vulns = report["vulns"]
     if vulns["hits"]:
@@ -341,6 +397,12 @@ def main() -> int:
         "currency": [],
         "skipped": skipped,
     }
+    # Fork structure comes from the whole lockfile, not just the selected set: a
+    # bump can move one fork of a package while its sibling stays where it is.
+    pins: dict[str, list[str]] = {}
+    for pkg in packages:
+        pins.setdefault(_normalize(pkg["name"]), []).append(pkg["version"])
+
     meta_cache: dict[str, Any] = {}
     for entry in targets:
         key = _normalize(entry["name"])
@@ -352,13 +414,16 @@ def main() -> int:
                       file=sys.stderr)
                 return 2
         meta = meta_cache[key]
+        n_pins, newest = fork_context(entry, pins)
         report["provenance"].append(check_provenance(entry, meta))
-        report["currency"].append(check_currency(entry, meta))
+        report["currency"].append(
+            check_currency(entry, meta, pins=n_pins, newest=newest)
+        )
 
     report["vulns"] = check_vulns(packages)
     report["clean"] = (
         all(p["ok"] for p in report["provenance"])
-        and all(c["current"] or c["constrained"] for c in report["currency"])
+        and all(c["current"] or c["held_back"] for c in report["currency"])
         and not report["vulns"]["hits"]
     )
 

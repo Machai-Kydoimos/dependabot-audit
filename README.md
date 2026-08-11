@@ -82,14 +82,17 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-22 cases, stdlib only, no network — they run offline and free. Every case
+30 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect: a corrupted hash, a size mismatch, a yanked release, an artifact
-missing from the registry, a lagging version, a marker-constrained pin that must
-*not* read as stale, a package pinned at two versions under different
-resolution-markers, a requested name that isn't in the lockfile, an empty
-selection that must not report `CLEAN`, a lockfile compared against itself, and a
-non-PyPI package that has to be named rather than dropped.
+missing from the registry, a lagging version, a package pinned at two versions
+under different resolution-markers, the *held-back* fork of that pair which must
+not read as stale alongside the *live* one which must still be checked, a
+publish time taken from the earliest artifact rather than an arbitrary one, a
+pre-release that has no business in the gap next to a post-release that does, a
+requested name that isn't in the lockfile, an empty selection that must not
+report `CLEAN`, a lockfile compared against itself, and a non-PyPI package that
+has to be named rather than dropped.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target
