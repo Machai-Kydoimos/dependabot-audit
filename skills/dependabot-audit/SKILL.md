@@ -1,7 +1,7 @@
 ---
 name: dependabot-audit
 description: Audit an automated dependency-bump PR and produce an evidence-backed merge recommendation — verify lockfile artifact hashes against the registry, cross-check the true latest version, read changelogs for security and behavior changes, reproduce the repo's own checks in an isolated worktree, and report. Use when the user asks to review, audit, check, or decide on a Dependabot or Renovate PR, a dependency bump, a lockfile PR, or asks "is this safe to merge".
-tools: Read, Grep, Glob, Bash
+disallowed-tools: Edit, Write, NotebookEdit
 ---
 
 # Dependabot Audit
@@ -10,9 +10,12 @@ tools: Read, Grep, Glob, Bash
 evidence behind it, and stops. Do not merge, approve, close, comment on, rebase,
 or push to the PR. Print the merge command; do not run it.
 
-`tools:` withholds `Edit` and `Write`, but `Bash` can reach `gh pr merge`. That
-restraint is a **contract, not a sandbox** — honor it. The one exception is the
-learning loop in Phase 8, which appends to the user's project memory.
+`disallowed-tools` removes `Edit`, `Write`, and `NotebookEdit` from the pool while
+this skill is active, but `Bash` remains and can reach `gh pr merge`. That
+restraint is a **contract, not a sandbox** — honor it. There is no exception:
+Phase 8 hands its memory entry back rather than writing it, precisely because
+reaching for `Bash` to do what the withheld tools would have done makes the
+withholding theatre.
 
 ## Why this procedure exists
 
@@ -318,10 +321,12 @@ are worth writing down.
 
 If this audit surfaced a repo-specific landmine — a tool whose defaults collide
 with this repo's config, a hook whose scope hides a CI failure, an invocation that
-silently measures the wrong thing — append it to the user's **project memory** as
-a `project` memory, with the evidence and how it was caught. If no memory
-directory is available, propose the equivalent addition to the repo's
-`CONTRIBUTING.md` gotchas section instead.
+silently measures the wrong thing — **write it out and hand it over**: the
+filename, the frontmatter, and the body of a `project` memory, with the evidence
+and how it was caught. Do not create the file; the session that invoked this skill
+can, and it is the one that owns the decision. If no memory directory exists,
+offer the same text as an addition to the repo's `CONTRIBUTING.md` gotchas
+section.
 
 A generally portable trap belongs in `references/traps.md` in this plugin, not in
 one project's memory. Say which you are proposing, and why.
