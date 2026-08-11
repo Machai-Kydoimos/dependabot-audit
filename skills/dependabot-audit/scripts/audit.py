@@ -18,8 +18,9 @@ lockfile, which is the reliable way to handle a grouped bump — a grouped PR ti
 says "with 3 updates" and names none of them.
 
 Exit status: 0 = nothing to report, 1 = at least one discrepancy, stale version,
-or known vulnerability, 2 = usage/lookup error (including a requested package
-that is not in the lockfile — never audit fewer packages than asked in silence).
+or known vulnerability, 2 = usage/lookup error — including a requested package
+that is not in the lockfile, and an empty selection. Never audit fewer packages
+than asked in silence, and never print CLEAN on a run that verified nothing.
 Requires Python 3.11+ (tomllib) and network access.
 """
 
@@ -105,12 +106,22 @@ def load_lock(path: str) -> list[dict[str, Any]]:
         return tomllib.load(fh)["package"]
 
 
+def _is_pypi(pkg: dict[str, Any]) -> bool:
+    return str(pkg.get("source", {}).get("registry", "")).startswith("https://pypi.org")
+
+
 def pypi_sourced(packages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        p
-        for p in packages
-        if str(p.get("source", {}).get("registry", "")).startswith("https://pypi.org")
-    ]
+    return [p for p in packages if _is_pypi(p)]
+
+
+def non_pypi(packages: list[dict[str, Any]]) -> list[str]:
+    """Names of packages this script cannot verify: git, path, or a private index.
+
+    Reported rather than dropped. A bumped git dependency that never appears in
+    the output is an under-audit indistinguishable from a clean one — the same
+    failure `select_targets` guards against, one level up.
+    """
+    return [p["name"] for p in packages if not _is_pypi(p)]
 
 
 def check_provenance(entry: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
@@ -251,7 +262,18 @@ def render(report: dict[str, Any]) -> None:
     else:
         print(f"OSV: no known vulnerabilities across {vulns['queried']} packages")
 
-    print("\nRESULT:", "CLEAN" if report["clean"] else "NEEDS REVIEW")
+    # The counts ride in the verdict line so it cannot overstate itself: a
+    # reader who skims to RESULT must see the size of the evidence behind it.
+    checked = sum(len(p["artifacts"]) for p in report["provenance"])
+    print(
+        f"\nRESULT: {'CLEAN' if report['clean'] else 'NEEDS REVIEW'}"
+        f" — {len(report['provenance'])} package(s), {checked} artifact(s) checked"
+    )
+    if report["skipped"]:
+        print(
+            f"        {len(report['skipped'])} package(s) NOT checked "
+            f"(not PyPI-sourced): {', '.join(report['skipped'])}"
+        )
     print("This is the mechanical half only — changelog, behavior-change, and")
     print("reproduction phases are not covered here.")
 
@@ -269,7 +291,9 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     args = parser.parse_args()
 
-    packages = pypi_sourced(load_lock(args.lock))
+    locked = load_lock(args.lock)
+    packages = pypi_sourced(locked)
+    skipped = non_pypi(locked)
 
     if args.changed_vs:
         changed = derive_changed(packages, args.changed_vs)
@@ -292,7 +316,31 @@ def main() -> int:
         )
         return 2
 
-    report: dict[str, Any] = {"lock": args.lock, "provenance": [], "currency": []}
+    # Auditing nothing is the same failure as auditing too little, and it is the
+    # likelier one: point --changed-vs at the wrong lockfile and every version
+    # matches, which reads as "no changes" rather than "wrong input".
+    if not targets:
+        reason = (
+            f"{args.lock} and {args.changed_vs} pin identical (name, version) pairs"
+            " — either this lockfile did not change, or it is being compared"
+            " against itself"
+            if args.changed_vs
+            else "no package names were given"
+        )
+        print(
+            f"error: nothing selected to audit: {reason}.\n"
+            f"       {args.lock} pins {len(packages)} PyPI package(s), none selected.\n"
+            "       A run that verifies nothing must not report CLEAN.",
+            file=sys.stderr,
+        )
+        return 2
+
+    report: dict[str, Any] = {
+        "lock": args.lock,
+        "provenance": [],
+        "currency": [],
+        "skipped": skipped,
+    }
     meta_cache: dict[str, Any] = {}
     for entry in targets:
         key = _normalize(entry["name"])

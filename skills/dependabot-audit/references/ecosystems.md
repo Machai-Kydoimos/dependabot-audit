@@ -18,8 +18,14 @@ that nobody checks.
 Covered by the script:
 
 ```bash
-python3 scripts/audit.py path/to/uv.lock --changed <pkg> [--json]
+S="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py"
+python3 "$S" "$SCRATCH/pr.uv.lock" --changed-vs "$SCRATCH/base.uv.lock"
 ```
+
+Both lockfiles come out of git at the ref Phase 0 pinned, never off the working
+tree. The script reports how many packages and artifacts it checked, and names
+anything it could not reach — a package resolved from git, a path, or a private
+index is outside its scope and is listed rather than dropped.
 
 Metadata by hand: `https://pypi.org/pypi/<pkg>/json` →
 `.info.version` (latest), `.releases["<ver>"][]` with `.digests.sha256`, `.size`,

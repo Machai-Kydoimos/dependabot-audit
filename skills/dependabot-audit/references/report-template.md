@@ -20,7 +20,7 @@ turns on.
 | Phase | Result | Observed |
 |---|---|---|
 | **Scope** | Which files the diff touches. | this run |
-| **Provenance** | N/N artifacts verified: hash, size, URL, yanked status. | this run |
+| **Provenance** | N package(s), M artifact(s): hash, size, URL, yanked status — quote the script's own counts, plus anything it reported as unreachable. | this run |
 | **Currency** | Registry latest vs. proposed, with publish time vs. PR open time. Yank and ignore-rule status. | this run |
 | **Security** | Changelog `Security` sections across the gap — including their absence. | this run *or* reused — release notes immutable |
 | **Vulnerabilities** | OSV result and the ecosystem auditor's, over N packages. | this run |
