@@ -145,5 +145,14 @@ normal, just describes something else. Make the scanner run *inside* the project
 environment and sanity-check that the package names in its output belong to the
 project.
 
+**A check that failed and a check that found something exit the same way unless
+you make them differ.** An unhandled exception exits 1, which is also the
+conventional "found something" status — so a verifier whose registry lookup times
+out reports exactly as though it had found a vulnerability, and one handed an
+unreadable file reports as though the file was bad. Give "could not run" its own
+status (2 by convention) and route every foreseeable failure through it. The same
+applies in reverse when you consume someone else's tool: before treating its
+non-zero exit as a finding, check that it distinguishes the two at all.
+
 **Reproduce in an isolated worktree.** Never mutate the user's working tree to
 audit a branch.

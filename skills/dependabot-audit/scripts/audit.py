@@ -19,8 +19,10 @@ says "with 3 updates" and names none of them.
 
 Exit status: 0 = nothing to report, 1 = at least one discrepancy, stale version,
 or known vulnerability, 2 = usage/lookup error — including a requested package
-that is not in the lockfile, and an empty selection. Never audit fewer packages
-than asked in silence, and never print CLEAN on a run that verified nothing.
+that is not in the lockfile, an empty selection, an unreadable lockfile, and a
+registry that could not be reached. Never audit fewer packages than asked in
+silence, never print CLEAN on a run that verified nothing, and never let a failed
+lookup exit as though it were a finding.
 Requires Python 3.11+ (tomllib) and network access.
 """
 
@@ -30,23 +32,57 @@ import argparse
 import json
 import re
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, NoReturn
 
 PYPI = "https://pypi.org/pypi/{name}/json"
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
 TIMEOUT = 60
+# One retry. An audit makes a call per changed package plus the OSV batch, and
+# losing a dozen good calls to one transient 502 is worse than waiting 2s.
+ATTEMPTS = 2
+BACKOFF = 2.0
+UA = "dependabot-audit (+https://github.com/Machai-Kydoimos/dependabot-audit)"
+
+
+def fail(what: str) -> NoReturn:
+    """Exit 2 — the audit could not run.
+
+    Distinct from exit 1, which means the audit ran and found something. An
+    unhandled exception exits 1, so every foreseeable failure has to come through
+    here: otherwise a registry outage is indistinguishable from a finding, and
+    the caller reads "OSV unreachable" as "OSV reported a vulnerability".
+    """
+    print(f"error: {what}", file=sys.stderr)
+    raise SystemExit(2)
 
 
 def _get_json(url: str, payload: bytes | None = None) -> Any:
     req = urllib.request.Request(url)
+    req.add_header("User-Agent", UA)
     if payload is not None:
         req.data = payload
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310
-        return json.load(resp)
+    for attempt in range(ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            # A 4xx is an answer, not a hiccup: "no such package" is information
+            # the caller needs now, and retrying only delays it.
+            if exc.code < 500 or attempt == ATTEMPTS - 1:
+                raise
+            time.sleep(BACKOFF)
+        except (OSError, json.JSONDecodeError):
+            # OSError covers URLError and TimeoutError both; a read that times
+            # out mid-body raises TimeoutError, which is not a URLError.
+            if attempt == ATTEMPTS - 1:
+                raise
+            time.sleep(BACKOFF)
+    raise AssertionError("unreachable: the loop returns or raises")
 
 
 def _normalize(name: str) -> str:
@@ -103,7 +139,10 @@ def _sortable(version: str) -> tuple[int, ...]:
 
 def load_lock(path: str) -> list[dict[str, Any]]:
     with open(path, "rb") as fh:
-        return tomllib.load(fh)["package"]
+        data = tomllib.load(fh)
+    if "package" not in data:
+        raise ValueError("no [[package]] entries — is this a lockfile?")
+    return list(data["package"])
 
 
 def _is_pypi(pkg: dict[str, Any]) -> bool:
@@ -347,15 +386,25 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     args = parser.parse_args()
 
-    locked = load_lock(args.lock)
+    try:
+        locked = load_lock(args.lock)
+    except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
+        fail(f"cannot read {args.lock}: {exc}")
+
     packages = pypi_sourced(locked)
     skipped = non_pypi(locked)
 
     if args.changed_vs:
-        changed = derive_changed(packages, args.changed_vs)
+        try:
+            changed = derive_changed(packages, args.changed_vs)
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
+            fail(f"cannot read baseline {args.changed_vs}: {exc}")
+        # Diagnostic, so stderr: on stdout it would sit in front of --json output
+        # and make the documented machine-readable mode unparseable.
         print(
             f"derived {len(changed)} changed package(s) vs {args.changed_vs}: "
-            f"{', '.join(changed) or '(none)'}\n"
+            f"{', '.join(changed) or '(none)'}\n",
+            file=sys.stderr,
         )
     else:
         changed = [n.strip() for n in args.changed.split(",") if n.strip()]
@@ -409,10 +458,8 @@ def main() -> int:
         if key not in meta_cache:
             try:
                 meta_cache[key] = _get_json(PYPI.format(name=entry["name"]))
-            except urllib.error.URLError as exc:
-                print(f"error: PyPI lookup failed for {entry['name']}: {exc}",
-                      file=sys.stderr)
-                return 2
+            except (OSError, json.JSONDecodeError) as exc:
+                fail(f"PyPI lookup failed for {entry['name']}: {exc}")
         meta = meta_cache[key]
         n_pins, newest = fork_context(entry, pins)
         report["provenance"].append(check_provenance(entry, meta))
@@ -420,7 +467,12 @@ def main() -> int:
             check_currency(entry, meta, pins=n_pins, newest=newest)
         )
 
-    report["vulns"] = check_vulns(packages)
+    try:
+        report["vulns"] = check_vulns(packages)
+    except (OSError, json.JSONDecodeError) as exc:
+        # Left unhandled this exits 1, which the contract reserves for findings —
+        # an outage would read as "OSV reported a vulnerability".
+        fail(f"OSV query failed: {exc}")
     report["clean"] = (
         all(p["ok"] for p in report["provenance"])
         and all(c["current"] or c["held_back"] for c in report["currency"])
