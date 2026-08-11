@@ -34,6 +34,27 @@ so a rule *added* in the new version is live the moment it lands. If the config
 enables specific rules, new rules are inert. This one distinction is the
 difference between "no impact" and "blocks merge".
 
+**A green gate can stay green while its scope moves underneath it.** Comparing
+two versions of a tool by exit code is the obvious approach and it misses the
+most common shape of behaviour change. Observed on ruff 0.15.22 -> 0.16.0 in a
+repo already compliant with both: identical exit 0, while the newer version
+formatted **33 more files** — it had started formatting Python fences inside
+Markdown. Nothing in the pass/fail answer moved.
+
+**Nor can you diff the two versions' output.** The same pair prints
+`Would reformat: x.py` at 0.15 and an annotated diff at 0.16: the *renderer*
+changed, so a text comparison reports every line as different and the real
+finding drowns. Version bumps change output formats roughly as often as they
+change behaviour.
+
+**Diff what the tool did, not what it said.** Run each version in its **write**
+mode inside a disposable worktree and compare which files it changed and to
+what. That is stable across output formats, independent of the tool, and
+answers the question directly. On the case above it reports `0 files -> 6 files`
+and names them. `scripts/gate_diff.py` does this; the three results it
+distinguishes — acted-on-by-newer-only, by-older-only, and both-but-differently
+— are widened scope, narrowed scope, and a changed fix respectively.
+
 **A tool's formatter and its linter have different gates.** A version can leave
 the linter untouched and still change what the formatter rewrites — including
 widening to file types the repo never expected, such as code fences inside

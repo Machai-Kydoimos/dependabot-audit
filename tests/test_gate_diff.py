@@ -1,0 +1,184 @@
+"""Regression tests for gate_diff.py.
+
+No network and no real linters: the gate commands are shell one-liners that
+stand in for "a tool that touched these files". What is under test is the
+mechanics — snapshotting, restoring between runs, and the three ways a bump can
+move a gate — because those are what go wrong when improvised.
+
+    python3 -m unittest discover -s tests -v
+
+The safety-critical case is `test_the_tree_is_restored_between_runs`: without
+it, run two inherits run one's edits and every comparison after that is fiction.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+sys.path.insert(
+    0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
+)
+
+from gate_diff import main
+
+
+def git_repo(test: unittest.TestCase) -> pathlib.Path:
+    """A throwaway git repo with one committed file, removed when the test ends."""
+    directory = pathlib.Path(tempfile.mkdtemp())
+    test.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+    (directory / "tracked.txt").write_text("original\n", encoding="utf-8")
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["add", "-A"],
+        ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base"],
+    ):
+        subprocess.run(["git", "-C", str(directory), *args], check=True, capture_output=True)
+    return directory
+
+
+class GateDiffHarness(unittest.TestCase):
+    def _run(self, tree, runs, as_json=False):
+        argv = ["gate_diff.py", "--tree", str(tree)]
+        if as_json:
+            argv.append("--json")
+        for label, command in runs:
+            argv += ["--run", label, command]
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", argv),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            try:
+                code: int | str | None = main()
+            except SystemExit as exc:  # fail() raises rather than returns
+                code = exc.code
+        return code, out.getvalue(), err.getvalue()
+
+
+class TestTheThreeWaysAGateMoves(GateDiffHarness):
+    def test_widened_scope_is_reported(self):
+        """The ruff 0.16 case: the newer version acts on a file the older ignores."""
+        tree = git_repo(self)
+        code, out, _ = self._run(
+            tree, [("locked", "true"), ("proposed", "printf x > doc.md")]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("doc.md", out)
+        self.assertIn("acted on by proposed only", out)
+
+    def test_narrowed_scope_is_reported(self):
+        tree = git_repo(self)
+        code, out, _ = self._run(
+            tree, [("locked", "printf x > doc.md"), ("proposed", "true")]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("acted on by locked only", out)
+
+    def test_same_file_different_result_is_reported(self):
+        """The destructive-fix case: both versions rewrite it, differently."""
+        tree = git_repo(self)
+        code, out, _ = self._run(
+            tree,
+            [
+                ("locked", "printf 'kept\\n' > tracked.txt"),
+                ("proposed", "printf 'deleted\\n' > tracked.txt"),
+            ],
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("different result", out)
+        self.assertIn("tracked.txt", out)
+
+    def test_a_deleted_file_counts_as_a_change(self):
+        """Deleting a file is exactly the fix-mode behaviour worth catching."""
+        tree = git_repo(self)
+        code, out, _ = self._run(tree, [("locked", "true"), ("proposed", "rm tracked.txt")])
+        self.assertEqual(code, 1)
+        self.assertIn("tracked.txt", out)
+
+    def test_identical_runs_agree(self):
+        tree = git_repo(self)
+        code, out, _ = self._run(
+            tree,
+            [("locked", "printf same > f.txt"), ("proposed", "printf same > f.txt")],
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("GATES AGREE", out)
+
+    def test_an_exit_code_change_is_reported_even_with_no_file_change(self):
+        tree = git_repo(self)
+        code, out, _ = self._run(tree, [("locked", "true"), ("proposed", "false")])
+        self.assertEqual(code, 1)
+        self.assertIn("the gate's answer changed", out)
+
+
+class TestSafety(GateDiffHarness):
+    def test_the_tree_is_restored_between_runs(self):
+        """Without this every comparison after the first run is fiction.
+
+        Run one leaves a stray file behind; run two asserts it is gone. A failed
+        restore shows up as run two exiting non-zero.
+        """
+        tree = git_repo(self)
+        _, out, _ = self._run(
+            tree,
+            [("first", "printf x > stray.txt"), ("second", "test ! -e stray.txt")],
+            as_json=True,
+        )
+        second = json.loads(out)["runs"][1]
+        self.assertEqual(second["exit"], 0, "run two saw run one's leftovers")
+        self.assertFalse((tree / "stray.txt").exists(), "tree left dirty after the run")
+
+    def test_the_tree_is_clean_when_the_tool_finishes(self):
+        tree = git_repo(self)
+        self._run(tree, [("a", "printf x > f.txt"), ("b", "printf 'edited' > tracked.txt")])
+        left = subprocess.run(
+            ["git", "-C", str(tree), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(left.stdout.strip(), "", "the worktree must be left as found")
+
+    def test_a_dirty_tree_is_refused(self):
+        """The restore would discard uncommitted work, so it never starts."""
+        tree = git_repo(self)
+        (tree / "precious.txt").write_text("unsaved\n", encoding="utf-8")
+        code, _, err = self._run(tree, [("a", "true"), ("b", "true")])
+        self.assertEqual(code, 2)
+        self.assertIn("refusing to run", err)
+        self.assertTrue((tree / "precious.txt").exists(), "must not touch it")
+
+    def test_a_non_git_tree_is_refused(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        code, _, err = self._run(directory, [("a", "true"), ("b", "true")])
+        self.assertEqual(code, 2)
+        self.assertIn("not a git worktree", err)
+
+    def test_a_single_run_is_refused(self):
+        tree = git_repo(self)
+        code, _, err = self._run(tree, [("only", "true")])
+        self.assertEqual(code, 2)
+        self.assertIn("at least two", err)
+
+
+class TestNoWriteMode(GateDiffHarness):
+    def test_a_check_only_gate_says_so(self):
+        """Measuring a --check invocation measures the weaker signal; say it."""
+        tree = git_repo(self)
+        _, out, _ = self._run(tree, [("locked", "echo a"), ("proposed", "echo b")])
+        self.assertIn("no run changed any file", out)
+
+
+if __name__ == "__main__":
+    unittest.main()

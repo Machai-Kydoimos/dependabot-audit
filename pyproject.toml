@@ -49,6 +49,11 @@ strict = true
 # Test functions and their calls to each other are exempt, matching the policy
 # in the repos this plugin audits. The script itself is checked under full
 # strict, and passes.
-module = ["test_audit"]
+# List each test module explicitly. A `test_*` wildcard silently matches
+# nothing here — mypy's patterns work on dot-separated components — and the
+# override then disappears with no warning, not even under
+# --warn-unused-configs (tested: errors went 25 -> 175). Adding a test file
+# means adding it here; forgetting is loud, which is the safer direction.
+module = ["test_audit", "test_gate_diff"]
 disallow_untyped_defs = false
 disallow_untyped_calls = false

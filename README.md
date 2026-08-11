@@ -54,7 +54,7 @@ the verdict, and the merge command **left un-run**.
 | 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status vs. the live registry, read out of git at the pinned ref |
 | 2 | Currency — the registry's true latest, publish times vs. PR open time, and changelogs across the gap |
 | 3 | Known vulnerabilities — OSV batch plus the ecosystem's own auditor |
-| 4 | Behavior change — added rules and changed defaults against this repo's config and gate scopes |
+| 4 | Behavior change — each gate run at the old and new versions, comparing what they *do to the files* |
 | 5 | Independent reproduction — frozen install and the repo's own gates in an isolated worktree |
 | 6 | CI verification — the run for the exact head SHA, and the required contexts specifically |
 | 7 | Report |
@@ -73,6 +73,13 @@ it. npm, Cargo, Go, and GitHub Actions are covered as short per-registry
 procedures in `references/ecosystems.md` that the model runs directly — the same
 three questions in each registry's vocabulary.
 
+`scripts/gate_diff.py` (Phase 4) is **ecosystem-independent**, because it parses
+nothing. It runs a gate once per version in a disposable worktree and compares
+which files each run changed, and how. That works for any tool in any language —
+the operator supplies the invocations, and the tool's own output format is
+irrelevant, which is the point: version bumps change output formats about as
+often as they change behavior.
+
 This is deliberate. An unverified verifier is worse than none: it emits confident
 green output nobody checks. Don't extend the script to an ecosystem you don't
 have a repo to test it against.
@@ -83,9 +90,9 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-39 cases, stdlib only, no network — they run offline and free. Every case
+51 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
-to detect. They fall into four groups:
+to detect. They fall into five groups:
 
 - **Provenance** — a corrupted hash, a size mismatch, a yanked release, an
   artifact missing from the registry, and an sdist checked alongside the wheels.
@@ -100,6 +107,16 @@ to detect. They fall into four groups:
 - **Failure vs. finding** — an unreadable lockfile, an unreachable registry, and
   an OSV outage, each of which has to exit 2 rather than borrow the status that
   means "found something".
+- **Gate differential** — the three ways a bump moves a gate (widened scope,
+  narrowed scope, a changed fix), a deleted file counting as a change, and the
+  safety properties: a dirty tree is refused, and the worktree is restored
+  between runs. That last one matters most — without it run two inherits run
+  one's edits and every comparison after it is fiction.
+
+`gate_diff.py` is additionally validated end-to-end against a real historical
+bump: replaying Dependabot's ruff `0.15.22` → `0.16.0` PR against the tree as it
+stood that day reproduces the six Markdown files the newer version started
+formatting — while both versions exit 0.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target

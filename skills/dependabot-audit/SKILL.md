@@ -178,17 +178,48 @@ Python one in particular audits the wrong interpreter if invoked casually.
 
 ## Phase 4 — Behavior change (the highest-yield phase)
 
-Not "is it safe" but **"does it change what this repo's gates accept"**.
+Not "is it safe" but **"does it change what this repo's gates accept"**. Measure
+that; do not predict it from the changelog.
 
-1. From the changelog, list every **added rule, changed default, or widened file
-   scope** — not the bug fixes.
-2. Determine whether the repo's config is an **opt-in allow-list** or an
-   **opt-out disable-list**. Under a disable-list, a newly added rule is **live
-   immediately**. Under an allow-list it is inert. This single distinction decides
-   whether a new rule can break the build.
-3. Do not reason about it — **run the tool** at the CI's scope, and separately at
-   the hook's scope. Green CI on the PR is good evidence, but it only covers the
-   proposed version; if you are recommending a *newer* one, run that too.
+```bash
+G="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/gate_diff.py"
+
+python3 "$G" --tree "$SCRATCH/pr-<N>" \
+  --run locked   "uv run --no-project --with ruff==0.15.22 ruff format ." \
+  --run proposed "uv run --no-project --with ruff==0.16.0  ruff format ." \
+  --run latest   "uv run --no-project --with ruff==0.16.2  ruff format ."
+```
+
+**Give the tool's write mode, not `--check`** — the measurement is what each
+version does to the files, and `--check` does nothing to them. Run it once per
+gate from Phase 0, at *each* scope: a hook scoped to `types_or: [python, pyi]`
+and a CI step running the same tool over `.` are different gates, and this is
+the phase that turns on the difference. Add the `latest` run whenever Phase 2
+found a newer version, because that is the one you would be recommending.
+
+Read the result as three distinct findings:
+
+| Result | Meaning |
+|---|---|
+| only in the newer run | widened scope, or a rule that now fires |
+| only in the older run | narrowed scope |
+| both, different result | the fix itself behaves differently |
+
+The last is the one no security feed reports: a formatter that used to delete
+something and no longer does, in a write mode many repos run on every commit.
+
+**Do not read the exit codes as the answer** — see `references/traps.md`; both
+versions can exit 0 while the scope moves underneath them.
+
+`allow-list vs disable-list` is no longer something to work out in advance; the
+run settles it. Keep it for the *report*, to explain why a difference fired:
+under a config that disables specific rules a newly added rule is live the moment
+it lands, and under one that enables specific rules it is inert.
+
+A gate with no write mode — a type checker, a test suite — leaves the tree
+untouched and `gate_diff` says so. Exit code and output are then the only
+signals, which is the weaker measurement. Say so in the report rather than
+implying the same confidence as a tree diff.
 
 ## Phase 5 — Independent reproduction
 
