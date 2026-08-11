@@ -50,8 +50,8 @@ the verdict, and the merge command **left un-run**.
 
 | Phase | |
 |---|---|
-| 0 | Discover the repo — required checks, bot config, the repo's own CI gates and their scopes |
-| 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status vs. the live registry |
+| 0 | Discover the repo — required checks, bot config, the repo's own CI gates and their scopes; pin the PR's head SHA and fetch it once |
+| 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status vs. the live registry, read out of git at the pinned ref |
 | 2 | Currency — the registry's true latest, publish times vs. PR open time, and changelogs across the gap |
 | 3 | Known vulnerabilities — OSV batch plus the ecosystem's own auditor |
 | 4 | Behavior change — added rules and changed defaults against this repo's config and gate scopes |
@@ -82,12 +82,14 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-18 cases, stdlib only, no network — they run offline and free. Every case
+22 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect: a corrupted hash, a size mismatch, a yanked release, an artifact
 missing from the registry, a lagging version, a marker-constrained pin that must
 *not* read as stale, a package pinned at two versions under different
-resolution-markers, and a requested name that isn't in the lockfile.
+resolution-markers, a requested name that isn't in the lockfile, an empty
+selection that must not report `CLEAN`, a lockfile compared against itself, and a
+non-PyPI package that has to be named rather than dropped.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target
@@ -99,9 +101,12 @@ confirm it discriminates — a suite that only ever passes proves nothing.
 **Not covered:** the skill's prose. These tests exercise `audit.py`, the
 deterministic half. Whether the model actually *follows* Phase 6, or stops on an
 unexpected file in the diff, is behavioral and belongs in `claude plugin eval`
-— which is in early access and unavailable on this account. That gap is real:
-the one defect found by running the skill end-to-end (Phase 6 improvising a
-check-name parse) lived in the prose, where these tests cannot reach.
+— which is in early access and unavailable on this account. That gap is real, and
+it is where the defects keep turning up: Phase 6 once improvised a check-name
+parse, and Phase 1 referenced a branch that Phase 5 created, so a literal reading
+audited the base branch instead of the PR. Both lived in the prose, where these
+tests cannot reach — the second is why the script now refuses to report `CLEAN`
+on an empty selection.
 
 ## Read-only
 

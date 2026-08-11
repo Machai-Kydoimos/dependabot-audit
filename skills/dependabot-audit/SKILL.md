@@ -44,7 +44,30 @@ DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
 gh api "repos/:owner/:repo/branches/$DEFAULT/protection" --jq '.required_status_checks.contexts[]'
 
 cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
+
+# pin the commit under audit and fetch it once, for every later phase
+SCRATCH=${SCRATCH:-$(mktemp -d)}          # any directory OUTSIDE the repo
+HEAD_SHA=$(gh pr view <N> --json headRefOid --jq .headRefOid)   # full 40 chars
+git fetch origin "pull/<N>/head:pr-<N>"
+BASE_SHA=$(git merge-base "$DEFAULT" "pr-<N>")
 ```
+
+**Pin the head SHA here and audit that one commit everywhere.** The lockfile
+Phase 1 reads, the worktree Phase 5 builds, and the CI run Phase 6 checks must all
+describe the *same* commit, or the report's evidence table asserts a coherence it
+does not have. Bots rebase, so this is not hypothetical: a rebase mid-audit leaves
+Phases 1–5 describing a commit that no longer exists while Phase 6 reports on the
+new one. Fetching once and working from `pr-<N>` makes them consistent by
+construction, and Phase 7 re-checks the SHA before you write.
+
+**Never audit the working tree.** Whatever branch the user happens to have checked
+out is not the PR, and a lockfile read from it is indistinguishable from one read
+from the PR — it just quietly reports no changes.
+
+Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwise
+`mktemp -d`. **Never place it inside the repo under audit** — it pollutes
+`git status`, and a gate that walks the tree (a linter, a formatter, a test
+collector) will descend into a full second copy of the project and report on it.
 
 **Derive the branch name; never type it.** A failed protection call and a repo
 with no protection both yield *no contexts*, so if stderr is discarded or the
@@ -79,29 +102,33 @@ workflow file for an actions bump). Anything else is a finding — say so and st
 Verify every artifact the lockfile pins for the changed packages against the live
 registry: sha256/integrity, size, URL, and yanked status.
 
+**Read both lockfiles out of git**, using the ref and merge base pinned in Phase
+0. A bare `uv.lock` path resolves against the user's checkout, which parses fine,
+derives *no* changed packages, and produces a confident audit of nothing:
+
 ```bash
 S="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py"
 
-# grouped bumps are the common case — audit every package together
-python3 "$S" uv.lock --changed pkg-a,pkg-b,pkg-c
+git show "pr-<N>:uv.lock"    > "$SCRATCH/pr.uv.lock"
+git show "$BASE_SHA:uv.lock" > "$SCRATCH/base.uv.lock"
 
-# better: derive the set instead of naming it (see below)
-python3 "$S" uv.lock --changed-vs base.uv.lock
+python3 "$S" "$SCRATCH/pr.uv.lock" --changed-vs "$SCRATCH/base.uv.lock"
 ```
 
 **Do not read the package names off the PR title.** A grouped bump is titled
 "with 3 updates" and names none of them, and a bot may group everything (check
-the `groups:` key you read in Phase 0). Derive the set from the lockfile diff
-against the **merge base** — not the current default branch, or unrelated drift
-that landed after the PR branched gets attributed to this PR:
+the `groups:` key you read in Phase 0). `--changed-vs` derives the set from the
+diff against the **merge base** — not the current default branch, or unrelated
+drift that landed after the PR branched gets attributed to this PR. Naming
+packages by hand (`--changed pkg-a,pkg-b`) is the fallback for a diff the script
+cannot read, not the default.
 
-```bash
-git show "$(git merge-base <default> pr-<N>):uv.lock" > base.uv.lock
-python3 "$S" uv.lock --changed-vs base.uv.lock
-```
-
-The script exits **2** if a name you asked for is not in the lockfile, rather
-than auditing the rest and looking successful.
+The script will not look successful while verifying less than it should. It exits
+**2** if a name you asked for is not in the lockfile, and **2** if the selected
+set comes out empty — a run that verifies nothing must never print `CLEAN`. Its
+`RESULT` line carries the package and artifact counts and names anything it could
+not reach (git, path, or a private-index dependency); quote those counts in the
+report rather than writing "verified" unqualified.
 
 For PyPI that one invocation covers this phase **plus the mechanical half of
 Phases 2 and 3** — it also reports the registry's true latest version with
@@ -160,26 +187,21 @@ Not "is it safe" but **"does it change what this repo's gates accept"**.
 
 ## Phase 5 — Independent reproduction
 
-In an isolated worktree, so the user's working tree is untouched:
+In an isolated worktree, so the user's working tree is untouched. `SCRATCH` and
+the `pr-<N>` ref both come from Phase 0:
 
 ```bash
-SCRATCH=${SCRATCH:-$(mktemp -d)}          # any directory OUTSIDE the repo
-git fetch origin pull/<N>/head:pr-<N>
-git worktree add "$SCRATCH/pr-<N>" pr-<N>
+git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 ```
-
-Use a harness-provided scratch directory if you have one; otherwise `mktemp -d`.
-**Never place it inside the repo under audit** — it pollutes `git status`, and a
-gate that walks the tree (a linter, a formatter, a test collector) will descend
-into a full second copy of the project and report on it.
 
 If a worktree from an earlier run is already there, **prove it still points at
 this PR's head before reusing it** — a stale worktree silently audits the wrong
-commit and every result downstream is wrong:
+commit and every result downstream is wrong. Compare it against the pinned SHA
+rather than eyeballing a log line:
 
 ```bash
-git -C "$SCRATCH/pr-<N>" log --oneline -1     # must be the PR head
-git -C "$SCRATCH/pr-<N>" status --porcelain   # must be empty
+test "$(git -C "$SCRATCH/pr-<N>" rev-parse HEAD)" = "$HEAD_SHA"   # from Phase 0
+git -C "$SCRATCH/pr-<N>" status --porcelain                       # must be empty
 ```
 
 If either check fails, `git worktree remove` it and recreate.
@@ -191,17 +213,19 @@ own gates from Phase 0, and its full test suite.
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.
 
-**Close the loop.** A worktree is registered in the *user's* repo, so an audit
-that walks away leaves litter behind — and they accumulate, one per PR audited.
-Either remove it when finished, or keep it deliberately and say so in the report
-so the user knows it is there:
+**Close the loop.** The worktree *and* the `pr-<N>` branch Phase 0 fetched are
+both registered in the **user's** repo, so an audit that walks away leaves litter
+behind — and it accumulates, one per PR audited. The branch outlives an audit that
+stopped before Phase 5, too. Either remove them when finished, or keep them
+deliberately and say so in the report so the user knows they are there:
 
 ```bash
-git worktree remove "$SCRATCH/pr-<N>"     # and: git branch -D pr-<N>
+git worktree remove "$SCRATCH/pr-<N>"
+git branch -D "pr-<N>"
 ```
 
-Keeping it is reasonable when a follow-up run is likely; silently keeping it is
-not.
+Keeping them is reasonable when a follow-up run is likely; silently keeping them
+is not.
 
 ## Phase 6 — CI verification
 
@@ -241,6 +265,17 @@ exist.
 re-trigger CI.
 
 ## Phase 7 — Report
+
+**Re-check the head SHA before you write anything.** Every row above describes the
+commit pinned in Phase 0. If the bot rebased mid-audit, Phases 1–5 now describe a
+commit that no longer exists while Phase 6 reports on the new one — and the table
+silently asserts that they agree:
+
+```bash
+test "$(gh pr view <N> --json headRefOid --jq .headRefOid)" = "$HEAD_SHA"
+```
+
+If it moved, say so and re-run from Phase 1. Do not reconcile the two by hand.
 
 Use the exact shape in `references/report-template.md`: verdict, confidence,
 evidence table, reasoning, what would change the verdict, and the **un-run** merge

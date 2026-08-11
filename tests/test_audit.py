@@ -13,10 +13,15 @@ assert on what gets reported, not just on what gets returned.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(
     0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
@@ -27,11 +32,21 @@ from audit import (  # noqa: E402
     check_currency,
     check_provenance,
     derive_changed,
+    main,
     pypi_sourced,
     select_targets,
 )
 
 PYPI_SRC = {"registry": "https://pypi.org/simple"}
+
+
+def write_lock(test: unittest.TestCase, body: str) -> str:
+    """A temp lockfile that removes itself when the test finishes."""
+    directory = tempfile.mkdtemp()
+    test.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+    path = pathlib.Path(directory) / "uv.lock"
+    path.write_text(body, encoding="utf-8")
+    return str(path)
 
 
 def entry(name, version, *, wheels=(), sdist=None, markers=None):
@@ -108,10 +123,7 @@ class TestSelectTargets(unittest.TestCase):
 
 class TestDeriveChanged(unittest.TestCase):
     def _lock(self, body: str) -> str:
-        tmp = tempfile.NamedTemporaryFile("w", suffix=".lock", delete=False)
-        tmp.write(body)
-        tmp.close()
-        return tmp.name
+        return write_lock(self, body)
 
     BASE = """
 [[package]]
@@ -254,6 +266,87 @@ class TestCurrency(unittest.TestCase):
         result = check_currency(pkg, meta)
         self.assertTrue(result["current"])
         self.assertEqual(result["gap"], [])
+
+
+class TestMainContract(unittest.TestCase):
+    """The documented exit status, and the counts behind the verdict line.
+
+    `main()` owns the 0/1/2 contract and was untested, which is how a run that
+    selected no packages came to print CLEAN and exit 0 — the same silent
+    under-audit `select_targets` guards against, at the point where the whole
+    audit is empty rather than merely short.
+    """
+
+    LOCK = f"""
+[[package]]
+name = "rumdl"
+version = "0.2.53"
+source = {{ registry = "https://pypi.org/simple" }}
+wheels = [
+    {{ url = "https://files.pythonhosted.org/packages/xx/rumdl-0.2.53-py3-none-any.whl", hash = "sha256:{"a" * 64}", size = 100 }},
+]
+
+[[package]]
+name = "fpga-simulator"
+version = "0.20.0"
+source = {{ editable = "." }}
+"""
+
+    def _run(self, argv, meta=None):
+        """Run main() with the network stubbed. Returns (exit code, stdout, stderr)."""
+
+        def fake_get_json(url, payload=None):
+            if "osv.dev" in url:
+                queries = json.loads(payload)["queries"]
+                return {"results": [{} for _ in queries]}
+            return meta
+
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch("audit._get_json", fake_get_json),
+            mock.patch.object(sys, "argv", ["audit.py", *argv]),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = main()
+        return code, out.getvalue(), err.getvalue()
+
+    def _meta(self):
+        return pypi_meta("0.2.53", [pypi_file("rumdl-0.2.53-py3-none-any.whl")])
+
+    def test_empty_changed_set_exits_2_instead_of_reporting_clean(self):
+        code, out, err = self._run([write_lock(self, self.LOCK), "--changed", ""])
+        self.assertEqual(code, 2, "an audit of nothing is a failed audit")
+        self.assertNotIn("CLEAN", out)
+        self.assertIn("nothing selected", err)
+
+    def test_changed_vs_an_identical_lockfile_exits_2(self):
+        """The likely shape: --changed-vs aimed at the wrong lockfile.
+
+        Comparing a lockfile against itself — or against the branch it was read
+        from — makes every (name, version) pair match, which reads as "no
+        changes" rather than "wrong input".
+        """
+        lock = write_lock(self, self.LOCK)
+        code, out, _ = self._run([lock, "--changed-vs", lock])
+        self.assertEqual(code, 2)
+        self.assertNotIn("CLEAN", out)
+
+    def test_verdict_line_carries_the_counts(self):
+        code, out, _ = self._run(
+            [write_lock(self, self.LOCK), "--changed", "rumdl"], meta=self._meta()
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("CLEAN", out)
+        self.assertIn("1 package(s), 1 artifact(s) checked", out)
+
+    def test_non_pypi_packages_are_named_not_silently_dropped(self):
+        """A git or private-index dependency is outside the audit; say so."""
+        _, out, _ = self._run(
+            [write_lock(self, self.LOCK), "--changed", "rumdl"], meta=self._meta()
+        )
+        self.assertIn("NOT checked", out)
+        self.assertIn("fpga-simulator", out)
 
 
 if __name__ == "__main__":
