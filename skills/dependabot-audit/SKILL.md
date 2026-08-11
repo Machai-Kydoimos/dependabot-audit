@@ -19,19 +19,11 @@ withholding theatre.
 
 ## Why this procedure exists
 
-Dependency-bump PRs look trivial and usually are. The failure modes that actually
-bite are not "is this package malicious". They are:
-
-1. **The proposed version is not the current one.** Registries publish faster than
-   the bot ingests. A bump can land already stale, and the gap can matter.
-2. **The gap contains a fix no vulnerability database knows about.** A privately
-   disclosed fix has no CVE or GHSA, so OSV, `pip-audit`, and `npm audit` all
-   report clean while the changelog says "Security".
-3. **The bump changes a *default*, not just behavior.** A linter that gains a rule
-   or a formatter that widens its file scope can newly fail a *required* CI check
-   that the repo's own pre-commit hooks are scoped too narrowly to catch.
-
-All three are observed, not hypothetical. Phases 2 and 4 exist for them.
+The failure modes that bite are not "is this package malicious" — they are a
+proposal that is already stale, a gap containing a fix no vulnerability database
+knows about, and a bump that changes a *default* rather than a behavior. All
+three are observed, not hypothetical. Phases 2 and 4 exist for them, and
+`references/traps.md` has the cases.
 
 ## Phase 0 — Discover the repo (derive every run; never cache)
 
@@ -106,8 +98,7 @@ Verify every artifact the lockfile pins for the changed packages against the liv
 registry: sha256/integrity, size, URL, and yanked status.
 
 **Read both lockfiles out of git**, using the ref and merge base pinned in Phase
-0. A bare `uv.lock` path resolves against the user's checkout, which parses fine,
-derives *no* changed packages, and produces a confident audit of nothing:
+0 — never a bare `uv.lock` path, which resolves against the user's checkout:
 
 ```bash
 S="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py"
@@ -118,22 +109,15 @@ git show "$BASE_SHA:uv.lock" > "$SCRATCH/base.uv.lock"
 python3 "$S" "$SCRATCH/pr.uv.lock" --changed-vs "$SCRATCH/base.uv.lock"
 ```
 
-**Do not read the package names off the PR title.** A grouped bump is titled
-"with 3 updates" and names none of them, and a bot may group everything (check
-the `groups:` key you read in Phase 0). `--changed-vs` derives the set from the
-diff against the **merge base** — not the current default branch, or unrelated
-drift that landed after the PR branched gets attributed to this PR. Naming
-packages by hand (`--changed pkg-a,pkg-b`) is the fallback for a diff the script
-cannot read, not the default.
+**Do not read the package names off the PR title** — a grouped bump names none
+of them, and a bot may group everything (check the `groups:` key from Phase 0).
+`--changed-vs` derives the set from the diff against the **merge base**;
+`--changed pkg-a,pkg-b` is the fallback for a diff the script cannot read, not
+the default.
 
-The script will not look successful while verifying less than it should. **Exit 2
-means it could not run** — a name you asked for is not in the lockfile, the
-selected set came out empty, the lockfile is unreadable, or a registry was
-unreachable. **Exit 1 means it ran and found something.** Never read a 2 as a
-finding, or a 1 as an outage. Its `RESULT` line carries the package and artifact
-counts and names anything it could not reach (git, path, or a private-index
-dependency); quote those counts in the report rather than writing "verified"
-unqualified.
+**Exit 2 means it could not run; exit 1 means it ran and found something.** Never
+read one as the other. Quote its `RESULT` counts — and whatever it names as
+unreachable — in the report, rather than writing "verified" unqualified.
 
 For PyPI that one invocation covers this phase **plus the mechanical half of
 Phases 2 and 3** — it also reports the registry's true latest version with
@@ -265,13 +249,13 @@ is not.
 
 ## Phase 6 — CI verification
 
-Confirm the green you are trusting belongs to **this** commit:
+Confirm the green you are trusting belongs to **this** commit. Use the full
+40-character `$HEAD_SHA` pinned in Phase 0 — a short one matches nothing and
+reads exactly like "CI never ran":
 
 ```bash
-gh run list --commit <full-40-char-sha> --workflow <ci>.yml
+gh run list --commit "$HEAD_SHA" --workflow <ci>.yml
 ```
-
-A short SHA silently matches nothing and reads as "CI never ran".
 
 Then check the Phase 0 required contexts **individually** — a repo can have far
 more jobs than required checks, and only the required ones gate merge. Paste the
@@ -288,17 +272,13 @@ gh pr view <N> --json statusCheckRollup --jq \
   '[.statusCheckRollup[]|(.conclusion//.state)]|group_by(.)|map("\(.[0]): \(length)")|join("  ")'
 ```
 
-Two ways to misread that output. **A required context that never reported
-produces no line at all** — the `select` matches nothing — so count the lines
-against `$req` and treat a missing one as "not reported", never as green. And
-**do not post-process `gh pr checks` with whitespace-splitting tools**: real
-check names contain spaces and ampersands, so `awk '{print $1}'` turns
-`Lint & type-check` into `Lint` and quietly reports on a check that does not
-exist.
+**Count the returned lines against `$req`** — a context that never reported
+produces no line at all, which looks identical to one that passed. And match
+names as whole strings: never `awk '{print $1}'`, which turns `Lint & type-check`
+into `Lint`.
 
-`references/traps.md` covers the state-reporting gotchas: stale `CLEAN`,
-`UNSTABLE` being mergeable, neutral CodeQL, and why a bot rebase does not
-re-trigger CI.
+`references/traps.md` has the reasoning for both, plus stale `CLEAN`, `UNSTABLE`
+being mergeable, neutral CodeQL, and why a bot rebase does not re-trigger CI.
 
 ## Phase 7 — Report
 

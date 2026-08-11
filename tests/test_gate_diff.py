@@ -69,18 +69,14 @@ class TestTheThreeWaysAGateMoves(GateDiffHarness):
     def test_widened_scope_is_reported(self):
         """The ruff 0.16 case: the newer version acts on a file the older ignores."""
         tree = git_repo(self)
-        code, out, _ = self._run(
-            tree, [("locked", "true"), ("proposed", "printf x > doc.md")]
-        )
+        code, out, _ = self._run(tree, [("locked", "true"), ("proposed", "printf x > doc.md")])
         self.assertEqual(code, 1)
         self.assertIn("doc.md", out)
         self.assertIn("acted on by proposed only", out)
 
     def test_narrowed_scope_is_reported(self):
         tree = git_repo(self)
-        code, out, _ = self._run(
-            tree, [("locked", "printf x > doc.md"), ("proposed", "true")]
-        )
+        code, out, _ = self._run(tree, [("locked", "printf x > doc.md"), ("proposed", "true")])
         self.assertEqual(code, 1)
         self.assertIn("acted on by locked only", out)
 

@@ -65,8 +65,13 @@ def fail(what: str) -> NoReturn:
 
 
 def _git(tree: Path, *args: str) -> str:
-    proc = subprocess.run(
-        ["git", "-C", str(tree), *args],
+    # S603/S607: a fixed argv with `git` resolved from PATH, the only sane way to
+    # invoke it. Each directive has to sit on the line its own diagnostic is
+    # reported on — S603 on the call, S607 on the argv — because `ruff check
+    # --fix` deletes any code that is not reported exactly there. Grouping them
+    # on one line looks tidier and silently loses one of them.
+    proc = subprocess.run(  # noqa: S603
+        ["git", "-C", str(tree), *args],  # noqa: S607
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -131,9 +136,12 @@ def restore(tree: Path) -> None:
 def run_gate(tree: Path, label: str, command: str, timeout: int) -> dict[str, Any]:
     """One version's run: what it did, what it said, and how it exited."""
     try:
-        proc = subprocess.run(
+        # S602: `shell=True` is the feature. The command is a gate invocation the
+        # operator wrote, not user data — it needs a shell for the redirects and
+        # pipes real gate commands contain.
+        proc = subprocess.run(  # noqa: S602
             command,
-            shell=True,  # noqa: S602 — the command is supplied by the operator
+            shell=True,
             cwd=tree,
             capture_output=True,
             text=True,
@@ -177,16 +185,18 @@ def render(report: dict[str, Any]) -> None:
         head = f"=== {cmp_['other']} vs {cmp_['base']}"
         print(head)
         if cmp_["exit_changed"]:
-            print(f"  EXIT   {cmp_['base_exit']} -> {cmp_['other_exit']}  (the gate's answer changed)")
+            print(
+                f"  EXIT   {cmp_['base_exit']} -> {cmp_['other_exit']}  (the gate's answer changed)"
+            )
         for path in cmp_["only_in_other"]:
-            print(f"  +      {path}   acted on by {cmp_['other']} only — widened scope or a new rule")
+            print(
+                f"  +      {path}   acted on by {cmp_['other']} only — widened scope or a new rule"
+            )
         for path in cmp_["only_in_base"]:
             print(f"  -      {path}   acted on by {cmp_['base']} only — narrowed scope")
         for path in cmp_["different_result"]:
             print(f"  ~      {path}   both act, different result — the fix itself changed")
-        if not any(
-            (cmp_["only_in_other"], cmp_["only_in_base"], cmp_["different_result"])
-        ):
+        if not any((cmp_["only_in_other"], cmp_["only_in_base"], cmp_["different_result"])):
             print("  no difference in what the gate did to the tree")
             if not cmp_["exit_changed"]:
                 print("  (and the exit code is unchanged)")
