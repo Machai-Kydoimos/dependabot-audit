@@ -58,12 +58,13 @@ the verdict, and the merge command **left un-run**.
 | 5 | Independent reproduction — frozen install and the repo's own gates in an isolated worktree |
 | 6 | CI verification — the run for the exact head SHA, and the required contexts specifically |
 | 7 | Report |
-| 8 | Learning loop — persist anything that could not have been derived |
+| 8 | Learning loop — hand back anything that could not have been derived |
 
 Phase 0 derives repo specifics **every run and never caches them** — a cached
-profile silently audits a repo that no longer exists. Phase 8 persists only what
-cannot be derived: the landmines you can otherwise learn only by getting bitten
-twice. Nothing derivable is cached; nothing hard-won is re-derived.
+profile silently audits a repo that no longer exists. Phase 8 writes out only what
+cannot be derived — the landmines you otherwise learn by getting bitten twice —
+and hands it to you rather than saving it itself. Nothing derivable is cached;
+nothing hard-won is re-derived.
 
 ## Ecosystem coverage
 
@@ -119,10 +120,25 @@ on an empty selection.
 
 ## Read-only
 
-The skill declares `tools: Read, Grep, Glob, Bash`. That withholds `Edit` and
-`Write`, but `Bash` could reach `gh pr merge` — so "reports, never merges" is a
-**contract, not a sandbox**. It is stated in the skill, and the report ends with
-the merge command printed rather than executed.
+The skill declares `disallowed-tools: Edit, Write, NotebookEdit`, which removes
+those from Claude's pool while it is active. `Bash` remains and could reach
+`gh pr merge`, so "reports, never merges" is still a **contract, not a sandbox**.
+It is stated at the top of the skill, and the report ends with the merge command
+printed rather than executed.
+
+Two caveats worth knowing, since both were wrong here until `0.1.9`:
+
+- **`tools:` is not a skill frontmatter field.** Earlier releases declared it and
+  it withheld nothing — an unrecognized key that read like a control. The field
+  that grants is `allowed-tools`; the field that removes is `disallowed-tools`.
+  Reaching for the wrong one gives you the opposite of what you meant.
+- **`disallowed-tools` is a Claude Code extension, not part of the [Agent Skills]
+  (https://agentskills.io) spec's six fields.** So it takes a recent Claude Code
+  to have any effect — older builds ignore unrecognized frontmatter silently, and
+  `plugin.json` has no way to enforce a floor — and it means this skill cannot be
+  packaged for claude.ai upload or the Skills API, which reject non-spec keys with
+  a hard error. That is a deliberate trade: enforcement in the channel this plugin
+  actually ships through beats portability to one it doesn't.
 
 ## License
 
