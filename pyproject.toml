@@ -36,7 +36,9 @@ select = [
 # E501: the lockfile fixture embeds a real-shaped URL and a 64-character sha256
 #       in one TOML inline table, which the format does not allow wrapping.
 #       Line length there is a property of the data, not of authored prose.
-"tests/*" = ["S101", "E501"]
+# S603/S607: the gate_diff tests build throwaway git repos to run against, which
+#       means invoking `git` from PATH. Same call shape the script itself uses.
+"tests/*" = ["S101", "E501", "S603", "S607"]
 
 # ── mypy (static type checker) ───────────────────────────────────────────────
 [tool.mypy]

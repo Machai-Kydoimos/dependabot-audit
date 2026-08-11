@@ -155,6 +155,13 @@ written.
 check sails straight through into the next command. Use `set -o pipefail`, or run
 the gate as its own call and read the exit code.
 
+**A lockfile path resolves against whatever happens to be checked out.** A bare
+`uv.lock` in a command reads the user's current branch, not the PR's — and the
+base branch's lockfile parses perfectly, yields no changed packages, and produces
+a confident audit of nothing. Read both sides out of git at a ref you pinned
+(`git show <ref>:uv.lock`) rather than off the working tree, and make the tool
+refuse an empty selection, so that failure cannot present itself as a pass.
+
 **Frozen installs prove the lockfile; unfrozen ones hide drift.** `uv sync
 --locked`, `npm ci`, `cargo build --locked`. Without the flag the resolver is
 free to paper over an inconsistent lockfile.
