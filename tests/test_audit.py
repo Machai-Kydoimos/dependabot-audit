@@ -21,6 +21,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(
@@ -28,6 +29,7 @@ sys.path.insert(
 )
 
 from audit import (  # noqa: E402
+    _get_json,
     _normalize,
     check_currency,
     check_provenance,
@@ -374,14 +376,8 @@ class TestForkContext(unittest.TestCase):
         self.assertEqual(fork_context(entry("rumdl", "0.2.53"), FORK_PINS), (1, True))
 
 
-class TestMainContract(unittest.TestCase):
-    """The documented exit status, and the counts behind the verdict line.
-
-    `main()` owns the 0/1/2 contract and was untested, which is how a run that
-    selected no packages came to print CLEAN and exit 0 — the same silent
-    under-audit `select_targets` guards against, at the point where the whole
-    audit is empty rather than merely short.
-    """
+class _MainHarness(unittest.TestCase):
+    """Shared harness for the tests that drive main() with the network stubbed."""
 
     LOCK = f"""
 [[package]]
@@ -398,10 +394,17 @@ version = "0.20.0"
 source = {{ editable = "." }}
 """
 
-    def _run(self, argv, meta=None):
-        """Run main() with the network stubbed. Returns (exit code, stdout, stderr)."""
+    def _run(self, argv, meta=None, fails=None):
+        """Run main() with the network stubbed. Returns (exit code, stdout, stderr).
+
+        `fails` maps a host fragment to the exception the stubbed fetch should
+        raise for it, so an outage is simulated without touching the network.
+        """
 
         def fake_get_json(url, payload=None):
+            for fragment, exc in (fails or {}).items():
+                if fragment in url:
+                    raise exc
             if "osv.dev" in url:
                 queries = json.loads(payload)["queries"]
                 return {"results": [{} for _ in queries]}
@@ -414,11 +417,24 @@ source = {{ editable = "." }}
             contextlib.redirect_stdout(out),
             contextlib.redirect_stderr(err),
         ):
-            code = main()
+            try:
+                code = main()
+            except SystemExit as exc:  # fail() raises rather than returns
+                code = exc.code
         return code, out.getvalue(), err.getvalue()
 
     def _meta(self):
         return pypi_meta("0.2.53", [pypi_file("rumdl-0.2.53-py3-none-any.whl")])
+
+
+class TestMainContract(_MainHarness):
+    """The documented exit status, and the counts behind the verdict line.
+
+    `main()` owns the 0/1/2 contract and was untested, which is how a run that
+    selected no packages came to print CLEAN and exit 0 — the same silent
+    under-audit `select_targets` guards against, at the point where the whole
+    audit is empty rather than merely short.
+    """
 
     def test_empty_changed_set_exits_2_instead_of_reporting_clean(self):
         code, out, err = self._run([write_lock(self, self.LOCK), "--changed", ""])
@@ -453,6 +469,108 @@ source = {{ editable = "." }}
         )
         self.assertIn("NOT checked", out)
         self.assertIn("fpga-simulator", out)
+
+    def test_json_mode_stays_parseable_alongside_changed_vs(self):
+        """--changed-vs is the mode the skill recommends, so its diagnostic line
+        must not land on stdout in front of the JSON."""
+        base = write_lock(
+            self, self.LOCK.replace('version = "0.2.53"', 'version = "0.2.52"', 1)
+        )
+        code, out, _ = self._run(
+            [write_lock(self, self.LOCK), "--changed-vs", base, "--json"],
+            meta=self._meta(),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["skipped"], ["fpga-simulator"])
+
+
+class TestFailuresAreNotFindings(_MainHarness):
+    """Exit 2 means the audit could not run; exit 1 means it found something.
+
+    An unhandled exception exits 1, so any failure left unhandled borrows the
+    status reserved for findings — a registry outage reads as a vulnerability.
+    """
+
+    def test_a_missing_lockfile_exits_2(self):
+        code, _, err = self._run(["/nonexistent/uv.lock", "--changed", "p"])
+        self.assertEqual(code, 2)
+        self.assertIn("cannot read", err)
+
+    def test_malformed_toml_exits_2(self):
+        code, _, err = self._run([write_lock(self, "not toml [[[\n"), "--changed", "p"])
+        self.assertEqual(code, 2)
+        self.assertIn("cannot read", err)
+
+    def test_a_lockfile_with_no_package_entries_exits_2(self):
+        code, _, err = self._run([write_lock(self, "version = 1\n"), "--changed", "p"])
+        self.assertEqual(code, 2)
+        self.assertIn("lockfile", err)
+
+    def test_an_unreadable_baseline_exits_2(self):
+        code, _, err = self._run(
+            [write_lock(self, self.LOCK), "--changed-vs", "/nonexistent/base.lock"]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("baseline", err)
+
+    def test_an_osv_outage_exits_2_not_1(self):
+        code, _, err = self._run(
+            [write_lock(self, self.LOCK), "--changed", "rumdl"],
+            meta=self._meta(),
+            fails={"osv.dev": urllib.error.URLError("simulated outage")},
+        )
+        self.assertEqual(code, 2, "an outage must not read as a vulnerability")
+        self.assertIn("OSV", err)
+
+    def test_a_pypi_outage_exits_2(self):
+        code, _, err = self._run(
+            [write_lock(self, self.LOCK), "--changed", "rumdl"],
+            fails={"pypi.org": urllib.error.URLError("simulated outage")},
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("PyPI", err)
+
+
+class TestRetry(unittest.TestCase):
+    """One retry, and only for the failures worth retrying."""
+
+    URL = "https://example.test/x"
+
+    def _http_error(self, code):
+        # HTTPError is a file object; closing it keeps the suite ResourceWarning-free.
+        exc = urllib.error.HTTPError(self.URL, code, "simulated", {}, None)
+        self.addCleanup(exc.close)
+        return exc
+
+    def _urlopen(self, script):
+        calls = []
+
+        def fake(req, timeout=None):
+            calls.append(getattr(req, "full_url", req))
+            item = script.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return contextlib.closing(io.StringIO(item))
+
+        return fake, calls
+
+    def test_a_server_error_is_retried_once(self):
+        fake, calls = self._urlopen([self._http_error(503), '{"ok": true}'])
+        with mock.patch("urllib.request.urlopen", fake), mock.patch("time.sleep"):
+            self.assertEqual(_get_json(self.URL), {"ok": True})
+        self.assertEqual(len(calls), 2, "one transient 502 must not lose the audit")
+
+    def test_a_404_is_not_retried(self):
+        """A 4xx is an answer, not a hiccup: retrying delays a message that is
+        already the information the caller needs."""
+        fake, calls = self._urlopen([self._http_error(404)])
+        with (
+            mock.patch("urllib.request.urlopen", fake),
+            mock.patch("time.sleep"),
+            self.assertRaises(urllib.error.HTTPError),
+        ):
+            _get_json(self.URL)
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

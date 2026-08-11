@@ -123,12 +123,14 @@ drift that landed after the PR branched gets attributed to this PR. Naming
 packages by hand (`--changed pkg-a,pkg-b`) is the fallback for a diff the script
 cannot read, not the default.
 
-The script will not look successful while verifying less than it should. It exits
-**2** if a name you asked for is not in the lockfile, and **2** if the selected
-set comes out empty — a run that verifies nothing must never print `CLEAN`. Its
-`RESULT` line carries the package and artifact counts and names anything it could
-not reach (git, path, or a private-index dependency); quote those counts in the
-report rather than writing "verified" unqualified.
+The script will not look successful while verifying less than it should. **Exit 2
+means it could not run** — a name you asked for is not in the lockfile, the
+selected set came out empty, the lockfile is unreadable, or a registry was
+unreachable. **Exit 1 means it ran and found something.** Never read a 2 as a
+finding, or a 1 as an outage. Its `RESULT` line carries the package and artifact
+counts and names anything it could not reach (git, path, or a private-index
+dependency); quote those counts in the report rather than writing "verified"
+unqualified.
 
 For PyPI that one invocation covers this phase **plus the mechanical half of
 Phases 2 and 3** — it also reports the registry's true latest version with
