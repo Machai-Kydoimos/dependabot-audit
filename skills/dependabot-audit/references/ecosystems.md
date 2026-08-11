@@ -34,8 +34,9 @@ Metadata by hand: `https://pypi.org/pypi/<pkg>/json` →
 **`uv.lock` can contain several `[[package]]` blocks with the same name**, each
 carrying its own `resolution-markers` — typically the last release supporting an
 older Python alongside the current one. The script handles this; if you verify by
-hand, do not assume one block per name, and do not report a marker-constrained
-block as stale.
+hand, do not assume one block per name. Do not report the *lower* block as stale
+— but do check the highest one, which carries markers just the same and is still
+expected to track the registry.
 
 **Auditor trap.** `pip-audit` audits the environment of the interpreter it runs
 under. Activating a virtualenv does **not** redirect a `pip-audit` installed
