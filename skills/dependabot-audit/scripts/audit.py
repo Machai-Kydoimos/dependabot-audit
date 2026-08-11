@@ -35,6 +35,7 @@ import sys
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, NoReturn
 
@@ -61,7 +62,13 @@ def fail(what: str) -> NoReturn:
 
 
 def _get_json(url: str, payload: bytes | None = None) -> Any:
-    req = urllib.request.Request(url)
+    # Callers build URLs from the module constants above, but asserting the scheme
+    # is cheaper than trusting it: a `file:` or custom scheme is what S310 warns
+    # about, and part of these URLs comes from a lockfile written by the PR under
+    # audit, which is exactly the input not to trust.
+    if not url.startswith("https://"):
+        raise ValueError(f"refusing a non-https URL: {url}")
+    req = urllib.request.Request(url)  # noqa: S310 — scheme checked above
     req.add_header("User-Agent", UA)
     if payload is not None:
         req.data = payload
@@ -99,16 +106,15 @@ def derive_changed(packages: list[dict[str, Any]], baseline_path: str) -> list[s
     Removals are not reported — there is nothing left to verify for them.
     """
     base_pairs = {
-        (_normalize(p["name"]), p["version"])
-        for p in pypi_sourced(load_lock(baseline_path))
+        (_normalize(p["name"]), p["version"]) for p in pypi_sourced(load_lock(baseline_path))
     }
     seen: set[str] = set()
     changed: list[str] = []
     for p in packages:
-        if (_normalize(p["name"]), p["version"]) not in base_pairs:
-            if p["name"] not in seen:
-                seen.add(p["name"])
-                changed.append(p["name"])
+        pair = (_normalize(p["name"]), p["version"])
+        if pair not in base_pairs and p["name"] not in seen:
+            seen.add(p["name"])
+            changed.append(p["name"])
     return changed
 
 
@@ -198,9 +204,7 @@ def check_provenance(entry: dict[str, Any], meta: dict[str, Any]) -> dict[str, A
         }
         ok = all(checks.values())
         result["ok"] &= ok
-        result["artifacts"].append(
-            {"kind": kind, "filename": filename, "ok": ok, "checks": checks}
-        )
+        result["artifacts"].append({"kind": kind, "filename": filename, "ok": ok, "checks": checks})
 
     return result
 
@@ -295,9 +299,7 @@ def check_currency(
 
 def check_vulns(packages: list[dict[str, Any]]) -> dict[str, Any]:
     pkgs = [(p["name"], p["version"]) for p in packages]
-    queries = [
-        {"package": {"name": n, "ecosystem": "PyPI"}, "version": v} for n, v in pkgs
-    ]
+    queries = [{"package": {"name": n, "ecosystem": "PyPI"}, "version": v} for n, v in pkgs]
     results = _get_json(OSV_BATCH, json.dumps({"queries": queries}).encode())["results"]
 
     hits = [
@@ -323,27 +325,38 @@ def render(report: dict[str, Any]) -> None:
                 f"{k} {'match' if v else 'MISMATCH'}" for k, v in art["checks"].items()
             )
             print(f"  {flag} {art['kind']:5s} {art['filename']}\n      {detail}")
-        print(f"  -> {len(prov['artifacts'])} artifact(s), "
-              f"{'all match' if prov['ok'] else 'DISCREPANCIES'}\n")
+        print(
+            f"  -> {len(prov['artifacts'])} artifact(s), "
+            f"{'all match' if prov['ok'] else 'DISCREPANCIES'}\n"
+        )
 
     for cur in report["currency"]:
         if cur["current"]:
             print(f"=== {cur['name']}: locked {cur['locked']} IS the latest\n")
             continue
         if cur["held_back"]:
-            print(f"=== {cur['name']}: locked {cur['locked']}, registry latest "
-                  f"{cur['latest']} — HELD BACK by resolution-markers")
-            print(f"      behind a higher pin of the same package ({cur['pins']} in "
-                  "the lock); expected to")
+            print(
+                f"=== {cur['name']}: locked {cur['locked']}, registry latest "
+                f"{cur['latest']} — HELD BACK by resolution-markers"
+            )
+            print(
+                f"      behind a higher pin of the same package ({cur['pins']} in "
+                "the lock); expected to"
+            )
             print("      trail the registry, so not a staleness finding\n")
             continue
-        print(f"=== {cur['name']}: locked {cur['locked']}, "
-              f"registry latest {cur['latest']}  <-- NOT CURRENT")
+        print(
+            f"=== {cur['name']}: locked {cur['locked']}, "
+            f"registry latest {cur['latest']}  <-- NOT CURRENT"
+        )
         if cur["constrained"]:
-            print(f"      pinned under resolution-markers, but this is the newest of "
-                  f"{cur['pins']} pin(s):")
-            print("      the markers excuse the gap only if they exclude the "
-                  "environment you target")
+            print(
+                f"      pinned under resolution-markers, but this is the newest of "
+                f"{cur['pins']} pin(s):"
+            )
+            print(
+                "      the markers excuse the gap only if they exclude the environment you target"
+            )
         for rel in cur["gap"]:
             mark = " (yanked)" if rel["yanked"] else ""
             print(f"      {rel['version']:12s} published {rel['published']}{mark}")
@@ -457,15 +470,16 @@ def main() -> int:
         key = _normalize(entry["name"])
         if key not in meta_cache:
             try:
-                meta_cache[key] = _get_json(PYPI.format(name=entry["name"]))
+                # The name comes out of the lockfile under audit, so it does not
+                # get to shape the URL path.
+                safe = urllib.parse.quote(entry["name"], safe="")
+                meta_cache[key] = _get_json(PYPI.format(name=safe))
             except (OSError, json.JSONDecodeError) as exc:
                 fail(f"PyPI lookup failed for {entry['name']}: {exc}")
         meta = meta_cache[key]
         n_pins, newest = fork_context(entry, pins)
         report["provenance"].append(check_provenance(entry, meta))
-        report["currency"].append(
-            check_currency(entry, meta, pins=n_pins, newest=newest)
-        )
+        report["currency"].append(check_currency(entry, meta, pins=n_pins, newest=newest))
 
     try:
         report["vulns"] = check_vulns(packages)

@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # The only dependency surfaces this repo has. audit.py imports nothing outside
+  # the standard library on purpose, so there is no manifest to watch — just the
+  # workflow's SHA-pinned actions and the pinned pre-commit hook revisions.
+  #
+  # These PRs are also the only end-to-end exercise this plugin gets: running
+  # /dependabot-audit on them is the closest thing to a live test available
+  # without `claude plugin eval`. That is a reason to keep the cadence low but
+  # non-zero rather than to disable it.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: monthly

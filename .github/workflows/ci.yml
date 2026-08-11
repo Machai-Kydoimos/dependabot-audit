@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # audit.py runs under whatever bare `python3` the repo under audit happens to
+    # have, and tomllib puts the floor at 3.11. The maintainer's machine is the
+    # newest of these, so the older legs are the ones carrying information — and
+    # cross-version coverage is the one thing the local hooks cannot provide.
+    name: Test (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      # No install step. The suite is stdlib-only and reaches no network, which
+      # is what keeps this job hermetic and cheap on a free org's minutes.
+      - run: python -m unittest discover -s tests -v
+
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      # Runs the pre-commit hooks themselves, so the ruff and mypy versions here
+      # are the ones pinned in .pre-commit-config.yaml. A second `pip install
+      # ruff mypy` would be a second pin, and the two would drift.
+      - run: pip install pre-commit
+      - run: pre-commit run --all-files --show-diff-on-failure

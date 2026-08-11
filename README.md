@@ -108,6 +108,26 @@ what gets *reported*, not just what gets returned.
 Each test was mutation-checked against the original buggy implementation to
 confirm it discriminates — a suite that only ever passes proves nothing.
 
+### Gates
+
+```
+pre-commit install          # ruff, mypy and the suite, on every commit
+pre-commit run --all-files  # exactly what CI runs
+```
+
+**The hooks are the enforcing gate; CI is advisory.** This repo is private on a
+free org, where branch protection and repository rulesets are both unavailable
+(`403 Upgrade to GitHub Pro or make this repository public`), so no check can be
+marked required. CI earns its place on the one thing the hooks cannot do: run the
+suite on Python 3.11 through 3.14, because `audit.py` runs under whatever bare
+`python3` the repo under audit happens to have, and `tomllib` puts the floor at
+3.11. The maintainer's machine is the newest of those, so the older legs are the
+ones carrying information.
+
+Tool versions live in `.pre-commit-config.yaml` and nowhere else — CI invokes the
+hooks rather than installing its own ruff and mypy, so there is no second pin to
+drift from.
+
 **Not covered:** the skill's prose. These tests exercise `audit.py`, the
 deterministic half. Whether the model actually *follows* Phase 6, or stops on an
 unexpected file in the diff, is behavioral and belongs in `claude plugin eval`
