@@ -124,7 +124,7 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-113 cases, stdlib only, no network — they run offline and free. Every case
+115 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into nine groups:
 
@@ -212,7 +212,7 @@ whether Phase 6 gets run at all, or whether an unexpected file in the diff
 actually stops the audit. That is behavioral and belongs in `claude plugin eval`,
 which is in early access and unavailable on this account.
 
-That gap is real, and it is where the defects keep turning up. Five have now
+That gap is real, and it is where the defects keep turning up. Seven have now
 shipped in the prose and nowhere else:
 
 - Phase 6 improvised a check-name parse, mangling `Lint & type-check` into `Lint`.
@@ -228,12 +228,26 @@ shipped in the prose and nowhere else:
   behaviour change was real enough that a human had to deal with it. Found by
   auditing the exact bump this plugin's founding observation came from: six
   Markdown files on the merge base, nothing on the PR's tree.
+- **Phase 0 read the required checks from an `admin`-only endpoint.** Without
+  admin it returns a bare `404`, `gh` writes that body to *stdout*, and the
+  redirect produced a well-formed file that read as "no required checks" — about a
+  repo enforcing three. The report then said CI was verified.
+- **Phase 1's scope gate fired on a merge base that was not the branch point.**
+  A force-pushed base sends `git merge-base` back to a much older ancestor, so a
+  two-file bump presented as fourteen files and 3,682 deletions, and the gate
+  stopped the audit for a reason that was not true.
 
-That last one is the worst of the five. The others stalled a run or made noise;
-this one returned a confident "no change" from the highest-yield phase. Two are
-the same forward-reference shape, which is what turned the prose group from an
-idea into a necessity: a defect class that recurs is cheaper to gate than to keep
-finding, and prose was the only lever being spent on it.
+The last three are the ones that matter, and they share a shape the first four do
+not: each returned a **confident false statement** rather than stalling. Phase 4
+reported "no change" from the highest-yield phase; the other two reported on
+repository state they had not actually read. A run that stops is cheap. A row that
+is wrong is not, because the report's whole proposition is that its rows are
+things that were established.
+
+Two of the seven are the same forward-reference shape, and two are the same
+fail-into-a-plausible-value shape. That recurrence is what turned the prose group
+from an idea into a necessity: a defect class that repeats is cheaper to gate than
+to keep finding, and prose was the only lever being spent on it.
 
 ### Live checks
 
