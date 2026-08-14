@@ -44,7 +44,8 @@ done, or an SSH key on their account, before running the first command.
 Two entry points, either of which does the same thing:
 
 ```
-/dependabot-audit <PR>          # e.g. /dependabot-audit 42
+/dependabot-audit <PR>                 # e.g. /dependabot-audit 42
+/dependabot-audit <PR> --no-execute    # read-only phases only; see below
 ```
 
 or say "there's a new Dependabot PR, take a look" — the skill's description
@@ -60,7 +61,7 @@ the verdict, and the merge command **left un-run**.
 
 | Phase | |
 |---|---|
-| 0 | Discover the repo — required checks, bot config, the repo's own CI gates and their scopes; pin the PR's head SHA and fetch it once |
+| 0 | Discover the repo — required checks, bot config, the repo's own CI gates and their scopes; classify the PR; pin the head SHA, fetch it once, and build the worktree every later phase works in |
 | 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status and PEP 740 build provenance vs. the live registry, read out of git at the pinned ref. A **gate**: if anything here fails, the audit stops before the phases that execute code |
 | 2 | Currency — the registry's true latest, publish times vs. PR open time, and changelogs across the gap |
 | 3 | Known vulnerabilities — OSV batch plus the ecosystem's own auditor |

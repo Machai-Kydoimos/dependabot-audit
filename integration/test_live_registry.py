@@ -59,7 +59,7 @@ requires_network = unittest.skipUnless(
 
 def legacy_latest(name: str) -> str:
     """What the endpoint the script no longer uses still says `latest` is."""
-    request = urllib.request.Request(  # noqa: S310 — literal https URL
+    request = urllib.request.Request(
         f"https://pypi.org/pypi/{name}/json", headers={"User-Agent": UA}
     )
     with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310

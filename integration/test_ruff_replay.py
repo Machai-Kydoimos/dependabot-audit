@@ -101,9 +101,7 @@ class TestTheRuffReplay(unittest.TestCase):
 
         self.assertEqual(locked["exit"], 0, "the older version passes this tree")
         self.assertEqual(proposed["exit"], 0, "and so does the newer one")
-        self.assertEqual(
-            locked["changed"], {}, f"ruff {LOCKED} must leave the Markdown alone"
-        )
+        self.assertEqual(locked["changed"], {}, f"ruff {LOCKED} must leave the Markdown alone")
 
         markdown = sorted(p for p in proposed["changed"] if p.endswith(".md"))
         self.assertEqual(len(markdown), 6, f"expected six Markdown files, got {markdown}")
