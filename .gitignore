@@ -1,6 +1,19 @@
 __pycache__/
 *.pyc
 
+# Per-machine Claude Code permissions. It holds absolute scratch paths and
+# session identifiers, and it was untracked here only because of one machine's
+# *global* ignore file — a contributor without that rule sees it as untracked and
+# can commit it.
+.claude/settings.local.json
+
+# Tool caches. Each of these writes a .gitignore inside itself, so they are
+# already self-ignoring once created; listing them costs nothing and survives a
+# tool that stops doing that, or a venv under a different name.
+.venv/
+.mypy_cache/
+.ruff_cache/
+
 # Not a real lockfile. This repo has no dependencies — audit.py is stdlib-only
 # so it runs under whatever bare python3 the repo under audit has. uv writes an
 # empty one anyway whenever `uv run` is invoked here without --no-project,

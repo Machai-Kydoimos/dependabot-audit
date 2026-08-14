@@ -1,0 +1,106 @@
+name: Bug report
+description: Something the plugin got wrong, or refused to do, or did silently.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The bar this repo sets for itself: **paste what you ran and what it
+        printed.** The exit status matters as much as the message — `2` means the
+        audit could not run, `1` means it ran and found something, and reading one
+        as the other is the defect class this plugin exists to catch.
+
+        A report of the shape "it failed" costs a round trip that `echo $?` would
+        have saved.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Where
+      options:
+        - scripts/audit.py — PyPI / uv.lock checks
+        - scripts/gate_diff.py — Phase 4 differential gate runner
+        - SKILL.md — the procedure itself (a phase that cannot be followed as written)
+        - references/ — ecosystems.md, traps.md, report-template.md
+        - Packaging, install, or the slash command
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ecosystem
+    attributes:
+      label: Ecosystem
+      description: Which registry the audited PR was against.
+      options:
+        - PyPI (uv.lock)
+        - npm (package-lock.json)
+        - Cargo (Cargo.lock)
+        - Go (go.sum)
+        - GitHub Actions
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+      description: From `.claude-plugin/plugin.json`, or whatever `/plugin` reports.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command
+      description: Verbatim, including flags. If it was the skill rather than a script, say which phase.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: What it printed, and the exit status
+      description: Output verbatim — do not summarise it. Include `echo $?`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+      description: If the disagreement is about a verdict, say which evidence you think it should have turned on.
+    validations:
+      required: true
+
+  - type: textarea
+    id: lockfile
+    attributes:
+      label: Minimal lockfile excerpt that reproduces it
+      description: The smallest `[[package]]` block or equivalent that still shows the behaviour.
+      render: toml
+    validations:
+      required: false
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: "`python3 --version` and the OS. The floor is 3.11 (tomllib)."
+      placeholder: "Python 3.13.5, Fedora 43"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: I pasted the exit status, not only the message.
+          required: true
+        - label: Any lockfile excerpt above is free of private index URLs, tokens, and internal hostnames.
+          required: true

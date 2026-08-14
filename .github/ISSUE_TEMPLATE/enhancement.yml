@@ -1,0 +1,66 @@
+name: Enhancement
+description: A check the audit should make, or a procedure it should carry.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two standards this repo holds itself to, worth knowing before you write:
+
+        **An unverified verifier is worse than none** — it produces confident green
+        output that nobody checks. A proposed check needs a way to be tested, and a
+        proposed ecosystem needs a repo to test it against.
+
+        **`audit.py` is stdlib-only, deliberately.** It runs under whatever bare
+        `python3` the audited repo happens to have, and `tomllib` puts the floor at
+        3.11. A proposal that needs a third-party package is not automatically out,
+        but it has to argue for the trade.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What failure would this catch?
+      description: >
+        Name the shape of the thing that gets past the audit today. If you have
+        observed it rather than reasoned about it, say so and give the case — this
+        repo's whole position is that its traps are observed, not hypothetical.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What would change — a script, a phase, a reference recipe, or a report row.
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: How would it be tested?
+      description: >
+        The suite is stdlib-only, offline, and free, and every case corresponds to
+        a defect that shipped or a failure the audit exists to detect. If this can
+        only be tested against the live network, say so — that is an answer, it
+        just puts the test in a different job.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What else was considered
+      description: Including doing nothing, and what that costs.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: This does not add a runtime dependency to `audit.py`, or the description above argues for why it should.
+          required: true
+        - label: If this touches an ecosystem, I have a repository it can be tested against.
+          required: false
