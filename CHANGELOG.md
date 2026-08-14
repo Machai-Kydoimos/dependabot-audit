@@ -11,6 +11,107 @@ patch.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-15
+
+The last three findings from the `BIRSAx2/mdcat` run. All three are the same
+shape: a row that is accurate and asserts more than it established.
+
+### Fixed
+
+- **`audit.py` blamed itself for a bug when handed a lockfile it does not
+  support.** Pointed at a `Cargo.lock` it printed `unexpected AttributeError:
+  'str' object has no attribute 'get'` followed by `This is a bug, not a
+  finding` — everything right except the diagnosis. Exit 2 was correct and no
+  false `CLEAN` was printed; the failure-versus-finding contract held against an
+  input it was never designed to see. But Cargo writes `source` as a *string*
+  where uv writes a table, so the run reached `_is_pypi` and died, and the
+  message sent the reader hunting for a defect that does not exist.
+
+  It got more important with 0.8.0, not less: `uv.lock` and GitHub Actions are
+  now the entire supported surface, so this message is the **boundary of the
+  tool** and the first thing anyone arriving with a different lockfile sees.
+  Phase 1 leads with the script, so arriving there innocently is the ordinary
+  path.
+
+  The script now sniffs before parsing and names what it found — `Cargo.lock`,
+  `poetry.lock`, `package-lock.json`, `Pipfile.lock`, `go.sum`, `yarn.lock`,
+  `pnpm-lock.yaml`, `pyproject.toml` — and refuses anything else whose
+  `[[package]]` blocks are not uv-shaped without guessing a name. Exit stays 2;
+  `This is a bug` is reserved for exceptions that are one, which is what makes
+  the phrase worth anything when it appears.
+
+  **`poetry.lock` was worse than the Rust case**, and is why the list is longer
+  than the three formats the issue named. It parses, yields zero PyPI-sourced
+  packages, and exits 2 saying *"either this lockfile did not change, or it is
+  being compared against itself"* — a confident false diagnosis, in this
+  plugin's own vocabulary, on Python's other lockfile.
+
+  Two ordering traps found while building it, both now the reason the sniffer is
+  shaped as it is. Identifying uv *first* and diagnosing second — the apparently
+  safe order — lets a real `poetry.lock` through, because poetry writes a
+  `[package.source]` table too; the invariant that works is that every foreign
+  signature must be one a `uv.lock` **cannot** produce, checked against a real
+  uv.lock's keys. And sniffing only after a `TOMLDecodeError` never sees a yarn
+  v1 lockfile, whose two-line comment header is valid TOML.
+
+### Added
+
+- **Phase 5 says which interpreter and which fork produced its row.**
+  `uv sync --locked` asserts the whole lockfile is consistent with the manifest,
+  across every `resolution-markers` fork, and Phase 1 verifies **every** fork's
+  artifacts against the registry. The install then materialises only the
+  resolution matching the interpreter present — which need not be the highest
+  pin. A green row on 3.14 therefore said nothing about whether the 3.11 fork's
+  artifacts fetch or its older release installs, and nothing distinguished the
+  two.
+
+  Phase 5 already required the row to name *which install* ran. The same rule now
+  applies to the interpreter, where it matters more, and `audit.py` prints the
+  fork list for any selected package pinned more than once — mechanised rather
+  than left to prose, per CONTRIBUTING's rule that a disclosure the report is
+  merely asked to remember is one it can omit. A second `uv sync --locked
+  --python <floor>` is documented as the thorough answer and as a deliberate
+  escalation, worth its interpreter download only when the un-installed fork
+  belongs to a package under audit.
+
+  The Cargo instance is what made it visible — `cargo build --locked` passing on
+  1.97.1 against a repo declaring `rust-version = "1.83"` — and the uv analogue
+  is narrower, because uv honours `requires-python` and forks rather than
+  breaking the floor. What survives the scope cut is the reproduction claim, not
+  a resolution failure.
+
+- **Phase 6 establishes whether a red required check is the bump's fault.** It
+  reported conclusions and never asked. Observed on `mdcat` #6:
+  `test (ubuntu-latest)` red beside two green siblings, which reads exactly like
+  a dependency bump breaking one platform. It was `unresolved link to
+  pulldown-cmark-mdcat` — a rustdoc intra-doc-link error under
+  `#[deny(warnings)]`, failing identically on the base commit, with nothing to do
+  with the dependency.
+
+  A Hold driven by that row would have been **correct by accident and
+  unfalsifiable in the report**: every cell true, the causal claim never
+  established. Same family as the rewritten base (#19) and the hand-joined
+  required list (#20). It is also the direction that costs least to be wrong in
+  and so draws the least scrutiny — a false Hold looks conservative, so nobody
+  goes back to check whether the bump was the cause.
+
+  A red check is now labelled **attributable**, **pre-existing**, or
+  **underivable** against the base commit Phase 0 already pinned. A pre-existing
+  failure stays a finding — the repo's default branch is red — but a different
+  one, and it must not produce a Hold on a bump. A red check on a workflow the
+  diff never touched is a strong prior for pre-existing, and shares its input
+  with the PR-reachability check added in 0.9.0.
+
+  **The obvious query for this is wrong in the same direction as the defect.**
+  `gh run list --commit <sha> --json name` returns the *workflow* name, so a
+  per-check match against it is empty for every matrix job — and empty reads as
+  "no run at the base", marking every matrix failure underivable. Measured on a
+  repo whose five contexts are `Test (Python 3.11)` through `Lint & type-check`:
+  `gh run list --json name` returns a single `CI`, while
+  `commits/<sha>/check-runs` returns all five by context name. Phase 6 uses the
+  latter, and `commits/<sha>/status` for a `StatusContext` rather than a
+  `CheckRun`, since the two live in separate lists.
+
 ## [0.9.0] — 2026-08-14
 
 Two releases' worth of findings from the `BIRSAx2/mdcat` run, and a correction.
@@ -789,7 +890,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.6.0...v0.7.0
