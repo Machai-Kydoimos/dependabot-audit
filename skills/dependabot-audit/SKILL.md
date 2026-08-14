@@ -755,31 +755,63 @@ verdict — so it is the one that must not assert more than it established. "Thi
 check is red" is established. "This bump broke it" is a *causal* claim, and
 nothing above tests it.
 
-Ask whether it was already red at the base, which Phase 0 pinned:
+Ask whether it was already red **on the commit the bot branched from** — which is
+the parent of the bot's own commit, not the merge base:
 
 ```bash
-gh api "repos/$OWNER/$NAME/commits/$BASE_SHA/check-runs" --paginate \
+PARENT=$(git rev-parse "pr-<N>^")
+gh api "repos/$OWNER/$NAME/commits/$PARENT/check-runs" --paginate \
   --jq '.check_runs[] | "\(.name)\t\(.conclusion)"'
 ```
+
+**`pr-<N>^` and `$BASE_SHA` are the same commit for a genuine one-commit bot PR**,
+which is the ordinary case — so this costs nothing there and is the right answer
+when they differ. When they differ, `$BASE_SHA` attributes to the bump
+everything that happened on the branch beneath it, which is the same mistake as
+diffing scope against a rewritten base and gets the same substitution (#19).
+
+Measured on `BIRSAx2/mdcat` #6, the PR this section comes from. Its branch
+carries a *human* commit under the bot's, so the four candidate comparison
+points disagree:
+
+| Commit | `test (ubuntu-latest)` |
+|---|---|
+| the bot's commit — the PR head | `failure` |
+| `pr-<N>^`, the human commit below it | `failure` — **pre-existing**, and the answer |
+| `git merge-base` | the check does not exist there at all |
+| the base branch's tip | `success` — which would have said **attributable** |
+
+Two of those four produce the false Hold this section exists to prevent, and one
+of them is the merge base. Read `$BASE_SHA` as a cross-check, not as the input:
+if it disagrees with `pr-<N>^`, the branch has commits the bot did not write, and
+that is worth reporting on its own.
 
 **Use the check-runs endpoint, not `gh run list`.** `gh run list --json name`
 returns the *workflow* name — one row reading `CI` — while the contexts in the
 rollup above are **job** names like `test (ubuntu-latest)`. Matching a job name
 against a workflow name yields nothing, for every matrix job, and an empty result
-here reads as "no run at the base" — which lands in the third state below and
-marks every matrix failure underivable. Verified: on a repo whose five contexts
-are `Test (Python 3.11)` … `Lint & type-check`, `gh run list --json name` returns
-a single `CI`, and `check-runs` returns all five by their context names. Add
-`commits/$BASE_SHA/status` if the red context is a `StatusContext` rather than a
-`CheckRun` — the two live in separate lists, and Phase 6's GraphQL reads both.
+here is indistinguishable from no run at the base — which lands in the third
+state below and marks every matrix failure underivable. Verified: on a repo whose
+five contexts are `Test (Python 3.11)` … `Lint & type-check`, `gh run list --json
+name` returns a single `CI`, and `check-runs` returns all five by their context
+names. Add `commits/$PARENT/status` if the red context is a `StatusContext`
+rather than a `CheckRun` — the two live in separate lists, and Phase 6's GraphQL
+reads both.
 
 Then label the row, in three states and never two:
 
-| At the base | Label | What it means for the verdict |
+| At `pr-<N>^` | Label | What it means for the verdict |
 |---|---|---|
 | the same check is green | **attributable** | the bump is implicated; this row can carry a Hold |
-| the same check is red | **pre-existing** | the repo's default branch is red. A real finding, a *different* one, and it must not produce a Hold on this bump |
-| no run at the base | **underivable**, per Phase 0 | the base may predate the workflow, or the run may have aged out. Say so rather than defaulting to attributable |
+| the same check is red | **pre-existing** | the tree the bump landed on was already red. A real finding, a *different* one, and it must not produce a Hold on this bump |
+| **no run at the base**, or no check by that name | **underivable**, per Phase 0 | say so rather than defaulting to attributable |
+
+**The third row has two causes and they look identical.** The commit may predate
+the workflow or its run may have aged out — or the check may simply be *named*
+something else there. Names drift: `mdcat`'s `main` now reports `test` and
+`test-windows` where the PR reports `test (ubuntu-latest)`, so a name match
+against a distant commit finds nothing and reads as "never ran". Compare the
+whole name list, not just the one you are chasing.
 
 **A red check on a workflow the diff never touched is a strong prior for
 pre-existing**, and Phase 6 already derives which workflows the diff touched for

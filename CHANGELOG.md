@@ -96,11 +96,33 @@ shape: a row that is accurate and asserts more than it established.
   goes back to check whether the bump was the cause.
 
   A red check is now labelled **attributable**, **pre-existing**, or
-  **underivable** against the base commit Phase 0 already pinned. A pre-existing
-  failure stays a finding — the repo's default branch is red — but a different
-  one, and it must not produce a Hold on a bump. A red check on a workflow the
-  diff never touched is a strong prior for pre-existing, and shares its input
-  with the PR-reachability check added in 0.9.0.
+  **underivable** against the commit the bot branched from. A pre-existing
+  failure stays a finding — the tree the bump landed on was already red — but a
+  different one, and it must not produce a Hold on a bump. A red check on a
+  workflow the diff never touched is a strong prior for pre-existing, and shares
+  its input with the PR-reachability check added in 0.9.0.
+
+  **The comparison point is `pr-<N>^`, not `$BASE_SHA`,** and replaying the
+  original PR is what settled it. `mdcat` #6 carries a human commit under the
+  bot's — a #19 case — so its four candidate comparison points disagree:
+
+  | Commit | `test (ubuntu-latest)` |
+  |---|---|
+  | the bot's commit, the PR head | `failure` |
+  | `pr-6^`, the human commit below it | `failure` — pre-existing, and the answer |
+  | `git merge-base main pr-6` | the check does not exist there at all |
+  | the base branch's tip | `success` — which would say **attributable** |
+
+  Two of those four produce the false Hold this change exists to prevent, and
+  one of them is the merge base. `pr-<N>^` *is* `$BASE_SHA` for a genuine
+  one-commit bot PR, so it costs nothing in the ordinary case and is right in
+  the case that is not — the same substitution #19 established for Phase 1's
+  scope diff.
+
+  The replay also surfaced a second cause for the underivable state: check names
+  drift. `mdcat`'s `main` now reports `test` and `test-windows` where the PR
+  reports `test (ubuntu-latest)`, so a name match against a distant commit finds
+  nothing and reads as "never ran".
 
   **The obvious query for this is wrong in the same direction as the defect.**
   `gh run list --commit <sha> --json name` returns the *workflow* name, so a

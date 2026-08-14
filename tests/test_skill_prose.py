@@ -328,12 +328,25 @@ class TestARedCheckIsAttributedBeforeItCarriesTheVerdict(SkillHarness):
     false Hold looks conservative.
     """
 
-    def test_phase_6_consumes_the_base_sha(self):
-        self.assertIn(
-            "$BASE_SHA",
+    def test_the_comparison_point_is_the_commit_the_bot_branched_from(self):
+        """`$BASE_SHA` is the wrong input, and the live run is what proved it.
+
+        The first version of this asserted Phase 6 read `$BASE_SHA`. Run against
+        the PR the finding came from, that is wrong in the direction the whole
+        section exists to prevent. `mdcat` #6 carries a *human* commit under the
+        bot's, so its four candidate comparison points disagree: the bot's parent
+        is `failure` (pre-existing, the answer), the merge base has no such check
+        at all, and the base branch's tip is `success` — which would have
+        produced the false Hold.
+
+        `pr-<N>^` is `$BASE_SHA` for a genuine one-commit bot PR, so this costs
+        nothing in the ordinary case and is right in the case that is not.
+        """
+        self.assertRegex(
             self.shell[6],
-            "Phase 6 must establish whether a red check is red at the base; without "
-            "the base commit it can only report the conclusion",
+            r"pr-<N>\^",
+            "Phase 6 must attribute a red check against the bot's own parent; the "
+            "merge base attributes to the bump whatever happened beneath it",
         )
 
     def test_the_base_query_reads_check_runs_not_the_workflow_list(self):
