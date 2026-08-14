@@ -11,6 +11,42 @@ patch.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-14
+
+### Changed
+
+- **A PEP 440 version key replaces the best-effort one.** The old comparator split
+  on `.` and mapped any non-numeric segment to `-1`, which is correct for ordinary
+  versions and put an epoch (`2!1.0`) *below* unversioned releases. The gap is
+  bounded by `locked < v <= latest`, so an epoch release dropped out of it
+  entirely — and the gap is what Phase 2 reads changelogs across. A version that
+  vanishes from the gap is one whose `Security` section never gets read. Epochs
+  exist precisely because a project changed versioning scheme, which is when its
+  changelog matters most.
+
+  The new key covers epochs, numeric release segments, the full
+  `dev → a → b → rc → final → post` cycle, `1.0 == 1.0.0`, and the spelling
+  variants (`alpha`/`a`, `c`/`rc`, `1.0-1`/`1.0.post1`). `_is_prerelease` is now
+  parsed rather than pattern-matched, so a dev release is excluded from the gap
+  for the same reason an rc is.
+
+  This is a minor bump rather than a patch because it changes which versions the
+  currency phase reports.
+- **A version the script cannot order now exits 2** rather than sorting to the
+  bottom. A version whose place it cannot judge is one whose currency it cannot
+  judge, and sorting it low quietly is exactly how the epoch defect hid.
+
+### Fixed
+
+- **429 is retried.** `_get_json` retried only `>= 500`, and the reasoning behind
+  that — "a 4xx is an answer, not a hiccup" — is right for every 4xx except this
+  one: `429 Too Many Requests` explicitly means try again, and usually says when.
+  Both registries this script talks to rate-limit, and an audit issues one PyPI
+  call per changed package plus the OSV batch, which is the burst shape that trips
+  a limiter. `Retry-After` is honoured and **capped at 30s** — a registry may ask
+  for ten minutes; an audit is not entitled to stall that long in silence — and an
+  HTTP-date falls back to the ordinary backoff rather than crashing.
+
 ## [0.3.1] — 2026-08-14
 
 Four defects in `audit.py`, all of which fail safe — toward exit 2, or toward
@@ -418,7 +454,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.0...v0.2.1

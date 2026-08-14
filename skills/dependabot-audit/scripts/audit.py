@@ -55,6 +55,9 @@ TIMEOUT = 60
 # losing a dozen good calls to one transient 502 is worse than waiting 2s.
 ATTEMPTS = 2
 BACKOFF = 2.0
+# Ceiling on an honoured Retry-After. A registry is entitled to ask for ten
+# minutes; an audit is not entitled to stall that long without saying anything.
+RETRY_AFTER_CAP = 30.0
 UA = "dependabot-audit (+https://github.com/Machai-Kydoimos/dependabot-audit)"
 
 
@@ -68,6 +71,23 @@ def fail(what: str) -> NoReturn:
     """
     print(f"error: {what}", file=sys.stderr)
     raise SystemExit(2)
+
+
+def _retry_delay(exc: urllib.error.HTTPError) -> float:
+    """Honour `Retry-After`, capped.
+
+    Capped because an audit that stalls for ten minutes is worse than one that
+    fails fast at exit 2 and lets the caller decide. `Retry-After` may also be an
+    HTTP-date, which is not worth parsing for a single retry — fall back rather
+    than crash on it.
+    """
+    header = exc.headers.get("Retry-After") if exc.headers else None
+    if not header:
+        return BACKOFF
+    try:
+        return min(float(header), RETRY_AFTER_CAP)
+    except ValueError:
+        return BACKOFF
 
 
 def _get_json(url: str, payload: bytes | None = None) -> Any:
@@ -88,10 +108,14 @@ def _get_json(url: str, payload: bytes | None = None) -> Any:
                 return json.load(resp)
         except urllib.error.HTTPError as exc:
             # A 4xx is an answer, not a hiccup: "no such package" is information
-            # the caller needs now, and retrying only delays it.
-            if exc.code < 500 or attempt == ATTEMPTS - 1:
+            # the caller needs now, and retrying only delays it. 429 is the one
+            # exception — it explicitly means "try again", often with a
+            # Retry-After — and an audit issues a call per changed package plus
+            # the OSV batch, which is exactly the burst shape that trips a
+            # limiter. Both registries this talks to rate-limit.
+            if (exc.code < 500 and exc.code != 429) or attempt == ATTEMPTS - 1:
                 raise
-            time.sleep(BACKOFF)
+            time.sleep(_retry_delay(exc))
         except (OSError, json.JSONDecodeError):
             # OSError covers URLError and TimeoutError both; a read that times
             # out mid-body raises TimeoutError, which is not a URLError.
@@ -179,12 +203,93 @@ def select_targets(
     return targets, unmatched
 
 
-def _sortable(version: str) -> tuple[int, ...]:
-    """Best-effort numeric version key; non-numeric segments sort as -1."""
-    parts = []
-    for seg in version.split("."):
-        parts.append(int(seg) if seg.isdigit() else -1)
-    return tuple(parts)
+# PEP 440, as much of it as PyPI can actually serve. `packaging` is not available
+# here — audit.py runs under whatever bare python3 the audited repo has — and the
+# previous best-effort key (split on ".", non-numeric segments sort as -1) put an
+# epoch *below* unversioned releases, dropping it out of the currency gap
+# entirely. That mattered once the Simple API made "latest" this script's own
+# computation rather than something PyPI hands over.
+_VERSION = re.compile(
+    r"""^\s*v?
+    (?:(?P<epoch>\d+)!)?
+    (?P<release>\d+(?:\.\d+)*)
+    (?:[-_.]?(?P<pre_l>a|b|c|rc|alpha|beta|pre|preview)[-_.]?(?P<pre_n>\d+)?)?
+    (?:-(?P<post_n1>\d+)|[-_.]?(?P<post_l>post|rev|r)[-_.]?(?P<post_n2>\d+)?)?
+    (?P<dev>[-_.]?dev[-_.]?(?P<dev_n>\d+)?)?
+    (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
+    \s*$""",
+    re.VERBOSE | re.IGNORECASE,
+)
+_PRE_ALIAS = {"alpha": "a", "beta": "b", "c": "rc", "pre": "rc", "preview": "rc"}
+
+
+def _parse_version(version: str) -> dict[str, Any]:
+    match = _VERSION.match(version)
+    if not match:
+        raise ValueError(f"not a PEP 440 version: {version!r}")
+    part = match.groupdict()
+    pre = None
+    if part["pre_l"]:
+        letter = part["pre_l"].lower()
+        pre = (_PRE_ALIAS.get(letter, letter), int(part["pre_n"] or 0))
+    post = None
+    if part["post_n1"] is not None:
+        post = int(part["post_n1"])
+    elif part["post_l"]:
+        post = int(part["post_n2"] or 0)
+    # The whole group, not just its number: `1.0.dev` is a dev release with an
+    # implicit 0, and reading only `dev_n` cannot tell it from no dev segment.
+    dev = int(part["dev_n"] or 0) if part["dev"] else None
+    return {
+        "epoch": int(part["epoch"] or 0),
+        "release": tuple(int(n) for n in part["release"].split(".")),
+        "pre": pre,
+        "post": post,
+        "dev": dev,
+        "local": part["local"],
+    }
+
+
+def _version_key(version: str) -> tuple[Any, ...]:
+    """A total order over PEP 440 versions, as tuples of tuples.
+
+    Each component is rank-prefixed rather than using sentinel objects, so the
+    whole key is comparable with plain tuple comparison and no helper classes.
+
+        pre    (0,) a dev release with no pre-segment  <  (1, letter, n) a
+               pre-release  <  (2,) a final release
+        post   (0,) absent  <  (1, n)
+        dev    (0, n) a dev release  <  (1,) not a dev release
+        local  (0,) absent  <  (1, text); PyPI rejects local versions on upload,
+               so this only has to be deterministic, not PEP 440-exact
+
+    Trailing zeros are trimmed from the release tuple, because PEP 440 says
+    `1.0` and `1.0.0` are the same version.
+
+    Raises ValueError on anything it cannot parse. A version this script cannot
+    order is one whose currency it cannot judge, and refusing is the contract:
+    silently sorting it to the bottom is how an epoch release fell out of the gap.
+    """
+    v = _parse_version(version)
+    release = list(v["release"])
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+
+    if v["pre"] is not None:
+        pre: tuple[Any, ...] = (1, *v["pre"])
+    elif v["dev"] is not None and v["post"] is None:
+        pre = (0,)
+    else:
+        pre = (2,)
+
+    return (
+        v["epoch"],
+        tuple(release),
+        pre,
+        (0,) if v["post"] is None else (1, v["post"]),
+        (1,) if v["dev"] is None else (0, v["dev"]),
+        (0,) if v["local"] is None else (1, v["local"]),
+    )
 
 
 def load_lock(path: str) -> list[dict[str, Any]]:
@@ -259,16 +364,15 @@ def check_provenance(entry: dict[str, Any], meta: dict[str, Any]) -> dict[str, A
     return result
 
 
-_PRERELEASE = re.compile(r"(a|b|c|rc|alpha|beta|pre|preview|dev)\d*$", re.IGNORECASE)
-
-
 def _is_prerelease(version: str) -> bool:
-    """Crude PEP 440 pre-release / dev test; `packaging` is not available here.
+    """A pre-release or a dev release — neither of which a bot ever proposes.
 
-    Tail-anchored on purpose, so `1.0.post1` — a real release a bot can propose —
-    survives while `1.3.0rc1`, which one never will, is dropped.
+    Parsed rather than pattern-matched, so `1.0.post1` — a real release a bot
+    *can* propose — survives while `1.3.0rc1` and `1.1.dev3` are dropped. Listing
+    one in the gap sends the reader to a changelog that cannot be the answer.
     """
-    return bool(_PRERELEASE.search(version))
+    parsed = _parse_version(version)
+    return parsed["pre"] is not None or parsed["dev"] is not None
 
 
 def fork_context(entry: dict[str, Any], pins: dict[str, list[str]]) -> tuple[int, bool]:
@@ -278,8 +382,8 @@ def fork_context(entry: dict[str, Any], pins: dict[str, list[str]]) -> tuple[int
     the resolution need different versions.
     """
     versions = pins.get(_normalize(entry["name"])) or [entry["version"]]
-    highest = max(_sortable(v) for v in versions)
-    return len(versions), _sortable(entry["version"]) >= highest
+    highest = max(_version_key(v) for v in versions)
+    return len(versions), _version_key(entry["version"]) >= highest
 
 
 def check_currency(
@@ -314,11 +418,11 @@ def check_currency(
         for v in releases
         if releases[v]
         and not _is_prerelease(v)
-        and _sortable(locked) < _sortable(v) <= _sortable(latest)
+        and _version_key(locked) < _version_key(v) <= _version_key(latest)
     ]
     # Ordered by publish time, because that is the comparison the report asks the
-    # reader to make. _sortable breaks ties and covers an absent timestamp.
-    gap.sort(key=lambda v: (published(v) or "", _sortable(v)))
+    # reader to make. _version_key breaks ties and covers an absent timestamp.
+    gap.sort(key=lambda v: (published(v) or "", _version_key(v)))
 
     constrained = bool(entry.get("resolution-markers"))
     return {
@@ -602,9 +706,15 @@ def main() -> int:
             except (OSError, json.JSONDecodeError) as exc:
                 fail(f"PyPI lookup failed for {entry['name']}: {exc}")
         meta = meta_cache[key]
-        n_pins, newest = fork_context(entry, pins)
-        report["provenance"].append(check_provenance(entry, meta))
-        report["currency"].append(check_currency(entry, meta, pins=n_pins, newest=newest))
+        try:
+            n_pins, newest = fork_context(entry, pins)
+            report["provenance"].append(check_provenance(entry, meta))
+            report["currency"].append(check_currency(entry, meta, pins=n_pins, newest=newest))
+        except ValueError as exc:
+            # A version this script cannot order is one whose currency it cannot
+            # judge. Refusing is the contract; sorting it to the bottom quietly is
+            # how an epoch release fell out of the gap in the first place.
+            fail(f"cannot audit {entry['name']}: {exc}")
 
     try:
         report["vulns"] = check_vulns(packages)

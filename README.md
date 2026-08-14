@@ -94,9 +94,9 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-83 cases, stdlib only, no network — they run offline and free. Every case
+97 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
-to detect. They fall into six groups:
+to detect. They fall into seven groups:
 
 - **Provenance** — a corrupted hash, a size mismatch, a yanked release, an
   artifact missing from the registry, an sdist checked alongside the wheels, and
@@ -105,8 +105,13 @@ to detect. They fall into six groups:
 - **Currency** — a lagging version; a package pinned at two versions under
   different resolution-markers, where the *held-back* fork must not read as stale
   and the *live* one must still be checked; a publish time taken from the earliest
-  artifact rather than an arbitrary one; and a pre-release that has no business in
-  the gap, next to a post-release that does.
+  artifact rather than an arbitrary one; a pre-release that has no business in the
+  gap, next to a post-release that does; and an epoch release, which the previous
+  ordering sorted *below* unversioned releases and out of the gap entirely.
+- **Version ordering** — the PEP 440 comparator the currency check now rests on:
+  epochs, `1.9 < 1.10`, the full `dev → a → b → rc → final → post` cycle,
+  `1.0 == 1.0.0`, spelling variants, and a version it cannot order raising rather
+  than sorting to the bottom.
 - **Under-auditing** — a requested name that isn't in the lockfile, an empty
   selection that must not report `CLEAN`, a lockfile compared against itself, a
   non-PyPI package that has to be named rather than dropped, an artifact swapped

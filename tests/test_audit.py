@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import email.message
 import io
+import itertools
 import json
 import pathlib
 import shutil
@@ -32,7 +33,9 @@ sys.path.insert(
 import audit
 from audit import (
     _get_json,
+    _is_prerelease,
     _normalize,
+    _version_key,
     check_currency,
     check_provenance,
     check_vulns,
@@ -465,6 +468,46 @@ class TestCurrency(unittest.TestCase):
         gap = check_currency(pkg, meta)["gap"]
         self.assertEqual([r["version"] for r in gap], ["1.10", "1.9"])
 
+    def test_an_epoch_release_stays_in_the_gap(self):
+        """A PEP 440 epoch lives in the *first* segment.
+
+        Splitting on `.` made that segment non-numeric, which dragged the whole
+        version below unversioned releases and out of the gap entirely — and the
+        gap is what Phase 2 reads changelogs across. A version that vanishes from
+        the gap is one whose `Security` section never gets read.
+
+        Epochs are rare but real: they exist precisely because a project changed
+        versioning scheme, which is when its changelog matters most.
+        """
+        pkg = entry("p", "1.0")
+        meta = pypi_meta(
+            "1.0",
+            [],
+            latest="2!1.0",
+            releases={
+                "1.0": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
+                "2!1.0": [pypi_file("b.whl", uploaded="2026-02-01T00:00:00Z")],
+            },
+        )
+        result = check_currency(pkg, meta)
+        self.assertFalse(result["current"])
+        self.assertEqual([r["version"] for r in result["gap"]], ["2!1.0"])
+
+    def test_a_dev_release_is_not_listed_in_the_gap(self):
+        """Same class as an rc: a bot never proposes one."""
+        pkg = entry("p", "1.0")
+        meta = pypi_meta(
+            "1.0",
+            [],
+            latest="1.1",
+            releases={
+                "1.0": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
+                "1.1.dev3": [pypi_file("b.whl", uploaded="2026-02-01T00:00:00Z")],
+                "1.1": [pypi_file("c.whl", uploaded="2026-03-01T00:00:00Z")],
+            },
+        )
+        self.assertEqual([r["version"] for r in check_currency(pkg, meta)["gap"]], ["1.1"])
+
     def test_unconstrained_pin_is_not_marked_constrained(self):
         pkg = entry("p", "1.0")
         meta = pypi_meta("1.0", [], latest="1.1", releases={"1.0": [], "1.1": []})
@@ -476,6 +519,58 @@ class TestCurrency(unittest.TestCase):
         result = check_currency(pkg, meta)
         self.assertTrue(result["current"])
         self.assertEqual(result["gap"], [])
+
+
+class TestVersionOrdering(unittest.TestCase):
+    """PEP 440, as much of it as PyPI can serve.
+
+    The previous key split on "." and mapped non-numeric segments to -1, which
+    worked for the ordinary cases and put an epoch *below* unversioned releases.
+    Ordering became load-bearing once "latest" was the script's own computation
+    rather than a field PyPI hands over.
+    """
+
+    def assertAscending(self, versions):
+        for lower, higher in itertools.pairwise(versions):
+            self.assertLess(
+                _version_key(lower),
+                _version_key(higher),
+                f"{lower} must sort below {higher}",
+            )
+
+    def test_an_epoch_outranks_everything_below_it(self):
+        """The defect: `2!1.0` -> (-1, 0), which sorts below plain `1.0`."""
+        self.assertAscending(["0.9", "1.0", "99.0", "1!0.1", "2!1.0"])
+
+    def test_numeric_segments_compare_numerically(self):
+        self.assertAscending(["1.9", "1.10"])
+        self.assertAscending(["0.16.2", "0.16.10"])
+
+    def test_the_full_release_cycle_sorts_in_order(self):
+        self.assertAscending(["1.0.dev1", "1.0a1", "1.0a2", "1.0b1", "1.0rc1", "1.0", "1.0.post1"])
+
+    def test_a_dev_of_a_post_release_sorts_after_the_release(self):
+        self.assertAscending(["1.0", "1.0.post1.dev1", "1.0.post1"])
+
+    def test_trailing_zeros_do_not_make_a_new_version(self):
+        """PEP 440: 1.0 and 1.0.0 are the same version."""
+        self.assertEqual(_version_key("1.0"), _version_key("1.0.0"))
+        self.assertEqual(_version_key("1.0"), _version_key("1.0.0.0"))
+
+    def test_spelling_variants_are_the_same_version(self):
+        for a, b in (("1.0alpha1", "1.0a1"), ("1.0c1", "1.0rc1"), ("1.0-1", "1.0.post1")):
+            self.assertEqual(_version_key(a), _version_key(b), f"{a} != {b}")
+
+    def test_something_unorderable_raises_rather_than_sorting_to_the_bottom(self):
+        """Silently sorting it low is how an epoch release fell out of the gap."""
+        with self.assertRaises(ValueError):
+            _version_key("not-a-version")
+
+    def test_prerelease_detection(self):
+        for version in ("1.3.0rc1", "1.0a1", "1.0b2", "1.1.dev3", "1.0alpha1"):
+            self.assertTrue(_is_prerelease(version), version)
+        for version in ("1.0", "1.0.post1", "2!1.0", "1.0.1"):
+            self.assertFalse(_is_prerelease(version), f"{version} is a release a bot can propose")
 
 
 FORK_PINS = {"rpds-py": ["0.30.0", "2026.6.3"], "rumdl": ["0.2.53"]}
@@ -672,6 +767,16 @@ class TestFailuresAreNotFindings(_MainHarness):
         self.assertEqual(code, 2)
         self.assertIn("PyPI", err)
 
+    def test_a_version_that_cannot_be_ordered_exits_2(self):
+        """Not a crash and not a finding: an input the script cannot judge."""
+        lock = self.LOCK.replace('version = "0.2.53"', 'version = "not-a-version"', 1)
+        code, out, err = self._run(
+            [write_lock(self, lock), "--changed", "rumdl"], meta=self._meta()
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("PEP 440", err)
+        self.assertNotIn("CLEAN", out)
+
     def test_an_unforeseen_exception_exits_2_not_1(self):
         """The three cases above are the *foreseen* failures. This is the rest.
 
@@ -816,6 +921,44 @@ class TestRetry(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", fake), mock.patch("time.sleep"):
             self.assertEqual(_get_json(self.URL), {"ok": True})
         self.assertEqual(len(calls), 2, "one transient 502 must not lose the audit")
+
+    def test_a_429_is_retried_and_honours_retry_after(self):
+        """The one 4xx that means "try again".
+
+        Both registries this script talks to rate-limit, and an audit issues one
+        PyPI call per changed package plus the OSV batch — exactly the burst shape
+        that trips a limiter. Aborting at exit 2 is correct per the contract and
+        avoidable.
+        """
+        exc = self._http_error(429)
+        exc.headers["Retry-After"] = "7"
+        fake, calls = self._urlopen([exc, '{"ok": true}'])
+        slept: list[float] = []
+        with mock.patch("urllib.request.urlopen", fake), mock.patch("time.sleep", slept.append):
+            self.assertEqual(_get_json(self.URL), {"ok": True})
+        self.assertEqual(len(calls), 2, "429 explicitly means try again")
+        self.assertEqual(slept, [7.0], "Retry-After was ignored")
+
+    def test_an_absurd_retry_after_is_capped(self):
+        """Failing fast at exit 2 beats a silent ten-minute stall."""
+        exc = self._http_error(429)
+        exc.headers["Retry-After"] = "600"
+        fake, _ = self._urlopen([exc, '{"ok": true}'])
+        slept: list[float] = []
+        with mock.patch("urllib.request.urlopen", fake), mock.patch("time.sleep", slept.append):
+            _get_json(self.URL)
+        self.assertEqual(slept, [audit.RETRY_AFTER_CAP])
+
+    def test_a_retry_after_http_date_falls_back_to_the_backoff(self):
+        """Retry-After may also be an HTTP-date, which is not worth parsing for
+        one retry — but it must not crash the way through."""
+        exc = self._http_error(429)
+        exc.headers["Retry-After"] = "Wed, 21 Oct 2026 07:28:00 GMT"
+        fake, _ = self._urlopen([exc, '{"ok": true}'])
+        slept: list[float] = []
+        with mock.patch("urllib.request.urlopen", fake), mock.patch("time.sleep", slept.append):
+            _get_json(self.URL)
+        self.assertEqual(slept, [audit.BACKOFF])
 
     def test_a_404_is_not_retried(self):
         """A 4xx is an answer, not a hiccup: retrying delays a message that is

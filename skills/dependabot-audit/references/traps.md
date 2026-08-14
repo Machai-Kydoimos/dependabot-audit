@@ -107,6 +107,24 @@ highest pin is live, the rest are held back.
 
 ## Registry and pinning
 
+**A version is not a dotted tuple of integers.** Splitting on `.` and comparing
+numerically is the obvious ordering and it is wrong at the edges that matter. A
+PEP 440 epoch (`2!1.0`) lives in the *first* segment, so the obvious parse makes
+that segment non-numeric and sorts the whole version *below* unversioned
+releases — out of any "what is between locked and latest" range, which is exactly
+the set whose changelogs you were going to read. Epochs exist because a project
+changed versioning scheme, which is when its changelog matters most.
+
+The same shape bites elsewhere: `1.9` vs `1.10` under a string sort, a
+pre-release that must not be proposed next to a post-release that may be, and
+`1.0` vs `1.0.0`, which are the same version. If a tool computes "latest" itself
+rather than reading it from the registry, its version comparator is load-bearing
+and needs its own tests.
+
+**A version that cannot be ordered is a version whose currency cannot be judged.**
+Sorting it to the bottom and carrying on is how one silently leaves the range.
+Refuse instead — this is a "could not run", not a finding.
+
 **Annotated tags need dereferencing.** For an action pinned by SHA,
 `GET git/refs/tags/<tag>` returns the *tag object's* SHA when
 `.object.type == "tag"`, not the commit — comparing that against the workflow's
