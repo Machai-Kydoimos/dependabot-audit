@@ -64,10 +64,10 @@ the verdict, and the merge command **left un-run**.
 | 0 | Discover the repo — required checks, bot config, the repo's own CI gates and their scopes; classify the PR; pin the head SHA, fetch it once, and build the worktree every later phase works in |
 | 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status and PEP 740 build provenance vs. the live registry, read out of git at the pinned ref. A **gate**: if anything here fails, the audit stops before the phases that execute code |
 | 2 | Currency — the registry's true latest, publish times vs. PR open time, and changelogs across the gap |
-| 3 | Known vulnerabilities — OSV batch plus the ecosystem's own auditor |
-| 4 | Behavior change — each gate run at the old and new versions **against the merge base**, comparing what they *do to the files*. Measuring the PR's own tree reports nothing whenever the PR already contains the fixup, which is exactly when the change was real |
-| 5 | Independent reproduction — frozen install and the repo's own gates in an isolated worktree |
-| 6 | CI verification — the run for the exact head SHA, and the required contexts specifically |
+| 3 | Known vulnerabilities — what is already known to be wrong with this. OSV batch plus the ecosystem's own auditor for `uv.lock`; GHSA's `actions` ecosystem for a workflow bump |
+| 4 | Behavior change — does this change what runs here. For `uv.lock`, each gate run at the old and new versions **against the merge base**, comparing what they *do to the files*; measuring the PR's own tree reports nothing whenever the PR already contains the fixup, which is exactly when the change was real. For actions, which cannot be run locally, whether this repo's workflows are in the change's scope at all |
+| 5 | Independent reproduction — frozen install and the repo's own gates in an isolated worktree; for actions, where no local reproduction exists, the run history of the workflow the bump changed |
+| 6 | CI verification — the run for the exact head SHA, the required contexts specifically, and whether the changed file is reachable from a pull request at all |
 | 7 | Report |
 | 8 | Learning loop — hand back anything that could not have been derived |
 
@@ -86,7 +86,7 @@ queue actually contains — on this plugin's own test repo the bot PRs split
 | | |
 |---|---|
 | **Python — `uv.lock`** | `scripts/audit.py`, end-to-end and tested against it: artifact hashes, PEP 740 build provenance, the registry's true latest, and the OSV batch |
-| **GitHub Actions** | a procedure in `references/ecosystems.md`. There is no lockfile and no artifact hash, so resolving the pinned tag to a SHA and asking which way it moved is the whole mechanical half |
+| **GitHub Actions** | no lockfile and no artifact hash, so Phase 1 becomes a pin question — is it a SHA or a movable tag, and which way has that tag moved. Every later phase has an actions method too: GHSA for advisories, scope analysis where a gate cannot be run, run history where nothing can be installed |
 
 **npm, Cargo and Go are out of scope** — not unimplemented, out of scope. Their
 recipes were removed rather than left as sketches, on this file's own rule: an
@@ -124,9 +124,9 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-115 cases, stdlib only, no network — they run offline and free. Every case
+118 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
-to detect. They fall into nine groups:
+to detect. They fall into ten groups:
 
 - **Provenance** — a corrupted hash, a size mismatch, a yanked release, an
   artifact missing from the registry, an sdist checked alongside the wheels, and
@@ -168,6 +168,12 @@ to detect. They fall into nine groups:
   between runs — including when the gate *staged* its change, which
   `git checkout -- .` cannot undo. That group matters most: without it run two
   inherits run one's edits and every comparison after it is fiction.
+- **Ecosystem coverage** — no phase from 1 to 6 may be written for only one of
+  the two supported ecosystems, Phase 3 must name an advisory source for actions,
+  and it must keep the measured case behind the OSV version trap. This group
+  exists because *"not applicable" is an assertion too*: three places in this repo
+  stated that GitHub Actions has no vulnerability database, and GHSA carries an
+  `actions` ecosystem. A phase that believed it skipped a real check.
 - **Skill prose** — `SKILL.md` checked against itself: no phase may consume what
   a later phase creates, Phase 4 must measure on the merge base rather than the
   PR's tree, the required contexts must come from the API rather than an authored

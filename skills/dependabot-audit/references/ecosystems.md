@@ -12,9 +12,15 @@ answers three questions:
 2. What is the registry's actual latest version, and when was it published?
 3. What does the vulnerability database say about the whole locked set?
 
-GitHub Actions has none of the inputs those questions need — no lockfile, no
-artifact hash, no vulnerability database — so the script does not apply to it at
-all, and its section below is the entire mechanical half.
+GitHub Actions has neither of the inputs the first two questions need — no
+lockfile and no artifact hash — so the script does not apply to it, and its
+section below is the mechanical half of Phase 1 instead.
+
+It **does** have an advisory database, which is easy to get wrong in the
+dangerous direction: earlier revisions of this file said it had none. GHSA
+carries an `actions` ecosystem, and SKILL.md's Phase 3 has the query and the
+version-matching trap that makes the obvious form of it report clean on a
+compromised action.
 
 **npm, Cargo and Go are out of scope.** Recipes for them used to live here and
 were removed rather than deferred. They broke the rule immediately below, in
@@ -184,9 +190,23 @@ environment is the reliable path.
 
 ## GitHub Actions
 
-A bump retargets a `uses:` pin. There is no lockfile, no artifact hash, and no
-vulnerability database, so `scripts/audit.py` does not apply at all — this recipe
-is the whole mechanical half.
+A bump retargets a `uses:` pin. There is no lockfile and no artifact hash, so
+`scripts/audit.py` does not apply — this recipe is Phase 1's mechanical half.
+Advisories are Phase 3's, and they exist: see SKILL.md.
+
+**Phase 1's real question here is whether the pin is immutable.** That is the
+provenance answer for this ecosystem, and it has only two values:
+
+| Pin | What it is |
+|---|---|
+| `owner/action@<40-hex>` | content-addressed and immutable. What you audit is what will run |
+| `owner/action@v1`, `@main`, `docker://img:tag`, or no tag at all | a **promise someone else can revoke.** What you audit is what runs *today* |
+
+Everything below assumes the first. Under the second there is no pinned artifact
+to compare, so the checks move up a level — to the tag line rather than the
+commit — and the report has to say which of the two it was auditing. A repo that
+pins nothing by SHA is not a repo with a stale pin; it is a repo whose pins are
+not evidence.
 
 **The tag is a claim in a comment, not part of the pin.** The convention is
 `uses: owner/action@<40-hex>  # v1`, and only the SHA is load-bearing. The `# v1`
