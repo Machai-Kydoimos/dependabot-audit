@@ -79,10 +79,14 @@ BASE_SHA=$(git merge-base "$DEFAULT" "pr-<N>")
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
 
-# save the required contexts; Phase 6 reads the file rather than a list retyped
-# from memory, which verifies nothing while looking identical to a pass
-gh api "repos/:owner/:repo/branches/$DEFAULT/protection" \
-  --jq '.required_status_checks.contexts[]' > "$SCRATCH/required.txt"
+# owner and name, for the GraphQL query Phase 6 issues — `:owner/:repo` is a
+# REST-path convenience and does not expand in a GraphQL variable
+OWNER=$(gh repo view --json owner --jq .owner.login)
+NAME=$(gh repo view --json name  --jq .name)
+
+# what this account may do here: it decides the verdict's shape, and it is how
+# a failed permission-gated call is told apart from a real absence
+PERMS=$(gh api "repos/:owner/:repo" --jq '.permissions')
 ```
 
 If `git worktree add` refuses because the path already exists, a previous run
@@ -108,7 +112,8 @@ If either check fails, `git worktree remove` it and re-add.
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
 | `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it |
 | `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below |
-| `$SCRATCH/required.txt` | the required contexts, one per line; **empty is a finding**, not a blank |
+| `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
+| `$PERMS` | this account's permissions on the repo — `admin`, `maintain`, `push`, `triage`, `pull` |
 
 If a later phase needs something not on this list, it belongs here rather than
 there. A phase that consumes what a later phase creates cannot be run in order,
@@ -170,22 +175,39 @@ Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwis
 `git status`, and a gate that walks the tree (a linter, a formatter, a test
 collector) will descend into a full second copy of the project and report on it.
 
-**Derive the branch name; never type it.** A failed protection call and a repo
-with no protection both leave `$SCRATCH/required.txt` **empty**, so if stderr is
-discarded or the file is skimmed only for its lines, they are indistinguishable —
-and Phase 6 then verifies nothing while the report still says CI is green. Read
-the status and message, which separate three genuinely different situations (all
-verified):
+**`$PERMS` decides two separate things, and conflating them gets both wrong.**
+The tier that can read branch protection is `admin`. The tier that can *merge* is
+`push`. They are different, and the common case — a maintainer with `push` but not
+`admin` — sits between them:
 
-| Response | Meaning |
+| `$PERMS` | Consequence |
 |---|---|
-| `404 Branch not found` | wrong branch name — your mistake, fix and re-run |
-| `404 Branch not protected` | correct branch, no protection configured |
-| `403 Upgrade to GitHub Pro…` | correct branch, but branch protection is unavailable on this plan (a private repo on a free plan) |
+| `admin: true` | branch protection is readable, if the plan offers it at all |
+| `push: true`, `admin: false` | can merge; **cannot** read protection. The ordinary case for a maintainer in an org |
+| `pull` only | cannot merge — so Phase 7's verdict is a recommendation, and the un-run merge command is a command this reader cannot run. Offer `--comment` text instead |
 
-Only the first is an error on your part. The other two are **findings**: the repo
-has no enforced required checks, which changes what a green CI run is worth. Say
-so explicitly in the report rather than omitting the row.
+**Do not call `branches/<b>/protection` to find the required checks.** It needs
+`admin`, and GitHub answers a bare `404 Not Found` without it rather than a 403,
+so on any repo you do not administer the call fails in a way that is
+indistinguishable from an unprotected branch — and `gh` writes that error body to
+**stdout**, so redirecting it to a file produces a well-formed artifact that reads
+as "no required checks". Verified: a repo whose `main` carries three required
+checks returns exactly that 404 to a `pull`-only account, while
+`branches/<b>` reports `"protected": true`.
+
+Phase 6 asks a different question that is readable at `pull` and answers this one
+directly. Two states remain worth naming when protection *is* readable, and both
+are findings rather than errors on your part: `404 Branch not protected` (no
+protection configured) and `403 Upgrade to GitHub Pro…` (a private repo on a free
+plan, where protection is unavailable). A `404 Branch not found` is the one that
+is your mistake — the branch name was wrong, so fix it and re-run.
+
+Also do not substitute `repos/:owner/:repo/rules/branches/<b>`. It is readable
+without `admin`, which makes it tempting, and it reports **only rulesets** —
+classic branch protection is invisible to it. The same repo above returns `[]`
+from both it and `/rulesets` while enforcing three required checks, so an empty
+result there would manufacture the exact false finding this section exists to
+prevent.
 
 Then read the CI workflow and the pre-commit config to learn the repo's **own**
 verification commands — do not assume `pytest`; it may be `uv run pytest`, `tox`,
@@ -429,7 +451,7 @@ is not.
 
 ## Phase 6 — CI verification
 
-*Requires from Phase 0: `$HEAD_SHA`, `$SCRATCH/required.txt`.*
+*Requires from Phase 0: `$HEAD_SHA`, `$OWNER`, `$NAME`, `$PERMS`.*
 
 Confirm the green you are trusting belongs to **this** commit. Use the full
 40-character `$HEAD_SHA` pinned in Phase 0 — a short one matches nothing and
@@ -439,44 +461,57 @@ reads exactly like "CI never ran":
 gh run list --commit "$HEAD_SHA" --workflow <ci>.yml
 ```
 
-Then check the required contexts **individually** — a repo can have far more jobs
-than required checks, and only the required ones gate merge. The list comes from
-the file Phase 0 derived; **never retype it**, because a list that names checks
-this repo does not have matches nothing, prints nothing, and is indistinguishable
-from a repo with no required checks:
+Then ask GitHub **which checks are required**, rather than deriving a list and
+joining it by hand. `isRequired` is a field on the rollup contexts, it is
+evaluated for this PR against whatever enforces it — classic protection, a
+ruleset, a path-scoped rule — and it is readable at `pull`:
 
 ```bash
-gh pr view <N> --json statusCheckRollup --jq \
-  '.statusCheckRollup[] | "\(.conclusion // .state)\t\(.name // .context)"' \
-  > "$SCRATCH/rollup.tsv"
-
-while IFS= read -r req; do
-  awk -F'\t' -v r="$req" \
-    '$2 == r { print $1 "  " $2; found = 1 }
-     END { if (!found) print "NOT REPORTED  " r }' "$SCRATCH/rollup.tsv"
-done < "$SCRATCH/required.txt"
-
-# and the totals, to catch anything unsettled:
-gh pr view <N> --json statusCheckRollup --jq \
-  '[.statusCheckRollup[]|(.conclusion//.state)]|group_by(.)|map("\(.[0]): \(length)")|join("  ")'
+gh api graphql -f query='
+query($owner:String!, $name:String!, $number:Int!) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      mergeable mergeStateStatus reviewDecision
+      commits(last:1) { nodes { commit { statusCheckRollup { state
+        contexts(first:100) { nodes {
+          ... on CheckRun      { name    conclusion isRequired(pullRequestNumber:$number) }
+          ... on StatusContext { context state      isRequired(pullRequestNumber:$number) }
+        } } } } } }
+    }
+  }
+}' -F owner="$OWNER" -F name="$NAME" -F number=<N> > "$SCRATCH/checks.json"
 ```
 
-Every required context produces exactly one row, so a context that never reported
-says so rather than vanishing — which is the failure that made the previous recipe
-unsafe. Matching is on the whole second field, never `awk '{print $1}'`, which
-turns `Lint & type-check` into `Lint`.
+The join happens server-side, so there is no list to retype and no `awk` matching
+to get wrong. Read **three** fields, and never substitute one for another:
 
-What that looks like on a repo whose checks are named as awkwardly as this one's:
+| Field | What it settles |
+|---|---|
+| `isRequired`, per context | which checks gate merge — a repo can report far more than it requires |
+| `statusCheckRollup.state` | whether the checks that *reported* passed |
+| `mergeStateStatus` | whether anything still blocks, **including what never reported** |
 
-```text
-success       Lint & type-check
-success       Test (Python 3.11)
-NOT REPORTED  Test (Python 3.14)
-```
+**A green rollup is not a mergeable PR.** Verified on a real PR: 39 contexts, 3
+required, every one `SUCCESS`, rollup `SUCCESS` — and `mergeStateStatus: BLOCKED`
+with `reviewDecision: REVIEW_REQUIRED`. A procedure that stops at the required
+contexts reports all-green and recommends a merge GitHub will refuse. The old
+recipe could not see this at any permission tier.
 
-**An empty `$SCRATCH/required.txt` prints nothing at all**, and that is the
-Phase 0 finding — no enforced required checks, for one of the two reasons its
-table separates. Report it as a finding; do not report CI as verified.
+**`isRequired` only sees contexts that reported.** A required check that never ran
+is absent from the list entirely — the failure the hand-written join existed to
+catch. `mergeStateStatus` covers it, because an unsatisfied required check yields
+`BLOCKED` and never `CLEAN`. Two traps travel with it: it is `UNKNOWN` on a merged
+PR, and GitHub computes it lazily, so an open PR may need the query re-issued
+before it settles. `UNKNOWN` is underivable, not "nothing blocks".
+
+**Zero required contexts is a finding only when `mergeStateStatus` agrees.** Read
+them together:
+
+| Required contexts | `mergeStateStatus` | Reading |
+|---|---|---|
+| none | not `BLOCKED` | the repo enforces nothing — real, and it changes what a green run is worth |
+| none | `BLOCKED` | something gates this PR that you cannot see. **Underivable**, per Phase 0 — do not report it as "no enforced checks" |
+| some | `BLOCKED` | read `reviewDecision` and the unsettled contexts; the checks alone do not explain it |
 
 `references/traps.md` has the reasoning, plus stale `CLEAN`, `UNSTABLE` being
 mergeable, neutral CodeQL, and why a bot rebase does not re-trigger CI.

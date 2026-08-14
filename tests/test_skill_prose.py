@@ -175,18 +175,52 @@ class TestNoRepoSpecificLiterals(SkillHarness):
                     f"Phase 0 artifact belongs: {hit}",
                 )
 
-    def test_phase_6_reads_the_required_contexts_from_phase_0(self):
-        """The structural half: the list has to come from somewhere derived."""
+    def test_phase_6_asks_the_api_which_contexts_are_required(self):
+        """The structural half: the list is never authored, at any tier.
+
+        This replaces an assertion that Phase 0 wrote `$SCRATCH/required.txt` and
+        Phase 6 read it. That file is gone — it came from an `admin`-only call
+        whose failure `gh` writes to *stdout*, so on a repo the auditor does not
+        administer it held an error body that read as "no required checks". The
+        property being guarded is unchanged: the required set comes from GitHub,
+        not from the model. `isRequired` is that answer, and it is readable at
+        `pull`.
+        """
         self.assertIn(
-            "$SCRATCH/required.txt",
+            "isRequired",
             self.shell[6],
-            "Phase 6 must read the required contexts Phase 0 derived, not a typed list",
+            "Phase 6 must ask the API which contexts are required, not derive a list",
         )
-        self.assertIn(
-            "$SCRATCH/required.txt",
-            self.shell[0],
-            "Phase 0 must write the required contexts somewhere Phase 6 can read",
-        )
+
+    def test_no_phase_reads_required_checks_from_branch_protection(self):
+        """The `admin`-only endpoint 404s without admin, and the body is stdout.
+
+        A bare 404 is indistinguishable from an unprotected branch, so a redirect
+        of this call produces a well-formed artifact asserting the opposite of the
+        truth. Verified against a repo enforcing three required checks.
+        """
+        for number, code in sorted(self.shell.items()):
+            self.assertNotIn(
+                "/protection",
+                code,
+                f"Phase {number} calls branch protection for the required checks; "
+                f"it needs admin and fails into a plausible value without it",
+            )
+
+    def test_no_phase_reads_required_checks_from_the_rules_endpoint(self):
+        """Readable without admin, which is exactly what makes it a trap.
+
+        `/rules/branches/<b>` reports rulesets only. Classic branch protection is
+        invisible to it, so an empty result manufactures a false "nothing
+        enforced" finding on a repo that enforces plenty.
+        """
+        for number, code in sorted(self.shell.items()):
+            self.assertNotIn(
+                "/rules/branches",
+                code,
+                f"Phase {number} reads the rules endpoint, which cannot see "
+                f"classic branch protection and returns [] on a protected branch",
+            )
 
 
 class TestPhase4MeasuresTheRightTree(SkillHarness):
