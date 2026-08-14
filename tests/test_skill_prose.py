@@ -313,6 +313,73 @@ class TestEveryPhaseCarriesBothEcosystems(SkillHarness):
         )
 
 
+class TestARedCheckIsAttributedBeforeItCarriesTheVerdict(SkillHarness):
+    """Phase 6 reported conclusions and never asked whether the bump caused them.
+
+    Observed on `BIRSAx2/mdcat` #6: `test (ubuntu-latest)` red beside two green
+    siblings, which reads as a bump breaking one platform. It was a rustdoc
+    intra-doc-link error under `#[deny(warnings)]`, failing identically on the
+    base. A Hold driven by that row would have been correct by accident and
+    unfalsifiable — every cell true, the causal claim never established.
+
+    The same family as the rewritten base and the hand-joined required list: a
+    row that is individually accurate and collectively misleading. It is also the
+    direction that costs least to be wrong in, so it draws the least scrutiny — a
+    false Hold looks conservative.
+    """
+
+    def test_phase_6_consumes_the_base_sha(self):
+        self.assertIn(
+            "$BASE_SHA",
+            self.shell[6],
+            "Phase 6 must establish whether a red check is red at the base; without "
+            "the base commit it can only report the conclusion",
+        )
+
+    def test_the_base_query_reads_check_runs_not_the_workflow_list(self):
+        """`gh run list --json name` answers a different question.
+
+        It returns the *workflow* name — one row reading `CI` — while the rollup
+        contexts Phase 6 reads are job names like `test (ubuntu-latest)`. Matching
+        one against the other yields nothing for every matrix job, and an empty
+        result reads as "no run at the base", which marks it underivable. So the
+        obvious query fails in precisely the direction this section exists to
+        correct. Measured on a repo whose five contexts are `Test (Python 3.11)`
+        through `Lint & type-check`: `gh run list --json name` returns a single
+        `CI`; `commits/<sha>/check-runs` returns all five by context name.
+        """
+        self.assertIn(
+            "check-runs",
+            self.shell[6],
+            "the base conclusions must come from the endpoint keyed by check name",
+        )
+        self.assertNotRegex(
+            self.shell[6],
+            r"gh run list[^\n]*\$BASE_SHA",
+            "gh run list reports workflow names, so a per-check match against it is "
+            "empty for every matrix job",
+        )
+
+    def test_a_base_with_no_run_is_underivable_rather_than_attributable(self):
+        """Phase 0's third state, in the phase most able to lose it.
+
+        The base may predate the workflow, or its run may have aged out. Both are
+        "could not check", and collapsing them into "not pre-existing" hands the
+        red row back to the bump by default.
+
+        Asserted on the phrase rather than on "underivable" alone: that word was
+        already in Phase 6 for `mergeStateStatus: UNKNOWN`, so the looser check
+        passed against the prose that had this defect.
+        """
+        phase6 = dict(self.phases)[6].lower()
+        self.assertIn(
+            "no run at the base",
+            phase6,
+            "Phase 6 must name the case where the base has no run to compare against",
+        )
+        self.assertIn("underivable", phase6, "and give it Phase 0's third state")
+
+
 class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
     """`--locked` checks every fork; the install materialises one of them.
 

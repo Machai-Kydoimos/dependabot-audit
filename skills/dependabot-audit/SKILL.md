@@ -667,11 +667,12 @@ is not.
 
 ## Phase 6 — CI verification
 
-*Requires from Phase 0: `$HEAD_SHA`, `$OWNER`, `$NAME`, `$PERMS`.*
+*Requires from Phase 0: `$HEAD_SHA`, `$BASE_SHA`, `$OWNER`, `$NAME`, `$PERMS`.*
 
 Confirm the green you are trusting belongs to **this** commit, **and that it
 exercised the change**. Those are two questions, and an actions bump routinely
-passes the first while failing the second.
+passes the first while failing the second. A third follows whenever something is
+red: whether the bump is why.
 
 **Check that the changed file is reachable from a pull request.** A workflow
 triggered only by `push: tags:` or `schedule:` never runs on a PR, so every check
@@ -747,6 +748,60 @@ them together:
 | none | not `BLOCKED` | the repo enforces nothing — real, and it changes what a green run is worth |
 | none | `BLOCKED` | something gates this PR that you cannot see. **Underivable**, per Phase 0 — do not report it as "no enforced checks" |
 | some | `BLOCKED` | read `reviewDecision` and the unsettled contexts; the checks alone do not explain it |
+
+**A red check is not evidence that the bump caused it.** Phase 6 reports check
+conclusions, and a failing required context is the row most likely to carry the
+verdict — so it is the one that must not assert more than it established. "This
+check is red" is established. "This bump broke it" is a *causal* claim, and
+nothing above tests it.
+
+Ask whether it was already red at the base, which Phase 0 pinned:
+
+```bash
+gh api "repos/$OWNER/$NAME/commits/$BASE_SHA/check-runs" --paginate \
+  --jq '.check_runs[] | "\(.name)\t\(.conclusion)"'
+```
+
+**Use the check-runs endpoint, not `gh run list`.** `gh run list --json name`
+returns the *workflow* name — one row reading `CI` — while the contexts in the
+rollup above are **job** names like `test (ubuntu-latest)`. Matching a job name
+against a workflow name yields nothing, for every matrix job, and an empty result
+here reads as "no run at the base" — which lands in the third state below and
+marks every matrix failure underivable. Verified: on a repo whose five contexts
+are `Test (Python 3.11)` … `Lint & type-check`, `gh run list --json name` returns
+a single `CI`, and `check-runs` returns all five by their context names. Add
+`commits/$BASE_SHA/status` if the red context is a `StatusContext` rather than a
+`CheckRun` — the two live in separate lists, and Phase 6's GraphQL reads both.
+
+Then label the row, in three states and never two:
+
+| At the base | Label | What it means for the verdict |
+|---|---|---|
+| the same check is green | **attributable** | the bump is implicated; this row can carry a Hold |
+| the same check is red | **pre-existing** | the repo's default branch is red. A real finding, a *different* one, and it must not produce a Hold on this bump |
+| no run at the base | **underivable**, per Phase 0 | the base may predate the workflow, or the run may have aged out. Say so rather than defaulting to attributable |
+
+**A red check on a workflow the diff never touched is a strong prior for
+pre-existing**, and Phase 6 already derives which workflows the diff touched for
+the PR-reachability check above. Share that input rather than deriving it twice.
+
+Matching on name and conclusion establishes that the check was *already
+failing*, not that it is failing for the same reason. Where the distinction
+decides the verdict, read the failing step's log at both commits.
+
+Observed on `BIRSAx2/mdcat` #6: `test (ubuntu-latest)` red beside two green
+siblings, which reads exactly like a dependency bump breaking one platform. The
+failure was `unresolved link to pulldown-cmark-mdcat` — a rustdoc intra-doc-link
+error under `#[deny(warnings)]`, failing identically on the base commit and
+having nothing to do with the dependency. A Hold driven by that row would have
+been **correct by accident and unfalsifiable in the report**: every cell in it
+true, the causal claim never established. That is the same family as the
+rewritten base and the hand-joined required list — rows that are individually
+accurate and collectively misleading.
+
+It is also the direction that costs least to be wrong in, and therefore gets
+least scrutiny: a false Hold looks conservative, so nobody goes back to check
+whether the bump was the cause.
 
 `references/traps.md` has the reasoning, plus stale `CLEAN`, `UNSTABLE` being
 mergeable, neutral CodeQL, and why a bot rebase does not re-trigger CI.
