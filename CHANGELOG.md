@@ -11,6 +11,54 @@ patch.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-14
+
+Found by auditing `Machai-Kydoimos/fpga-board-sim` PR #99, a SHA-to-SHA GitHub
+Actions bump — the first run against an ecosystem where `scripts/audit.py` does
+not apply at all and the per-registry recipe is the entire mechanical half. It
+held up, and it was thin in three places.
+
+### Changed
+
+- **The GitHub Actions recipe now prescribes what to do when the tag does not
+  point at the proposed SHA.** It previously said to confirm the pin "really is
+  the commit the claimed tag points at" and stopped there, so a mismatch had no
+  defined next step — and the two mismatches mean opposite things.
+
+  A two-way `compare` separates them: *ahead* means the tag moved on after the PR
+  was opened, which is ordinary lag; **behind** means the tag was rolled backward
+  and merging pins a commit the tag no longer covers. Only the second is a
+  finding, and a bare equality check reports both identically.
+
+  The `behind` case is the one a bot cannot fix, because retargeting would be a
+  downgrade — `@dependabot recreate` does not help either. Close the PR and
+  replace it by hand.
+
+  Observed end to end: a `nickg/setup-nvc` bump proposed the branch tip
+  `8bdacf7f`; upstream then moved `v1` back two commits to `48f966df`, dropping
+  "Bump ESLint version" and "Bump Actions SDK". `compare` reports the proposal two
+  commits *ahead* of the tag. The audit reached that conclusion from the API
+  before reading the maintainer's own explanation, which says the same thing.
+- **The tag is documented as a claim in a comment, not part of the pin.** The
+  convention is `uses: owner/action@<40-hex>  # v1`, where only the SHA is
+  load-bearing and `# v1` is unverified metadata. A bump that leaves the comment
+  unchanged on both sides is tracking a *moving* tag, which is what makes the
+  question time-dependent.
+- Auditing an old or merged actions PR now compares against **the repo's current
+  pin** as well as the PR's proposal, because the mismatch may already have been
+  fixed on the default branch.
+
+### Verified, unchanged
+
+- The annotated-tag dereference fired for real: `nickg/setup-nvc@v1` is annotated,
+  and the undereferenced ref SHA matches nothing. The recipe's mandatory
+  dereference step is doing exactly the job it was written for.
+- Phase 1's scope rule handled a diff of one workflow file correctly, and routed
+  to the recipe rather than to `audit.py`, with no lockfile to read.
+- All seven required checks were green on this PR, and the correct verdict is
+  still *do not merge*. Recorded in the recipe: green says the pin resolves, not
+  that upstream still stands behind it.
+
 ## [0.6.0] — 2026-08-14
 
 Found by auditing `Machai-Kydoimos/fpga-board-sim` PR #334 — the exact
@@ -572,7 +620,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.1...v0.4.0

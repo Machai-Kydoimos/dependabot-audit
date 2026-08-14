@@ -166,7 +166,19 @@ pin gives a false mismatch. Dereference via `GET git/tags/<sha>` and read
 `.object.sha`. Lightweight tags return `commit` directly and need no indirection.
 
 **Bots never propose a downgrade.** If a moving tag rolls backward, or a pin
-needs to retreat, the bot cannot express it. Fix by hand.
+needs to retreat, the bot cannot express it — and `@dependabot recreate` will not
+help, because recreating still cannot produce a downgrade. Close the bot's PR and
+fix by hand.
+
+The detection is a two-way `compare` between the proposed SHA and wherever the tag
+points now, not a bare equality check: *ahead* means the tag simply moved on and
+the PR is stale, *behind* means the tag was rolled back and merging would pin a
+commit the tag no longer covers. Only the second is a finding, and an equality
+check reports both identically.
+
+Observed: a `setup-nvc` bump proposed the branch tip, upstream then moved the `v1`
+tag back two commits, and the bot's PR was left pinned to the commit the tag had
+retreated from. It was closed and replaced by a hand-written PR.
 
 ## CI state
 

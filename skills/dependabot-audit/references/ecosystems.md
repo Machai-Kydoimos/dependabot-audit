@@ -187,19 +187,61 @@ vulnerable dependency is meaningful rather than a miss.
 
 ## GitHub Actions
 
-A bump retargets a `uses:` pin. Confirm the new value is a 40-hex commit SHA and
-that it really is the commit the claimed tag points at:
+A bump retargets a `uses:` pin. There is no lockfile, no artifact hash, and no
+vulnerability database, so `scripts/audit.py` does not apply at all — this recipe
+is the whole mechanical half.
+
+**The tag is a claim in a comment, not part of the pin.** The convention is
+`uses: owner/action@<40-hex>  # v1`, and only the SHA is load-bearing. The `# v1`
+is unverified metadata that can be stale or simply wrong. Read it as the claim to
+check, and note that a bump leaving the comment unchanged — `# v1` on both sides —
+means the bot is tracking a **moving** tag.
 
 ```bash
 gh api repos/<owner>/<repo>/git/refs/tags/<tag> --jq '.object.type, .object.sha'
-# if type == "tag" (annotated), dereference:
+# if type == "tag" (annotated), dereference — the ref gives you the *tag object*:
 gh api repos/<owner>/<repo>/git/tags/<sha> --jq '.object.sha'
 ```
 
 The dereference step is mandatory for annotated tags and a no-op for lightweight
-ones. Skipping it produces a false drift report.
+ones. Skipping it compares a tag object against a commit and reports a false
+mismatch. Verified live on `nickg/setup-nvc@v1`: annotated, and the undereferenced
+SHA matches nothing.
 
-There is no lockfile and no vulnerability database here. The meaningful checks
-are: every `uses:` is SHA-pinned, the workflow's permissions are minimal, and the
-diff does not quietly add a step. A bot cannot roll a pin *backward*, so a tag
-that moved backward needs a hand-written PR.
+**When the tag does not point at the proposed SHA, that is a question, not a
+verdict.** Ask which way it moved:
+
+```bash
+gh api repos/<owner>/<repo>/compare/<proposed>...<where the tag points now> \
+  --jq '"\(.status) ahead=\(.ahead_by) behind=\(.behind_by)"'
+```
+
+| Result | Meaning |
+|---|---|
+| identical | the pin is exactly the tag; nothing to do |
+| `ahead` | the tag moved on after the PR was opened — ordinary lag, same shape as a registry currency gap |
+| **`behind`** | **the tag rolled backward.** Upstream withdrew those commits from the tag line, and merging pins a commit the tag no longer covers |
+| `diverged` | the tag was repointed to another line entirely — treat as a finding and read the commits |
+
+The `behind` case is the one worth the trouble, because **a bot cannot fix it**:
+retargeting to where the tag now points is a downgrade, and Dependabot will not
+propose one. `@dependabot recreate` will not help either. It needs a hand-written
+PR, and the bot's PR should be closed rather than merged.
+
+Observed end to end on `nickg/setup-nvc`: a bump proposed the branch tip
+`8bdacf7f`, upstream then moved `v1` back two commits to `48f966df` — dropping
+"Bump ESLint version" and "Bump Actions SDK" — and `compare` reports the proposal
+as two commits *ahead* of the tag. The bot PR was closed and replaced by hand.
+
+Auditing an old or merged actions PR, compare against **the repo's current pin**
+as well as the PR's proposal: a mismatch may already have been fixed, and the
+workflow file on the default branch is what says so.
+
+**CI cannot see any of this.** On the observed case every required check was
+green, because the workflow parses and the job runs whichever commit it is
+pointed at. Green says the pin resolves, not that upstream still stands behind
+it. This is the actions-shaped version of the reason the whole procedure exists.
+
+The remaining checks are structural: every `uses:` is SHA-pinned, the workflow's
+`permissions:` are minimal, and the diff does not quietly add a step or change a
+trigger.
