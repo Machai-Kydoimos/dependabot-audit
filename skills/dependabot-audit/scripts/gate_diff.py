@@ -85,7 +85,7 @@ def _git(tree: Path, *args: str) -> str:
 def require_clean_worktree(tree: Path) -> None:
     """Refuse to touch a tree that has anything to lose.
 
-    Every run mutates the tree and is undone with `checkout -- .` + `clean -fd`.
+    Every run mutates the tree and is undone with `reset --hard` + `clean -fd`.
     That restore is only safe if the tree started with nothing uncommitted and
     nothing untracked, so this is the guard that makes the whole approach safe
     to point at a real checkout by mistake. It is also the same check Phase 5
@@ -97,7 +97,7 @@ def require_clean_worktree(tree: Path) -> None:
     if dirty:
         fail(
             f"{tree} has uncommitted or untracked files; refusing to run.\n"
-            "       Every run is undone with `git checkout -- . && git clean -fd`,\n"
+            "       Every run is undone with `git reset --hard && git clean -fd`,\n"
             "       which would discard them. Use the Phase 5 worktree, or commit\n"
             "       and re-run."
         )
@@ -129,7 +129,21 @@ def snapshot_changes(tree: Path) -> dict[str, str]:
 
 
 def restore(tree: Path) -> None:
-    _git(tree, "checkout", "--", ".")
+    """Undo everything the last run did, including anything it staged.
+
+    `reset --hard` rather than `checkout -- .`: the latter restores the worktree
+    *from the index*, so a gate that stages its own edits survives it untouched
+    and run two inherits run one's work. `pre-commit` stages directly, and it is
+    among the likeliest gate commands this tool is handed.
+
+    `clean -fd` is still needed on top, for untracked files, which `reset --hard`
+    leaves alone. Deliberately without `-x`: ignored paths carry state between
+    runs — a `.venv` a gate builds holds one version's tool — but
+    `require_clean_worktree` gates on `git status --porcelain`, which does not
+    list ignored files, so `-x` would delete a `.env` or a virtualenv the guard
+    never warned about. Losing something unannounced is the worse failure here.
+    """
+    _git(tree, "reset", "--hard", "-q")
     _git(tree, "clean", "-fdq")
 
 

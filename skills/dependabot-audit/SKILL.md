@@ -36,20 +36,55 @@ gh pr view <N> --json number,title,headRefOid,mergeStateStatus,files,author,crea
 
 # derive the default branch — never assume "main"
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
-gh api "repos/:owner/:repo/branches/$DEFAULT/protection" --jq '.required_status_checks.contexts[]'
 
 cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
 
-# pin the commit under audit and fetch it once, for every later phase
+# pin the commit under audit, fetch it once, and build the tree every later
+# phase works in
 SCRATCH=${SCRATCH:-$(mktemp -d)}          # any directory OUTSIDE the repo
 HEAD_SHA=$(gh pr view <N> --json headRefOid --jq .headRefOid)   # full 40 chars
 git fetch origin "pull/<N>/head:pr-<N>"
 BASE_SHA=$(git merge-base "$DEFAULT" "pr-<N>")
+git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
+
+# save the required contexts; Phase 6 reads the file rather than a list retyped
+# from memory, which verifies nothing while looking identical to a pass
+gh api "repos/:owner/:repo/branches/$DEFAULT/protection" \
+  --jq '.required_status_checks.contexts[]' > "$SCRATCH/required.txt"
 ```
 
+If `git worktree add` refuses because the path already exists, a previous run
+left it there. **Prove it still points at this PR's head before reusing it** — a
+stale worktree silently audits the wrong commit and every result downstream is
+wrong. Compare against the pinned SHA rather than eyeballing a log line:
+
+```bash
+test "$(git -C "$SCRATCH/pr-<N>" rev-parse HEAD)" = "$HEAD_SHA"
+git -C "$SCRATCH/pr-<N>" status --porcelain                       # must be empty
+```
+
+If either check fails, `git worktree remove` it and re-add.
+
+**Phase 0 outputs.** Every later phase consumes these and nothing else:
+
+| | |
+|---|---|
+| `$DEFAULT` | the repo's default branch, derived |
+| `$SCRATCH` | scratch directory, outside the repo |
+| `$HEAD_SHA` | the full 40-character commit under audit |
+| `$BASE_SHA` | merge base of `$DEFAULT` and `pr-<N>` |
+| `pr-<N>` | the fetched branch, registered in the **user's** repo |
+| `$SCRATCH/pr-<N>` | worktree at that branch — Phase 4 measures in it, Phase 5 reproduces in it |
+| `$SCRATCH/required.txt` | the required contexts, one per line; **empty is a finding**, not a blank |
+
+If a later phase needs something not on this list, it belongs here rather than
+there. A phase that consumes what a later phase creates cannot be run in order,
+and that has now shipped twice — `tests/test_skill_prose.py` is what stops the
+third.
+
 **Pin the head SHA here and audit that one commit everywhere.** The lockfile
-Phase 1 reads, the worktree Phase 5 builds, and the CI run Phase 6 checks must all
-describe the *same* commit, or the report's evidence table asserts a coherence it
+Phase 1 reads, the worktree Phase 5 reproduces in, and the CI run Phase 6 checks
+must all describe the *same* commit, or the report's evidence table asserts a coherence it
 does not have. Bots rebase, so this is not hypothetical: a rebase mid-audit leaves
 Phases 1–5 describing a commit that no longer exists while Phase 6 reports on the
 new one. Fetching once and working from `pr-<N>` makes them consistent by
@@ -65,10 +100,11 @@ Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwis
 collector) will descend into a full second copy of the project and report on it.
 
 **Derive the branch name; never type it.** A failed protection call and a repo
-with no protection both yield *no contexts*, so if stderr is discarded or the
-output is skimmed only for the list, they are indistinguishable — and Phase 6
-then verifies nothing while the report still says CI is green. Read the status
-and message, which separate three genuinely different situations (all verified):
+with no protection both leave `$SCRATCH/required.txt` **empty**, so if stderr is
+discarded or the file is skimmed only for its lines, they are indistinguishable —
+and Phase 6 then verifies nothing while the report still says CI is green. Read
+the status and message, which separate three genuinely different situations (all
+verified):
 
 | Response | Meaning |
 |---|---|
@@ -90,6 +126,8 @@ Recalled project memory may already name landmines for this repo (Phase 8 writes
 them). Treat those as leads to check, not as facts — verify before repeating.
 
 ## Phase 1 — Scope and provenance
+
+*Requires from Phase 0: `$SCRATCH`, `$BASE_SHA`, `pr-<N>`.*
 
 The diff should touch **only** the manifest and the lockfile (or a single
 workflow file for an actions bump). Anything else is a finding — say so and stop.
@@ -129,6 +167,8 @@ For npm, Cargo, Go, and GitHub Actions, follow the per-registry recipes in
 
 ## Phase 2 — Currency
 
+*Requires: the Phase 1 script output, and the PR's `createdAt` from Phase 0.*
+
 **A bot's proposal is not evidence of "current".** Ask the registry what the
 latest version actually is, and compare publish timestamps against the PR's
 `createdAt`. If a newer version existed *before* the PR was opened, that is
@@ -149,6 +189,8 @@ adopted. Look for two things, in this order:
 
 ## Phase 3 — Known vulnerabilities
 
+*Requires: the Phase 1 script output.*
+
 Batch-query OSV across the whole locked set, then corroborate with the
 ecosystem's own auditor. Expect this to agree with Phase 2 only sometimes — that
 divergence is the point, not a contradiction.
@@ -161,6 +203,8 @@ See `references/ecosystems.md` for the auditor invocations and their traps; the
 Python one in particular audits the wrong interpreter if invoked casually.
 
 ## Phase 4 — Behavior change (the highest-yield phase)
+
+*Requires from Phase 0: the `$SCRATCH/pr-<N>` worktree, and the repo's own gates.*
 
 Not "is it safe" but **"does it change what this repo's gates accept"**. Measure
 that; do not predict it from the changelog.
@@ -207,24 +251,10 @@ implying the same confidence as a tree diff.
 
 ## Phase 5 — Independent reproduction
 
-In an isolated worktree, so the user's working tree is untouched. `SCRATCH` and
-the `pr-<N>` ref both come from Phase 0:
+*Requires from Phase 0: the `$SCRATCH/pr-<N>` worktree, `$HEAD_SHA`, `pr-<N>`.*
 
-```bash
-git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
-```
-
-If a worktree from an earlier run is already there, **prove it still points at
-this PR's head before reusing it** — a stale worktree silently audits the wrong
-commit and every result downstream is wrong. Compare it against the pinned SHA
-rather than eyeballing a log line:
-
-```bash
-test "$(git -C "$SCRATCH/pr-<N>" rev-parse HEAD)" = "$HEAD_SHA"   # from Phase 0
-git -C "$SCRATCH/pr-<N>" status --porcelain                       # must be empty
-```
-
-If either check fails, `git worktree remove` it and recreate.
+Phase 0 built the worktree and proved it points at `$HEAD_SHA`, so the user's
+working tree is untouched throughout and this phase inherits a tree it can trust.
 
 Install **frozen** (`uv sync --locked`, `npm ci`, `cargo build --locked`) — that
 proves the lockfile is self-consistent and resolves nothing. Then run the repo's
@@ -233,7 +263,7 @@ own gates from Phase 0, and its full test suite.
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.
 
-**Close the loop.** The worktree *and* the `pr-<N>` branch Phase 0 fetched are
+**Close the loop.** The worktree *and* the `pr-<N>` branch Phase 0 created are
 both registered in the **user's** repo, so an audit that walks away leaves litter
 behind — and it accumulates, one per PR audited. The branch outlives an audit that
 stopped before Phase 5, too. Either remove them when finished, or keep them
@@ -249,6 +279,8 @@ is not.
 
 ## Phase 6 — CI verification
 
+*Requires from Phase 0: `$HEAD_SHA`, `$SCRATCH/required.txt`.*
+
 Confirm the green you are trusting belongs to **this** commit. Use the full
 40-character `$HEAD_SHA` pinned in Phase 0 — a short one matches nothing and
 reads exactly like "CI never ran":
@@ -257,30 +289,51 @@ reads exactly like "CI never ran":
 gh run list --commit "$HEAD_SHA" --workflow <ci>.yml
 ```
 
-Then check the Phase 0 required contexts **individually** — a repo can have far
-more jobs than required checks, and only the required ones gate merge. Paste the
-Phase 0 list into `$req`:
+Then check the required contexts **individually** — a repo can have far more jobs
+than required checks, and only the required ones gate merge. The list comes from
+the file Phase 0 derived; **never retype it**, because a list that names checks
+this repo does not have matches nothing, prints nothing, and is indistinguishable
+from a repo with no required checks:
 
 ```bash
-gh pr view <N> --json statusCheckRollup --jq '
-  [.statusCheckRollup[] | {name:(.name//.context), state:(.conclusion//.state)}] as $all
-  | ["Lint & type-check","Test (ubuntu-latest, Python 3.10)"] as $req
-  | ($req | map(. as $r | ($all[] | select(.name==$r) | "\(.state)  \($r)")))[]'
+gh pr view <N> --json statusCheckRollup --jq \
+  '.statusCheckRollup[] | "\(.conclusion // .state)\t\(.name // .context)"' \
+  > "$SCRATCH/rollup.tsv"
+
+while IFS= read -r req; do
+  awk -F'\t' -v r="$req" \
+    '$2 == r { print $1 "  " $2; found = 1 }
+     END { if (!found) print "NOT REPORTED  " r }' "$SCRATCH/rollup.tsv"
+done < "$SCRATCH/required.txt"
 
 # and the totals, to catch anything unsettled:
 gh pr view <N> --json statusCheckRollup --jq \
   '[.statusCheckRollup[]|(.conclusion//.state)]|group_by(.)|map("\(.[0]): \(length)")|join("  ")'
 ```
 
-**Count the returned lines against `$req`** — a context that never reported
-produces no line at all, which looks identical to one that passed. And match
-names as whole strings: never `awk '{print $1}'`, which turns `Lint & type-check`
-into `Lint`.
+Every required context produces exactly one row, so a context that never reported
+says so rather than vanishing — which is the failure that made the previous recipe
+unsafe. Matching is on the whole second field, never `awk '{print $1}'`, which
+turns `Lint & type-check` into `Lint`.
 
-`references/traps.md` has the reasoning for both, plus stale `CLEAN`, `UNSTABLE`
-being mergeable, neutral CodeQL, and why a bot rebase does not re-trigger CI.
+What that looks like on a repo whose checks are named as awkwardly as this one's:
+
+```text
+success       Lint & type-check
+success       Test (Python 3.11)
+NOT REPORTED  Test (Python 3.14)
+```
+
+**An empty `$SCRATCH/required.txt` prints nothing at all**, and that is the
+Phase 0 finding — no enforced required checks, for one of the two reasons its
+table separates. Report it as a finding; do not report CI as verified.
+
+`references/traps.md` has the reasoning, plus stale `CLEAN`, `UNSTABLE` being
+mergeable, neutral CodeQL, and why a bot rebase does not re-trigger CI.
 
 ## Phase 7 — Report
+
+*Requires from Phase 0: `$HEAD_SHA`.*
 
 **Re-check the head SHA before you write anything.** Every row above describes the
 commit pinned in Phase 0. If the bot rebased mid-audit, Phases 1–5 now describe a

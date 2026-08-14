@@ -35,12 +35,16 @@ done, or an SSH key on their account, before running the first command.
 
 ## Use
 
+Two entry points, either of which does the same thing:
+
 ```
-/dependabot-audit 359
+/dependabot-audit <PR>          # e.g. /dependabot-audit 42
 ```
 
-or just say "there's a new Dependabot PR, take a look" — the description matches
-and the skill loads itself.
+or say "there's a new Dependabot PR, take a look" — the skill's description
+matches and it loads itself. Neither is shorthand for the other; the command
+exists so the documented form is real and can declare its own argument hint,
+and the natural-language path exists because that is how most people arrive.
 
 The output is a fixed report shape: verdict, confidence, an evidence table where
 every row is something that was actually run, the reasoning, what would change
@@ -90,9 +94,9 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-51 cases, stdlib only, no network — they run offline and free. Every case
+63 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
-to detect. They fall into five groups:
+to detect. They fall into six groups:
 
 - **Provenance** — a corrupted hash, a size mismatch, a yanked release, an
   artifact missing from the registry, and an sdist checked alongside the wheels.
@@ -110,13 +114,15 @@ to detect. They fall into five groups:
 - **Gate differential** — the three ways a bump moves a gate (widened scope,
   narrowed scope, a changed fix), a deleted file counting as a change, and the
   safety properties: a dirty tree is refused, and the worktree is restored
-  between runs. That last one matters most — without it run two inherits run
-  one's edits and every comparison after it is fiction.
-
-`gate_diff.py` is additionally validated end-to-end against a real historical
-bump: replaying Dependabot's ruff `0.15.22` → `0.16.0` PR against the tree as it
-stood that day reproduces the six Markdown files the newer version started
-formatting — while both versions exit 0.
+  between runs — including when the gate *staged* its change, which
+  `git checkout -- .` cannot undo. That group matters most: without it run two
+  inherits run one's edits and every comparison after it is fiction.
+- **Skill prose** — `SKILL.md` checked against itself: no phase may consume what
+  a later phase creates, the required-context list must be read from a Phase 0
+  artifact rather than typed, every script and reference path the prose names
+  must exist, and the frontmatter key that withholds tools must be the one that
+  works. Each corresponds to a defect that shipped in the prose, where the other
+  groups cannot reach.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target
@@ -145,15 +151,36 @@ Tool versions live in `.pre-commit-config.yaml` and nowhere else — CI invokes 
 hooks rather than installing its own ruff and mypy, so there is no second pin to
 drift from.
 
-**Not covered:** the skill's prose. These tests exercise `audit.py`, the
-deterministic half. Whether the model actually *follows* Phase 6, or stops on an
-unexpected file in the diff, is behavioral and belongs in `claude plugin eval`
-— which is in early access and unavailable on this account. That gap is real, and
-it is where the defects keep turning up: Phase 6 once improvised a check-name
-parse, and Phase 1 referenced a branch that Phase 5 created, so a literal reading
-audited the base branch instead of the PR. Both lived in the prose, where these
-tests cannot reach — the second is why the script now refuses to report `CLEAN`
-on an empty selection.
+**Not covered:** whether the model *follows* the procedure. The prose group checks
+`SKILL.md` against itself — that no phase consumes what a later phase creates,
+that the required-context list is derived rather than typed. It cannot check
+whether Phase 6 gets run at all, or whether an unexpected file in the diff
+actually stops the audit. That is behavioral and belongs in `claude plugin eval`,
+which is in early access and unavailable on this account.
+
+That gap is real, and it is where the defects keep turning up. Four have now
+shipped in the prose and nowhere else:
+
+- Phase 6 improvised a check-name parse, mangling `Lint & type-check` into `Lint`.
+- Phase 1 referenced a branch that Phase 5 created, so a literal reading audited
+  the base branch instead of the PR — which is why the script now refuses to
+  report `CLEAN` on an empty selection.
+- Phase 4 ran against a worktree that Phase 5 created, so read in order it could
+  not run at all.
+- Phase 6 shipped one specific repo's required check names in the only snippet in
+  the file that filled a placeholder in rather than showing one.
+
+Two of those four are the same forward-reference shape, which is what turned the
+prose group from an idea into a necessity: a defect class that recurs is cheaper
+to gate than to keep finding, and prose was the only lever being spent on it.
+
+**Also not covered: the end-to-end `gate_diff` replay.** Dependabot's ruff
+`0.15.22` → `0.16.0` PR, replayed against a sibling repo's tree as it stood that
+day, reproduced the six Markdown files the newer version had started formatting —
+while both versions exit 0. That was **verified by hand, once**, against a tree
+that is not in this repository, and nothing re-runs it. It is the observation
+`gate_diff.py` was built from, recorded in `references/traps.md`; it is not a test
+result, and this section is the wrong place to imply otherwise.
 
 ## Read-only
 

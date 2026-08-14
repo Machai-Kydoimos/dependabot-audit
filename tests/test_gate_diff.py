@@ -134,6 +134,42 @@ class TestSafety(GateDiffHarness):
         self.assertEqual(second["exit"], 0, "run two saw run one's leftovers")
         self.assertFalse((tree / "stray.txt").exists(), "tree left dirty after the run")
 
+    def test_a_staged_change_is_restored_between_runs(self):
+        """The index is the one thing `checkout -- .` cannot undo.
+
+        `git checkout -- .` restores the worktree *from the index*, so anything a
+        gate staged survives it, and `clean -fd` will not remove a tracked file.
+        Run one stages an edit; run two does nothing at all. Without a restore
+        that resets the index, run two inherits the edit and is credited with it,
+        and the tool reports GATES AGREE — the wrong direction to fail in for
+        something whose whole job is reporting that two versions differ.
+
+        Not exotic: `pre-commit` interacts with the index directly, and it is
+        among the likeliest gate commands Phase 4 is handed for a Python repo.
+        """
+        tree = git_repo(self)
+        code, out, _ = self._run(
+            tree,
+            [
+                ("first", "printf 'MUTATED\\n' > tracked.txt && git add tracked.txt"),
+                ("second", "true"),
+            ],
+        )
+        self.assertEqual(code, 1, "run two did nothing and must not be credited with run one")
+        self.assertIn("acted on by first only", out)
+        left = subprocess.run(
+            ["git", "-C", str(tree), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(left.stdout.strip(), "", "a staged change was left in the index")
+        self.assertEqual(
+            (tree / "tracked.txt").read_text(encoding="utf-8"),
+            "original\n",
+            "the staged content survived the restore",
+        )
+
     def test_the_tree_is_clean_when_the_tool_finishes(self):
         tree = git_repo(self)
         self._run(tree, [("a", "printf x > f.txt"), ("b", "printf 'edited' > tracked.txt")])

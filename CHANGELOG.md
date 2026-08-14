@@ -11,22 +11,76 @@ patch.
 
 ## [Unreleased]
 
-### Added
-
-- `CHANGELOG.md`, and annotated tags for every release back to `v0.1.0` — a
-  dependency-provenance tool that ships untagged gives a user pinning to a
-  version nothing to pin to. Each tag points at the last commit declaring that
-  version in `plugin.json`, derived from the file rather than from commit
-  subjects.
-- Issue templates, shaped like this repo's own bug reports: ecosystem, lockfile
-  excerpt, the exact command, and the exit status.
+## [0.2.1] — 2026-08-14
 
 ### Fixed
 
+- **Phase 4 ran against a worktree Phase 5 created.** Read in order — which is how
+  the skill is meant to be read — Phase 4 could not run at all. `git worktree add`
+  moves to Phase 0 beside the fetch, so every later phase is consistent by
+  construction, which was already Phase 0's stated principle. Phase 5 keeps the
+  reproduction and the cleanup; the staleness check moves to where the worktree is
+  now made.
+- **`gate_diff` reported a false `GATES AGREE` when a gate staged its changes.**
+  The restore was `git checkout -- .`, which restores the worktree *from the
+  index*, so anything staged survived it and `clean -fd` will not remove a tracked
+  file. Run two inherited run one's edits and was credited with them — the wrong
+  direction to fail in for a tool whose job is reporting that two versions differ,
+  and not exotic: `pre-commit` stages directly. Now `git reset --hard`.
+- **Phase 6 hardcoded one repo's required check names** in the only snippet in
+  `SKILL.md` that filled a placeholder in rather than showing one. Reused literally
+  against a repo whose checks are named anything else, it matched nothing, printed
+  nothing, and was indistinguishable from "no required checks configured" — Phase 6
+  then verified nothing while the report asserted CI was checked. Phase 0 now
+  derives the list into `$SCRATCH/required.txt` and Phase 6 reads the file, with
+  every context producing a row so one that never reported says `NOT REPORTED`
+  instead of vanishing.
+
+### Added
+
+- **`tests/test_skill_prose.py`** — `SKILL.md` checked against itself, offline, in
+  the existing suite. Four defects have now shipped in the prose and nowhere else,
+  two of them the same forward-reference shape, so fixing them one instance at a
+  time was demonstrably not working. It asserts that no phase
+  consumes what a later phase creates, that the required-context list is read from
+  a Phase 0 artifact rather than typed, that every script and reference path the
+  prose names exists, and that the frontmatter key withholding tools is the one
+  that works rather than the inert key 0.1.9 shipped.
+
+  It does not check whether the model *follows* the phases. That is behavioral,
+  belongs in `claude plugin eval`, and remains unavailable — the README says so
+  and continues to.
+- **`commands/dependabot-audit.md`.** The README documented `/dependabot-audit`
+  and the plugin shipped no `commands/` directory, so the first command a new user
+  tried rested on bare-name resolution the plugin does not control. The command
+  invokes the skill rather than restating the procedure, because `disallowed-tools`
+  applies only while the skill is active and an inlined copy would silently drop
+  the read-only contract.
+- A `Requires:` line on every phase, and a **Phase 0 outputs** table naming
+  everything later phases consume. The forward-reference test reads it.
+- `CHANGELOG.md`, and annotated tags for every release back to `v0.1.0` — a
+  dependency-provenance tool that ships untagged gives a user pinning to a version
+  nothing to pin to. Each tag points at the last commit *declaring* that version in
+  `plugin.json`, derived from the file rather than from commit subjects, because
+  those differ.
+- Issue templates, shaped like this repo's own bug reports: the exact command, the
+  output verbatim, the exit status, and a lockfile excerpt with private index URLs
+  and tokens stripped.
+
+### Changed
+
+- The README states both entry points as equals rather than presenting one as
+  shorthand, and its usage example no longer cites a PR number from a different
+  repository.
+- The README's Tests section no longer presents the end-to-end ruff replay as
+  something the suite does. It was verified by hand, once, against a tree that is
+  not in this repository, and nothing re-runs it — it is the observation
+  `gate_diff.py` was built from, and `references/traps.md` is where it lives.
 - `.gitignore` now covers `.claude/settings.local.json`, which was untracked only
-  because of the maintainer's *global* ignore file. A contributor without that
-  rule would see it as untracked and could commit absolute scratch paths and
-  session identifiers.
+  because of one machine's *global* ignore file. A contributor without that rule
+  would see it as untracked and could commit absolute scratch paths and session
+  identifiers — the one thing the pre-release cleanliness sweep concluded the tree
+  was free of.
 
 ## [0.2.0] — 2026-08-11
 
@@ -273,7 +327,8 @@ patch.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.1.8...v0.1.9
