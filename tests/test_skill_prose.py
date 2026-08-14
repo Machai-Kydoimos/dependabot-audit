@@ -48,7 +48,10 @@ USED = re.compile(r"\$\{?([A-Z_][A-Z0-9_]*)\}?")
 # class because `$SCRATCH/pr-<N>` is one of them.
 SCRATCH_PATH = re.compile(r"\$SCRATCH/[A-Za-z0-9_.<>-]+")
 MADE_BY_REDIRECT = re.compile(r">\s*\"?(\$SCRATCH/[A-Za-z0-9_.<>-]+)")
-MADE_BY_WORKTREE = re.compile(r"git worktree add\s+\"?(\$SCRATCH/[A-Za-z0-9_.<>-]+)")
+MADE_BY_WORKTREE = re.compile(
+    # Flags may sit between `add` and the path (`--detach`, `-b <name>`).
+    r"git worktree add\s+(?:-\S+\s+)*\"?(\$SCRATCH/[A-Za-z0-9_.<>-]+)"
+)
 
 # The fetched branch. Not preceded by a word character or a slash, so
 # `$SCRATCH/pr-<N>` does not also read as a use of the ref.
@@ -184,6 +187,31 @@ class TestNoRepoSpecificLiterals(SkillHarness):
             self.shell[0],
             "Phase 0 must write the required contexts somewhere Phase 6 can read",
         )
+
+
+class TestPhase4MeasuresTheRightTree(SkillHarness):
+    """Measuring on the PR's tree hides the finding whenever it is real.
+
+    A PR that already contains the fixup — someone reformatted to make CI pass —
+    has a tree the new version is already happy with, so the run reports no
+    difference. Observed on a real ruff 0.15.22 -> 0.16.0 bump: six Markdown
+    files on the merge base, nothing on the PR's tree, and the six were exactly
+    what the maintainer had hand-reformatted onto the branch.
+
+    Prose-only, like the four before it, and the worst of them: the others
+    stalled or made noise, this one returns a confident "no change".
+    """
+
+    def test_the_gate_diff_invocation_uses_the_base_worktree(self):
+        phase4 = dict(self.phases)[4]
+        self.assertIn(
+            "$SCRATCH/base-<N>",
+            phase4,
+            "Phase 4 must measure on the merge base, where the change is still visible",
+        )
+
+    def test_phase_0_creates_the_base_worktree(self):
+        self.assertIn("$SCRATCH/base-<N>", self.shell[0])
 
 
 class TestEverythingTheProseNamesExists(SkillHarness):

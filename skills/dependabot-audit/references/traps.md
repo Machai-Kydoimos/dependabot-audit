@@ -55,6 +55,24 @@ and names them. `scripts/gate_diff.py` does this; the three results it
 distinguishes — acted-on-by-newer-only, by-older-only, and both-but-differently
 — are widened scope, narrowed scope, and a changed fix respectively.
 
+**Measure the bump against the tree you have, not the tree the PR proposes.** A
+differential gate run on the PR's own tree answers a weaker question than it
+appears to. If the PR already contains the fixup — someone reformatted, or
+re-ran the tool, to make CI pass — then the new version is already satisfied by
+that tree and the run reports **no difference**. Which is exactly backwards: a PR
+carrying a fixup is a PR whose behaviour change was real enough that a human had
+to deal with it. Run against the **merge base**, where the change is still
+visible.
+
+Observed on a real `ruff 0.15.22 -> 0.16.0` bump: measured on the merge base, six
+Markdown files; measured on the PR's tree, nothing at all. The six were exactly
+the files the maintainer had hand-reformatted onto the branch, so the run
+predicted the work before it existed — and re-running it after the fact would
+have reported the bump as inert.
+
+Running both is better than choosing: base-differs-and-PR-agrees means the change
+is real *and* handled, which is the answer you actually want.
+
 **A tool's formatter and its linter have different gates.** A version can leave
 the linter untouched and still change what the formatter rewrites — including
 widening to file types the repo never expected, such as code fences inside

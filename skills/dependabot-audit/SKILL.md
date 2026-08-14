@@ -78,6 +78,7 @@ HEAD_SHA=$(gh pr view <N> --json headRefOid --jq .headRefOid)   # full 40 chars
 git fetch origin "pull/<N>/head:pr-<N>"
 BASE_SHA=$(git merge-base "$DEFAULT" "pr-<N>")
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
+git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
 
 # save the required contexts; Phase 6 reads the file rather than a list retyped
 # from memory, which verifies nothing while looking identical to a pass
@@ -106,7 +107,8 @@ If either check fails, `git worktree remove` it and re-add.
 | `$HEAD_SHA` | the full 40-character commit under audit |
 | `$BASE_SHA` | merge base of `$DEFAULT` and `pr-<N>` |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
-| `$SCRATCH/pr-<N>` | worktree at that branch — Phase 4 measures in it, Phase 5 reproduces in it |
+| `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it |
+| `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below |
 | `$SCRATCH/required.txt` | the required contexts, one per line; **empty is a finding**, not a blank |
 
 If a later phase needs something not on this list, it belongs here rather than
@@ -271,21 +273,41 @@ Python one in particular audits the wrong interpreter if invoked casually.
 
 ## Phase 4 — Behavior change (the highest-yield phase)
 
-*Requires from Phase 0: the `$SCRATCH/pr-<N>` worktree, and the repo's own gates.*
+*Requires from Phase 0: the `$SCRATCH/base-<N>` worktree, and the repo's own gates.*
 *Executes code from the PR. Skipped under `--no-execute`; skip it if Phase 1
 found anything.*
 
 Not "is it safe" but **"does it change what this repo's gates accept"**. Measure
 that; do not predict it from the changelog.
 
+**Measure on the merge base, not on the PR's tree.** This is the difference
+between finding the change and missing it, and the wrong choice fails silently:
+
 ```bash
 G="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/gate_diff.py"
 
-python3 "$G" --tree "$SCRATCH/pr-<N>" \
-  --run locked   "uv run --no-project --with ruff==0.15.22 ruff format ." \
-  --run proposed "uv run --no-project --with ruff==0.16.0  ruff format ." \
-  --run latest   "uv run --no-project --with ruff==0.16.2  ruff format ."
+python3 "$G" --tree "$SCRATCH/base-<N>" \
+  --run locked   "uv run --no-project --with ruff==<locked> ruff format ." \
+  --run proposed "uv run --no-project --with ruff==<proposed> ruff format ." \
+  --run latest   "uv run --no-project --with ruff==<latest> ruff format ."
 ```
+
+The question is what the new version does to *the code you have*, which is the
+base. A PR that already contains the fixup — because someone reformatted to make
+CI pass — has a tree the new version is already happy with, so measuring there
+reports no difference. And that is precisely the case where the behaviour change
+was real enough that a human had to deal with it. Observed: on a real
+`ruff 0.15.22 -> 0.16.0` bump, the base tree reports six Markdown files and the
+PR's tree reports nothing.
+
+**Then optionally re-run on `$SCRATCH/pr-<N>`.** The two trees answer different
+questions, and together they say something neither says alone:
+
+| base | PR | Reading |
+|---|---|---|
+| differs | agrees | a real behaviour change, and this PR already absorbs it — check *how* |
+| differs | differs | a real behaviour change the PR does **not** handle — it will land on you |
+| agrees | agrees | no behaviour change on this repo's code |
 
 **Give the tool's write mode, not `--check`** — the measurement is what each
 version does to the files, and `--check` does nothing to them. Run it once per
@@ -314,9 +336,11 @@ under a config that disables specific rules a newly added rule is live the momen
 it lands, and under one that enables specific rules it is inert.
 
 A gate with no write mode — a type checker, a test suite — leaves the tree
-untouched and `gate_diff` says so. Exit code and output are then the only
-signals, which is the weaker measurement. Say so in the report rather than
-implying the same confidence as a tree diff.
+untouched and `gate_diff` says so. But **"no run changed any file" has three
+causes**, and the tool deliberately does not choose between them: you gave a
+read-only invocation, or the tree already satisfies every version, or the gate has
+nothing to write. Only the first is a mistake; the second is a real agreement.
+Decide which, and say so — do not report the weaker reading by default.
 
 ## Phase 5 — Independent reproduction
 
@@ -363,6 +387,7 @@ deliberately and say so in the report so the user knows they are there:
 
 ```bash
 git worktree remove "$SCRATCH/pr-<N>"
+git worktree remove "$SCRATCH/base-<N>"
 git branch -D "pr-<N>"
 ```
 

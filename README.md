@@ -65,7 +65,7 @@ the verdict, and the merge command **left un-run**.
 | 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status and PEP 740 build provenance vs. the live registry, read out of git at the pinned ref. A **gate**: if anything here fails, the audit stops before the phases that execute code |
 | 2 | Currency — the registry's true latest, publish times vs. PR open time, and changelogs across the gap |
 | 3 | Known vulnerabilities — OSV batch plus the ecosystem's own auditor |
-| 4 | Behavior change — each gate run at the old and new versions, comparing what they *do to the files* |
+| 4 | Behavior change — each gate run at the old and new versions **against the merge base**, comparing what they *do to the files*. Measuring the PR's own tree reports nothing whenever the PR already contains the fixup, which is exactly when the change was real |
 | 5 | Independent reproduction — frozen install and the repo's own gates in an isolated worktree |
 | 6 | CI verification — the run for the exact head SHA, and the required contexts specifically |
 | 7 | Report |
@@ -101,7 +101,7 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-109 cases, stdlib only, no network — they run offline and free. Every case
+111 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into nine groups:
 
@@ -146,11 +146,12 @@ to detect. They fall into nine groups:
   `git checkout -- .` cannot undo. That group matters most: without it run two
   inherits run one's edits and every comparison after it is fiction.
 - **Skill prose** — `SKILL.md` checked against itself: no phase may consume what
-  a later phase creates, the required-context list must be read from a Phase 0
-  artifact rather than typed, every script and reference path the prose names
-  must exist, the phases that execute PR code must say so, and the frontmatter key
-  that withholds tools must be the one that works. Each corresponds to a defect
-  that shipped in the prose, where the other groups cannot reach.
+  a later phase creates, Phase 4 must measure on the merge base rather than the
+  PR's tree, the required-context list must be read from a Phase 0 artifact rather
+  than typed, every script and reference path the prose names must exist, the
+  phases that execute PR code must say so, and the frontmatter key that withholds
+  tools must be the one that works. Each corresponds to a defect that shipped in
+  the prose, where the other groups cannot reach.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target
@@ -186,7 +187,7 @@ whether Phase 6 gets run at all, or whether an unexpected file in the diff
 actually stops the audit. That is behavioral and belongs in `claude plugin eval`,
 which is in early access and unavailable on this account.
 
-That gap is real, and it is where the defects keep turning up. Four have now
+That gap is real, and it is where the defects keep turning up. Five have now
 shipped in the prose and nowhere else:
 
 - Phase 6 improvised a check-name parse, mangling `Lint & type-check` into `Lint`.
@@ -197,10 +198,17 @@ shipped in the prose and nowhere else:
   not run at all.
 - Phase 6 shipped one specific repo's required check names in the only snippet in
   the file that filled a placeholder in rather than showing one.
+- **Phase 4 measured on the PR's own tree**, which reports no difference whenever
+  the PR already contains the fixup — and a PR carrying a fixup is one whose
+  behaviour change was real enough that a human had to deal with it. Found by
+  auditing the exact bump this plugin's founding observation came from: six
+  Markdown files on the merge base, nothing on the PR's tree.
 
-Two of those four are the same forward-reference shape, which is what turned the
-prose group from an idea into a necessity: a defect class that recurs is cheaper
-to gate than to keep finding, and prose was the only lever being spent on it.
+That last one is the worst of the five. The others stalled a run or made noise;
+this one returned a confident "no change" from the highest-yield phase. Two are
+the same forward-reference shape, which is what turned the prose group from an
+idea into a necessity: a defect class that recurs is cheaper to gate than to keep
+finding, and prose was the only lever being spent on it.
 
 ### Live checks
 

@@ -11,11 +11,41 @@ patch.
 
 ## [Unreleased]
 
-Both of these were found by running the procedure end-to-end against two real
-Dependabot PRs in `Machai-Kydoimos/fpga-board-sim` — which is the only kind of
-test that reaches them.
+## [0.6.0] — 2026-08-14
+
+Found by auditing `Machai-Kydoimos/fpga-board-sim` PR #334 — the exact
+`ruff 0.15.22 -> 0.16.0` bump this plugin's founding observation came from, which
+made it the one PR where the right answer was already known.
+
+### Changed
+
+- **Phase 4 measures on the merge base, not on the PR's tree.** This is the
+  difference between finding a behaviour change and missing it, and the wrong
+  choice fails silently.
+
+  A PR that already contains the fixup — someone reformatted, or re-ran the tool,
+  to make CI pass — has a tree the new version is already satisfied by. Measuring
+  there reports **no difference**. And a PR carrying a fixup is precisely one
+  whose behaviour change was real enough that a human had to deal with it, so the
+  phase returned a confident "no change" in exactly the case it exists for.
+
+  Measured on #334, both ways, against ground truth: on the merge base, six
+  Markdown files; on the PR's tree, nothing. The six were exactly the files the
+  maintainer had hand-reformatted onto the bot's branch in a separate commit — so
+  the run predicted the work before it existed, and the old invocation would have
+  called the same bump inert.
+
+  Phase 0 now builds `$SCRATCH/base-<N>` alongside `$SCRATCH/pr-<N>`, and Phase 4
+  documents reading both: base-differs-and-PR-agrees means the change is real
+  *and* handled, which is the answer you actually want and neither tree gives
+  alone.
+
+  This is the fifth defect to ship in the prose and the worst of them — the others
+  stalled a run or made noise. `tests/test_skill_prose.py` gates it.
 
 ### Fixed
+
+Both of these came from the same exercise, against PRs #359 and #355.
 
 - **`uv sync --locked --no-build` does not work**, and 0.3.0 documented it as the
   default. `--no-build` refuses *every* source build including the project's own,
@@ -542,7 +572,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.0...v0.3.1
