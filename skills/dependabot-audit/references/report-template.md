@@ -26,7 +26,7 @@ turns on.
 | **Vulnerabilities** | OSV result and the ecosystem auditor's, over N packages. | this run |
 | **Behavior change** | Added rules / changed defaults, whether config is opt-in or opt-out, and what running the tool actually showed. | this run *or* reused — head `<sha>` unchanged |
 | **Local reproduction** | Frozen install *in the form that ran*, the interpreter it ran under, any fork verified but not installed, each repo gate with its exit code, test count. | this run *or* reused — head `<sha>` unchanged, worktree verified |
-| **CI** | Run ID and conclusion against the full head SHA; required contexts; job count. | this run |
+| **CI** | Run ID and conclusion against the full head SHA; required contexts; job count. Every red check labelled **attributable**, **pre-existing**, or **underivable** against the base. | this run |
 
 An unmarked table asserts that everything in it was observed this run. If that is
 not true, the table is lying — see the reuse rules in Phase 7.
@@ -51,6 +51,13 @@ Where an install ran, name the form: `uv sync --locked --no-build
 too, and any fork the install did not materialise — `--locked` checks the whole
 lockfile, the install covers one resolution out of it, and the bare row asserts
 both.
+
+**A red check needs its attribution in the cell, not just its conclusion.**
+"Required check `test (ubuntu-latest)` FAILURE" is true and does not say whether
+this bump caused it; "FAILURE — **pre-existing**, red on the base commit too" is
+a different finding with a different verdict. A Hold that rests on an
+unattributed red row is correct only by accident, and the report gives the reader
+no way to tell which.
 
 ## Reasoning
 
