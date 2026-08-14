@@ -226,7 +226,7 @@ Four states, not three, and only the first is your own mistake:
 | `404 Branch not found` | wrong branch name — fix and re-run |
 | `404 Branch not protected` | correct branch, no protection configured |
 | **`404 Not Found`** (bare) | **you lack `admin`** — protection may exist and be invisible to you |
-| `403 Upgrade to GitHub Pro…` | protection unavailable on this plan (a private repo on a free plan) |
+| `403 Upgrade to GitHub Pro…` | protection unavailable on this **plan**, not a permission you lack — returned even at `admin: true` |
 
 `repos/:o/:r/rules/branches/<b>` is not the way around it. It *is* readable
 without admin, which is precisely the trap: it reports **rulesets only**, so a
