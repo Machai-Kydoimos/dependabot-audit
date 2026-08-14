@@ -50,6 +50,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -272,5 +273,29 @@ def main() -> int:
     return 0 if report["agree"] else 1
 
 
+def cli() -> NoReturn:
+    """Entry point. Anything unforeseen becomes exit 2, never exit 1.
+
+    Exit 1 here means the runs disagreed — a finding. An unhandled exception
+    exits 1 too, so without this a crash reports as a behaviour change.
+
+    Set `DEPENDABOT_AUDIT_DEBUG` to re-raise and keep the traceback.
+    """
+    try:
+        sys.exit(main())
+    except SystemExit:
+        # `fail()`'s exit 2 and `main()`'s legitimate 0 and 1 all arrive here.
+        # Re-raise before the broad handler, or all three get rewritten to 2.
+        raise
+    except Exception as exc:
+        if os.environ.get("DEPENDABOT_AUDIT_DEBUG"):
+            raise
+        fail(
+            f"unexpected {type(exc).__name__}: {exc}\n"
+            "       This is a bug, not a finding. Set DEPENDABOT_AUDIT_DEBUG=1 "
+            "for the traceback."
+        )
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    cli()

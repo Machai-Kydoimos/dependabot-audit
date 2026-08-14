@@ -94,23 +94,29 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-66 cases, stdlib only, no network — they run offline and free. Every case
+83 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into six groups:
 
 - **Provenance** — a corrupted hash, a size mismatch, a yanked release, an
-  artifact missing from the registry, and an sdist checked alongside the wheels.
+  artifact missing from the registry, an sdist checked alongside the wheels, and
+  an *absent* size, which must report as not-compared rather than as a mismatch:
+  "the hash matches but the size does not" reads like tampering.
 - **Currency** — a lagging version; a package pinned at two versions under
   different resolution-markers, where the *held-back* fork must not read as stale
   and the *live* one must still be checked; a publish time taken from the earliest
   artifact rather than an arbitrary one; and a pre-release that has no business in
   the gap, next to a post-release that does.
 - **Under-auditing** — a requested name that isn't in the lockfile, an empty
-  selection that must not report `CLEAN`, a lockfile compared against itself, and
-  a non-PyPI package that has to be named rather than dropped.
-- **Failure vs. finding** — an unreadable lockfile, an unreachable registry, and
-  an OSV outage, each of which has to exit 2 rather than borrow the status that
-  means "found something".
+  selection that must not report `CLEAN`, a lockfile compared against itself, a
+  non-PyPI package that has to be named rather than dropped, an artifact swapped
+  at an unchanged version (which a version-keyed diff selects nothing for), and an
+  OSV batch past the 1000-query limit, which must chunk rather than take the whole
+  vulnerability phase down with it.
+- **Failure vs. finding** — an unreadable lockfile, an unreachable registry, an
+  OSV outage, and an *unforeseen* exception, each of which has to exit 2 rather
+  than borrow the status that means "found something" — and a guard that must not
+  swallow a real verdict on the way.
 - **Gate differential** — the three ways a bump moves a gate (widened scope,
   narrowed scope, a changed fix), a deleted file counting as a change, and the
   safety properties: a dirty tree is refused, and the worktree is restored

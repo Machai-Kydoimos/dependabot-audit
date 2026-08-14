@@ -29,19 +29,56 @@ sys.path.insert(
     0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
 )
 
+import audit
 from audit import (
     _get_json,
     _normalize,
     check_currency,
     check_provenance,
+    check_vulns,
+    cli,
     derive_changed,
     fork_context,
+    load_lock,
     main,
     pypi_sourced,
     select_targets,
 )
 
 PYPI_SRC = {"registry": "https://pypi.org/simple"}
+
+
+def wheel_lock(name, version, *, wheels=None, digest="a" * 64):
+    """A one-package lockfile, for comparisons that turn on the artifacts.
+
+    `wheels` is a list of (url, digest) pairs; the default is one wheel named
+    after the package, so a test that only cares about the hash can pass `digest`.
+    """
+    if wheels is None:
+        wheels = [(f"https://files.pythonhosted.org/packages/xx/{name}-{version}.whl", digest)]
+    rows = "\n".join(
+        f'    {{ url = "{url}", hash = "sha256:{sha}", size = 100 }},' for url, sha in wheels
+    )
+    return f"""
+[[package]]
+name = "{name}"
+version = "{version}"
+source = {{ registry = "https://pypi.org/simple" }}
+wheels = [
+{rows}
+]
+"""
+
+
+def changed_names(packages, baseline):
+    return [c["name"] for c in derive_changed(packages, baseline)]
+
+
+ONE_WHEEL = [("https://files.pythonhosted.org/packages/xx/attrs-24.2.0.whl", "a" * 64)]
+TWO_WHEELS = [
+    *ONE_WHEEL,
+    ("https://files.pythonhosted.org/packages/xx/attrs-24.2.0-win.whl", "b" * 64),
+]
 
 
 def write_lock(test: unittest.TestCase, body: str) -> str:
@@ -157,7 +194,8 @@ resolution-markers = ["python_full_version >= '3.11'"]
                 entry("rpds-py", "2026.6.3"),
             ]
         )
-        self.assertEqual(derive_changed(new, base), ["rumdl"])
+        self.assertEqual(changed_names(new, base), ["rumdl"])
+        self.assertEqual(derive_changed(new, base)[0]["kind"], "version")
 
     def test_unchanged_multiversion_package_is_not_a_false_positive(self):
         """Shipped bug: name-keyed comparison flagged rpds-py on every run."""
@@ -169,12 +207,68 @@ resolution-markers = ["python_full_version >= '3.11'"]
                 entry("rpds-py", "2026.6.3"),
             ]
         )
-        self.assertEqual(derive_changed(new, base), [])
+        self.assertEqual(changed_names(new, base), [])
 
     def test_detects_an_added_package(self):
         base = self._lock(self.BASE)
         new = pypi_sourced([entry("rumdl", "0.2.49"), entry("brand-new", "1.0")])
-        self.assertEqual(derive_changed(new, base), ["brand-new"])
+        self.assertEqual(changed_names(new, base), ["brand-new"])
+        self.assertEqual(derive_changed(new, base)[0]["kind"], "added")
+
+
+class TestArtifactSubstitutionIsSelected(unittest.TestCase):
+    """A lockfile diff can move an artifact without moving the version.
+
+    Keying the changed set on (name, version) alone selects *no packages at all*
+    for the one lockfile change most worth catching — and the empty-selection
+    guard then offers two explanations, both benign, neither of which is what
+    happened. A correctly-refused audit becomes a dismissed one.
+    """
+
+    EVIL = "https://files.pythonhosted.org/packages/ev/il/attrs-24.2.0-py3-none-any.whl"
+
+    def _pair(self, base_body, pr_body):
+        base = write_lock(self, base_body)
+        return pypi_sourced(load_lock(write_lock(self, pr_body))), base
+
+    def test_a_hash_swap_at_the_same_version_is_selected(self):
+        pkgs, base = self._pair(
+            wheel_lock("attrs", "24.2.0", digest="a" * 64),
+            wheel_lock("attrs", "24.2.0", digest="0" * 64),
+        )
+        changed = derive_changed(pkgs, base)
+        self.assertEqual([c["name"] for c in changed], ["attrs"])
+        self.assertEqual(changed[0]["kind"], "artifacts", "a hash moved; the version did not")
+
+    def test_a_url_swap_alone_is_selected(self):
+        """The provenance shape: same name, same version, different artifact."""
+        pkgs, base = self._pair(
+            wheel_lock("attrs", "24.2.0"),
+            wheel_lock("attrs", "24.2.0", wheels=[(self.EVIL, "0" * 64)]),
+        )
+        self.assertEqual([c["kind"] for c in derive_changed(pkgs, base)], ["artifacts"])
+
+    def test_an_added_wheel_at_an_unchanged_version_is_selected(self):
+        """Legitimate — a new platform wheel — and still worth verifying."""
+        pkgs, base = self._pair(
+            wheel_lock("attrs", "24.2.0", wheels=ONE_WHEEL),
+            wheel_lock("attrs", "24.2.0", wheels=TWO_WHEELS),
+        )
+        self.assertEqual([c["kind"] for c in derive_changed(pkgs, base)], ["artifacts"])
+
+    def test_a_removed_wheel_is_selected(self):
+        pkgs, base = self._pair(
+            wheel_lock("attrs", "24.2.0", wheels=TWO_WHEELS),
+            wheel_lock("attrs", "24.2.0", wheels=ONE_WHEEL),
+        )
+        self.assertEqual([c["kind"] for c in derive_changed(pkgs, base)], ["artifacts"])
+
+    def test_a_byte_identical_lockfile_still_derives_nothing(self):
+        """The guard this must not weaken: comparing a lockfile against itself."""
+        body = wheel_lock("attrs", "24.2.0")
+        base = write_lock(self, body)
+        pkgs = pypi_sourced(load_lock(write_lock(self, body)))
+        self.assertEqual(derive_changed(pkgs, base), [])
 
 
 class TestProvenance(unittest.TestCase):
@@ -224,6 +318,33 @@ class TestProvenance(unittest.TestCase):
         pkg = entry("p", "1.0", wheels=[artifact("p-1.0.whl")])
         meta = pypi_meta("1.0", [pypi_file("p-1.0.whl")])
         self.assertTrue(check_provenance(pkg, meta)["ok"])
+
+    def test_an_absent_size_is_not_compared_rather_than_mismatched(self):
+        """`size` is optional in a uv.lock artifact table — uv omits it when the
+        index does not report one.
+
+        Comparing it unconditionally reports `size MISMATCH` on an artifact whose
+        hash and URL match PyPI byte-for-byte, which is the report row a reader is
+        least able to dismiss: "the hash matches but the size does not" reads like
+        tampering. Absent means *not compared*, and the two have to stay distinct
+        or the change loses the information it exists to preserve.
+        """
+        art = artifact("p-1.0.whl")
+        del art["size"]
+        pkg = entry("p", "1.0", wheels=[art])
+        meta = pypi_meta("1.0", [pypi_file("p-1.0.whl", size=63001)])
+        result = check_provenance(pkg, meta)
+        self.assertTrue(result["ok"], "a correct artifact must not report BAD")
+        self.assertIsNone(result["artifacts"][0]["checks"]["size"], "null, not True")
+        self.assertTrue(result["artifacts"][0]["checks"]["sha256"])
+
+    def test_a_present_size_is_still_compared(self):
+        """The tri-state must not turn the size check off for everyone."""
+        pkg = entry("p", "1.0", wheels=[artifact("p-1.0.whl", size=999)])
+        meta = pypi_meta("1.0", [pypi_file("p-1.0.whl", size=100)])
+        result = check_provenance(pkg, meta)
+        self.assertFalse(result["ok"])
+        self.assertIs(result["artifacts"][0]["checks"]["size"], False)
 
 
 class TestCurrency(unittest.TestCase):
@@ -391,11 +512,13 @@ version = "0.20.0"
 source = {{ editable = "." }}
 """
 
-    def _run(self, argv, meta=None, fails=None):
+    def _run(self, argv, meta=None, fails=None, entry_point=None):
         """Run main() with the network stubbed. Returns (exit code, stdout, stderr).
 
         `fails` maps a host fragment to the exception the stubbed fetch should
         raise for it, so an outage is simulated without touching the network.
+        `entry_point` selects `cli()` instead, which is where the 0/1/2 contract
+        is actually enforced against an *unforeseen* failure.
         """
 
         def fake_get_json(url, payload=None):
@@ -415,7 +538,7 @@ source = {{ editable = "." }}
             contextlib.redirect_stderr(err),
         ):
             try:
-                code: int | str | None = main()
+                code: int | str | None = (entry_point or main)()
             except SystemExit as exc:  # fail() raises rather than returns
                 code = exc.code
         return code, out.getvalue(), err.getvalue()
@@ -466,6 +589,30 @@ class TestMainContract(_MainHarness):
         )
         self.assertIn("NOT checked", out)
         self.assertIn("fpga-simulator", out)
+
+    def test_an_unrecorded_size_survives_into_the_report(self):
+        """A third state beside match/MISMATCH, or the distinction is lost at the
+        last step — and `--json` gets null, which is the honest encoding."""
+        lock = self.LOCK.replace(", size = 100 }", " }")
+        code, out, _ = self._run([write_lock(self, lock), "--changed", "rumdl"], meta=self._meta())
+        self.assertEqual(code, 0, "a correct artifact with no size is not a finding")
+        self.assertIn("size not recorded", out)
+        self.assertNotIn("size MISMATCH", out)
+
+        _, out, _ = self._run(
+            [write_lock(self, lock), "--changed", "rumdl", "--json"], meta=self._meta()
+        )
+        self.assertIsNone(json.loads(out)["provenance"][0]["artifacts"][0]["checks"]["size"])
+
+    def test_an_artifact_swap_at_an_unchanged_version_is_announced(self):
+        """The diagnostic is the whole point: the empty-selection message offered
+        two benign explanations, and neither was what happened."""
+        base = write_lock(self, self.LOCK)
+        pr = write_lock(self, self.LOCK.replace("a" * 64, "0" * 64))
+        code, out, err = self._run([pr, "--changed-vs", base], meta=self._meta())
+        self.assertIn("ARTIFACTS CHANGED", err)
+        self.assertEqual(code, 1, "the swapped hash no longer matches PyPI")
+        self.assertIn("MISMATCH", out)
 
     def test_json_mode_stays_parseable_alongside_changed_vs(self):
         """--changed-vs is the mode the skill recommends, so its diagnostic line
@@ -524,6 +671,120 @@ class TestFailuresAreNotFindings(_MainHarness):
         )
         self.assertEqual(code, 2)
         self.assertIn("PyPI", err)
+
+    def test_an_unforeseen_exception_exits_2_not_1(self):
+        """The three cases above are the *foreseen* failures. This is the rest.
+
+        A wheel entry with no `url` key — plausible from a non-PyPI index, a
+        future format revision, or a hand-edited lockfile. Left unguarded it
+        raises KeyError out of main(), Python prints a traceback, and the process
+        exits 1 — the status the contract reserves for "ran and found something".
+        The lockfile is written by the PR under audit, which is the input least
+        entitled to be well-formed.
+        """
+        no_url = """
+[[package]]
+name = "rumdl"
+version = "0.2.53"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { hash = "sha256:aaaa", size = 100 },
+]
+"""
+        code, out, err = self._run(
+            [write_lock(self, no_url), "--changed", "rumdl"],
+            meta=self._meta(),
+            entry_point=cli,
+        )
+        self.assertEqual(code, 2, "a crash must not borrow the status that means a finding")
+        self.assertIn("KeyError", err)
+        self.assertNotIn("RESULT", out)
+
+    def test_the_guard_does_not_swallow_a_real_verdict(self):
+        """SystemExit has to re-raise first, or fail()'s exit 2 and main()'s
+        legitimate 0/1 are all rewritten into 2."""
+        code, out, _ = self._run(
+            [write_lock(self, self.LOCK), "--changed", "rumdl"],
+            meta=self._meta(),
+            entry_point=cli,
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("CLEAN", out)
+
+
+class TestOsvBatching(_MainHarness):
+    """`querybatch` rejects a batch over 1000 queries with a 400.
+
+    Measured against api.osv.dev: 1000 queries -> OK, 1001 -> HTTP 400. It fails
+    safe — the HTTPError is caught and routed through fail() — but it kills an
+    otherwise-complete audit at the last step, after every provenance and currency
+    call has been paid for, with a message pointing at OSV rather than at the
+    lockfile size. A 1000-package lockfile is ordinary for a monorepo.
+    """
+
+    def _pkgs(self, count):
+        return [{"name": f"p{i}", "version": "1.0"} for i in range(count)]
+
+    def _stub(self):
+        """Records each batch's size and returns one empty result per query."""
+        sizes = []
+
+        def fake(url, payload=None):
+            queries = json.loads(payload)["queries"]
+            sizes.append(len(queries))
+            return {"results": [{} for _ in queries]}
+
+        return fake, sizes
+
+    def test_a_batch_over_the_limit_is_chunked(self):
+        fake, sizes = self._stub()
+        with mock.patch("audit._get_json", fake):
+            result = check_vulns(self._pkgs(2500))
+        self.assertEqual(sizes, [1000, 1000, 500], "every chunk must stay within the limit")
+        self.assertEqual(result["queried"], 2500)
+
+    def test_exactly_the_limit_is_one_batch(self):
+        fake, sizes = self._stub()
+        with mock.patch("audit._get_json", fake):
+            check_vulns(self._pkgs(audit.OSV_BATCH_LIMIT))
+        self.assertEqual(sizes, [audit.OSV_BATCH_LIMIT], "1000 is accepted; do not split it")
+
+    def test_findings_survive_chunking_and_stay_with_their_package(self):
+        """zip(..., strict=True) is the guard that a chunk came back short; the
+        pairing is what makes a hit name the right package."""
+
+        def fake(url, payload=None):
+            queries = json.loads(payload)["queries"]
+            return {
+                "results": [
+                    {"vulns": [{"id": f"GHSA-{q['package']['name']}"}]}
+                    if q["package"]["name"] == "p1500"
+                    else {}
+                    for q in queries
+                ]
+            }
+
+        with mock.patch("audit._get_json", fake):
+            result = check_vulns(self._pkgs(2500))
+        self.assertEqual([h["name"] for h in result["hits"]], ["p1500"])
+        self.assertEqual(result["hits"][0]["ids"], ["GHSA-p1500"])
+
+    def test_a_paginated_result_is_followed_rather_than_truncated(self):
+        """A querybatch result carries one page. Unread, the extra ids are simply
+        dropped from the report — under-reporting, silently."""
+        calls = []
+
+        def fake(url, payload=None):
+            queries = json.loads(payload)["queries"]
+            calls.append(queries)
+            if queries[0].get("page_token") == "more":
+                return {"results": [{"vulns": [{"id": "GHSA-second"}]}]}
+            return {"results": [{"vulns": [{"id": "GHSA-first"}], "next_page_token": "more"}]}
+
+        with mock.patch("audit._get_json", fake):
+            result = check_vulns(self._pkgs(1))
+        self.assertEqual(result["hits"][0]["ids"], ["GHSA-first", "GHSA-second"])
+        self.assertEqual(len(calls), 2, "the second page was never fetched")
 
 
 class TestRetry(unittest.TestCase):

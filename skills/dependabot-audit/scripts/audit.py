@@ -15,7 +15,9 @@ Usage:
 
 `--changed-vs` derives the changed set by diffing against the base branch's
 lockfile, which is the reliable way to handle a grouped bump — a grouped PR title
-says "with 3 updates" and names none of them.
+says "with 3 updates" and names none of them. It compares artifacts as well as
+versions, so a lockfile that re-points a URL and hash while leaving the version
+alone is selected and said out loud rather than passing as "no changes".
 
 Exit status: 0 = nothing to report, 1 = at least one discrepancy, stale version,
 or known vulnerability, 2 = usage/lookup error — including a requested package
@@ -30,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -41,6 +44,12 @@ from typing import Any, NoReturn
 
 PYPI = "https://pypi.org/pypi/{name}/json"
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
+# api.osv.dev rejects a larger batch with a 400. Measured at the boundary: 1000
+# queries returns 1000 results, 1001 returns HTTP 400.
+OSV_BATCH_LIMIT = 1000
+# Pages to follow for one package before reporting the result as truncated. A
+# package with more vulnerabilities than this has bigger problems than paging.
+OSV_PAGE_LIMIT = 10
 TIMEOUT = 60
 # One retry. An audit makes a call per changed package plus the OSV batch, and
 # losing a dozen good calls to one transient 502 is worse than waiting 2s.
@@ -97,24 +106,59 @@ def _normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def derive_changed(packages: list[dict[str, Any]], baseline_path: str) -> list[str]:
-    """Packages added or version-changed relative to a baseline lockfile.
+def artifact_hashes(pkg: dict[str, Any]) -> tuple[str, ...]:
+    """Every artifact hash this entry pins, sorted — the entry's real identity.
 
-    Compares (name, version) *pairs*, not a name->version mapping: a lockfile may
-    legitimately pin one package at several versions under different
-    resolution-markers, and collapsing those by name reports a spurious change.
-    Removals are not reported — there is nothing left to verify for them.
+    A version is not the only thing a lockfile diff can move. A PR can rewrite an
+    artifact's `url` and `hash` and leave the version alone, which is the single
+    lockfile change most worth catching, and a changed-set keyed on the version
+    selects nothing at all for it.
     """
-    base_pairs = {
-        (_normalize(p["name"]), p["version"]) for p in pypi_sourced(load_lock(baseline_path))
-    }
+    artifacts = ([pkg["sdist"]] if "sdist" in pkg else []) + list(pkg.get("wheels", []))
+    return tuple(sorted(str(a.get("hash", "")) for a in artifacts))
+
+
+def derive_changed(packages: list[dict[str, Any]], baseline_path: str) -> list[dict[str, str]]:
+    """What moved relative to a baseline lockfile, and in what way.
+
+    Compares (name, version) *pairs* rather than a name->version mapping: a
+    lockfile may legitimately pin one package at several versions under different
+    resolution-markers, and collapsing those by name reports a spurious change.
+    Within a matching pair it then compares the artifact hashes, so an artifact
+    substitution at an unchanged version is selected rather than missed.
+
+    Returns one record per changed *name*, with `kind` in:
+
+        added       the name is not in the baseline at all
+        version     the name is, at some other version
+        artifacts   same name and version, different artifacts — not a routine bump
+
+    Removals are not reported: there is nothing left to verify for them.
+    """
+    base = pypi_sourced(load_lock(baseline_path))
+    base_versions: dict[str, set[str]] = {}
+    base_artifacts: dict[tuple[str, str], set[str]] = {}
+    for p in base:
+        key = _normalize(p["name"])
+        base_versions.setdefault(key, set()).add(p["version"])
+        base_artifacts.setdefault((key, p["version"]), set()).update(artifact_hashes(p))
+
     seen: set[str] = set()
-    changed: list[str] = []
+    changed: list[dict[str, str]] = []
     for p in packages:
-        pair = (_normalize(p["name"]), p["version"])
-        if pair not in base_pairs and p["name"] not in seen:
-            seen.add(p["name"])
-            changed.append(p["name"])
+        key, version = _normalize(p["name"]), p["version"]
+        if key not in base_versions:
+            kind, was = "added", ""
+        elif version not in base_versions[key]:
+            kind, was = "version", ", ".join(sorted(base_versions[key]))
+        elif set(artifact_hashes(p)) != base_artifacts[key, version]:
+            kind, was = "artifacts", version
+        else:
+            continue
+        if p["name"] in seen:
+            continue
+        seen.add(p["name"])
+        changed.append({"name": p["name"], "kind": kind, "was": was, "now": version})
     return changed
 
 
@@ -196,13 +240,19 @@ def check_provenance(entry: dict[str, Any], meta: dict[str, Any]) -> dict[str, A
             )
             continue
 
-        checks = {
+        # None means "not recorded, so not compared" — distinct from False, which
+        # means compared and different. `size` is optional in a uv.lock artifact
+        # table: uv omits it when the index does not report one, and comparing it
+        # unconditionally reports `size MISMATCH` on an artifact whose hash and URL
+        # match PyPI byte-for-byte. That is the row a reader is least able to
+        # dismiss — "the hash matches but the size does not" reads like tampering.
+        checks: dict[str, bool | None] = {
             "sha256": record["digests"]["sha256"] == art["hash"].removeprefix("sha256:"),
-            "size": record["size"] == art.get("size"),
+            "size": record["size"] == art["size"] if "size" in art else None,
             "url": record["url"] == art["url"],
             "not_yanked": not record.get("yanked", False),
         }
-        ok = all(checks.values())
+        ok = all(v for v in checks.values() if v is not None)
         result["ok"] &= ok
         result["artifacts"].append({"kind": kind, "filename": filename, "ok": ok, "checks": checks})
 
@@ -297,21 +347,71 @@ def check_currency(
     }
 
 
+def _osv_ids(query: dict[str, Any], result: dict[str, Any]) -> tuple[list[str], bool]:
+    """Every vulnerability id for one package, following OSV's pagination.
+
+    A `querybatch` result carries at most one page and hands back a
+    `next_page_token` when there are more. Left unread those ids are simply
+    dropped from the report, which is under-reporting — the direction this tool
+    exists not to fail in. Rare enough that the extra call almost never happens.
+
+    Returns the ids and whether the page cap was hit with more still outstanding,
+    so a truncation can be said out loud rather than inferred.
+    """
+    ids = [v["id"] for v in result.get("vulns", [])]
+    token = result.get("next_page_token")
+    for _ in range(OSV_PAGE_LIMIT):
+        if not token:
+            return ids, False
+        payload = json.dumps({"queries": [{**query, "page_token": token}]}).encode()
+        page = _get_json(OSV_BATCH, payload)["results"][0]
+        ids += [v["id"] for v in page.get("vulns", [])]
+        token = page.get("next_page_token")
+    return ids, bool(token)
+
+
 def check_vulns(packages: list[dict[str, Any]]) -> dict[str, Any]:
     pkgs = [(p["name"], p["version"]) for p in packages]
     queries = [{"package": {"name": n, "ecosystem": "PyPI"}, "version": v} for n, v in pkgs]
-    results = _get_json(OSV_BATCH, json.dumps({"queries": queries}).encode())["results"]
 
-    hits = [
-        {"name": n, "version": v, "ids": [x["id"] for x in r.get("vulns", [])]}
-        for (n, v), r in zip(pkgs, results, strict=True)
-        if r.get("vulns")
-    ]
+    # OSV rejects a batch over the limit with a 400 (measured: 1000 ok, 1001 not).
+    # Unchunked, a lockfile large enough to trip it loses the vulnerability phase
+    # outright, after every provenance and currency call has already been paid for.
+    results: list[Any] = []
+    for start in range(0, len(queries), OSV_BATCH_LIMIT):
+        chunk = queries[start : start + OSV_BATCH_LIMIT]
+        results += _get_json(OSV_BATCH, json.dumps({"queries": chunk}).encode())["results"]
+
+    hits = []
+    # strict=True catches a chunk that came back short, which is the failure this
+    # pairing has to be protected from: the ids would silently shift packages.
+    for (name, version), query, result in zip(pkgs, queries, results, strict=True):
+        if not result.get("vulns"):
+            continue
+        ids, truncated = _osv_ids(query, result)
+        hits.append({"name": name, "version": version, "ids": ids, "truncated": truncated})
     return {"queried": len(pkgs), "hits": hits}
+
+
+def _state(value: bool | None) -> str:
+    """Three states, because collapsing the third into either of the others loses
+    exactly the information the check is there to carry."""
+    if value is None:
+        return "not recorded"
+    return "match" if value else "MISMATCH"
 
 
 def render(report: dict[str, Any]) -> None:
     print(f"lockfile: {report['lock']}\n")
+
+    # The stderr diagnostic is for whoever ran the command; this is for whoever
+    # reads the report. A re-pointed artifact at an unchanged version has to
+    # survive into both.
+    swapped = [c["name"] for c in report.get("selection", []) if c["kind"] == "artifacts"]
+    if swapped:
+        print(f"!! ARTIFACTS CHANGED at an unchanged version: {', '.join(swapped)}")
+        print("   A lockfile that re-points an artifact without moving the version is")
+        print("   not a routine bump. The provenance rows below are the ones to read.\n")
 
     for prov in report["provenance"]:
         head = f"=== {prov['name']} {prov['version']}"
@@ -322,7 +422,7 @@ def render(report: dict[str, Any]) -> None:
         for art in prov["artifacts"]:
             flag = "OK " if art["ok"] else "BAD"
             detail = art.get("error") or " | ".join(
-                f"{k} {'match' if v else 'MISMATCH'}" for k, v in art["checks"].items()
+                f"{k} {_state(v)}" for k, v in art["checks"].items()
             )
             print(f"  {flag} {art['kind']:5s} {art['filename']}\n      {detail}")
         print(
@@ -365,7 +465,8 @@ def render(report: dict[str, Any]) -> None:
     vulns = report["vulns"]
     if vulns["hits"]:
         for hit in vulns["hits"]:
-            print(f"  VULN {hit['name']}=={hit['version']}: {', '.join(hit['ids'])}")
+            more = "  (MORE NOT LISTED — OSV paging cap)" if hit.get("truncated") else ""
+            print(f"  VULN {hit['name']}=={hit['version']}: {', '.join(hit['ids'])}{more}")
         print(f"\nOSV: {len(vulns['hits'])} of {vulns['queried']} packages affected")
     else:
         print(f"OSV: no known vulnerabilities across {vulns['queried']} packages")
@@ -384,6 +485,15 @@ def render(report: dict[str, Any]) -> None:
         )
     print("This is the mechanical half only — changelog, behavior-change, and")
     print("reproduction phases are not covered here.")
+
+
+def _why_selected(change: dict[str, str]) -> str:
+    """One line saying what moved, because "changed" alone hides the shape."""
+    if change["kind"] == "added":
+        return f"{change['name']:<24} added at {change['now']}"
+    if change["kind"] == "version":
+        return f"{change['name']:<24} version {change['was']} -> {change['now']}"
+    return f"{change['name']:<24} ARTIFACTS CHANGED at unchanged version {change['now']}"
 
 
 def main() -> int:
@@ -407,18 +517,30 @@ def main() -> int:
     packages = pypi_sourced(locked)
     skipped = non_pypi(locked)
 
+    selection: list[dict[str, str]] = []
     if args.changed_vs:
         try:
-            changed = derive_changed(packages, args.changed_vs)
+            selection = derive_changed(packages, args.changed_vs)
         except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
             fail(f"cannot read baseline {args.changed_vs}: {exc}")
+        changed = [c["name"] for c in selection]
         # Diagnostic, so stderr: on stdout it would sit in front of --json output
         # and make the documented machine-readable mode unparseable.
         print(
-            f"derived {len(changed)} changed package(s) vs {args.changed_vs}: "
-            f"{', '.join(changed) or '(none)'}\n",
+            f"derived {len(changed)} changed package(s) vs {args.changed_vs}:"
+            f"{'' if changed else ' (none)'}",
             file=sys.stderr,
         )
+        for change in selection:
+            print(f"  {_why_selected(change)}", file=sys.stderr)
+        if any(c["kind"] == "artifacts" for c in selection):
+            print(
+                "  ^ an artifact moved without the version moving. That is not a"
+                " routine bump —\n"
+                "    read the provenance rows below before anything else.",
+                file=sys.stderr,
+            )
+        print(file=sys.stderr)
     else:
         changed = [n.strip() for n in args.changed.split(",") if n.strip()]
 
@@ -438,10 +560,12 @@ def main() -> int:
     # likelier one: point --changed-vs at the wrong lockfile and every version
     # matches, which reads as "no changes" rather than "wrong input".
     if not targets:
+        # With artifacts in the comparison key, this message is now true: nothing
+        # moved at all, rather than nothing moved *that was being looked at*.
         reason = (
-            f"{args.lock} and {args.changed_vs} pin identical (name, version) pairs"
-            " — either this lockfile did not change, or it is being compared"
-            " against itself"
+            f"{args.lock} and {args.changed_vs} pin identical packages, versions,"
+            " and artifact hashes — either this lockfile did not change, or it is"
+            " being compared against itself"
             if args.changed_vs
             else "no package names were given"
         )
@@ -455,6 +579,7 @@ def main() -> int:
 
     report: dict[str, Any] = {
         "lock": args.lock,
+        "selection": selection,
         "provenance": [],
         "currency": [],
         "skipped": skipped,
@@ -500,5 +625,32 @@ def main() -> int:
     return 0 if report["clean"] else 1
 
 
+def cli() -> NoReturn:
+    """Entry point. Anything unforeseen becomes exit 2, never exit 1.
+
+    Every *foreseeable* failure already routes through `fail()`. This is the
+    backstop for the rest: an unhandled exception exits 1, which the contract
+    reserves for "ran and found something", so a `KeyError` on a lockfile key
+    reads as a discrepancy. The lockfile is written by the PR under audit, which
+    is the input least entitled to be well-formed.
+
+    Set `DEPENDABOT_AUDIT_DEBUG` to re-raise and keep the traceback.
+    """
+    try:
+        sys.exit(main())
+    except SystemExit:
+        # `fail()`'s exit 2 and `main()`'s legitimate 0 and 1 all arrive here.
+        # Re-raise before the broad handler, or all three get rewritten to 2.
+        raise
+    except Exception as exc:
+        if os.environ.get("DEPENDABOT_AUDIT_DEBUG"):
+            raise
+        fail(
+            f"unexpected {type(exc).__name__}: {exc}\n"
+            "       This is a bug, not a finding. Set DEPENDABOT_AUDIT_DEBUG=1 "
+            "for the traceback."
+        )
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    cli()

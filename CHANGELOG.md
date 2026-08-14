@@ -11,6 +11,51 @@ patch.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-08-14
+
+Four defects in `audit.py`, all of which fail safe — toward exit 2, or toward
+noise — and all of which cost an audit something anyway.
+
+### Fixed
+
+- **`--changed-vs` missed an artifact swap at an unchanged version.** The changed
+  set was keyed on `(name, version)`, so a PR that rewrites a wheel's `url` and
+  `hash` and leaves the version alone selected *no packages at all* — the single
+  lockfile change most worth catching, on the path the skill documents as the
+  default. The empty-selection guard stopped it reporting `CLEAN`, so it failed
+  safe, but its message offered two benign explanations and neither was what
+  happened: an operator who believed it dismissed a correctly-refused audit. The
+  comparison now includes the artifact hashes, and the diagnostic distinguishes
+  `added` / `version` / `ARTIFACTS CHANGED`, which is loud in both the stderr
+  diagnostic and the report.
+- **A lockfile entry without `size` reported a false size `MISMATCH`.** `size` is
+  optional in a `uv.lock` artifact table — uv omits it when the index does not
+  report one — and it was compared unconditionally, so an artifact matching PyPI
+  byte-for-byte came back `BAD`. That is the report row a reader is least able to
+  dismiss: "the hash matches but the size does not" reads like tampering. Absent
+  is now a third state, `not recorded`, and `null` in `--json`.
+- **An unhandled exception exited 1**, the status the contract reserves for "ran
+  and found something". Every *foreseeable* failure already routed through
+  `fail()`; there was no backstop for the rest, so a `KeyError` on a lockfile
+  written by the PR under audit read as a discrepancy. Both scripts now dispatch
+  through a `cli()` that re-raises `SystemExit` first — or `fail()`'s exit 2 and
+  `main()`'s legitimate 0 and 1 all get rewritten — and route anything else to
+  exit 2. `DEPENDABOT_AUDIT_DEBUG=1` keeps the traceback.
+- **The OSV batch was unchunked**, and `querybatch` rejects more than 1000 queries
+  with a 400 (measured at the boundary: 1000 returns 1000 results, 1001 returns
+  HTTP 400). A lockfile large enough to trip it lost the whole vulnerability phase
+  at the last step, after every provenance and currency call had been paid for,
+  with a message pointing at OSV rather than at the lockfile size. A
+  1000-package lockfile is ordinary for a monorepo.
+
+### Added
+
+- OSV `next_page_token` is followed rather than dropped. A `querybatch` result
+  carries one page; unread, the remaining ids simply vanish from the report. If
+  the page cap is reached the row says so instead of quietly truncating.
+- `report["selection"]` in `--json`, so a consumer can read *why* each package was
+  selected rather than inferring it.
+
 ## [0.3.0] — 2026-08-14
 
 The audit executes code from the PR it audits, and said so nowhere. On a repo
@@ -373,7 +418,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.1.10...v0.2.0

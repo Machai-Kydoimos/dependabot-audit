@@ -212,6 +212,12 @@ the default.
 read one as the other. Quote its `RESULT` counts — and whatever it names as
 unreachable — in the report, rather than writing "verified" unqualified.
 
+The script says why each package was selected. **`ARTIFACTS CHANGED at unchanged
+version` is not a routine bump** — the lockfile re-points an artifact while the
+version stands still. There are innocent explanations (a wheel added for a new
+platform, a re-resolution against a different index); confirm which, rather than
+assuming one.
+
 For PyPI that one invocation covers this phase **plus the mechanical half of
 Phases 2 and 3** — it also reports the registry's true latest version with
 publish timestamps, and runs the OSV batch across the whole lockfile. Read its

@@ -78,6 +78,20 @@ Observed: a `uv.lock` pinning `rpds-py` at both `0.30.0` (Python < 3.11) and
 `2026.6.3` — 231 artifacts across the two entries, of which a name-keyed audit
 checked 116.
 
+**A version is not the only thing a lockfile diff can move.** A PR can rewrite an
+artifact's URL and hash and leave the version exactly where it was — same package,
+same version, different bytes. A changed-set keyed on `(name, version)` selects
+*nothing* for it, which is the one lockfile change most worth catching. Key the
+comparison on the artifacts too, and report an artifact that moved at an unchanged
+version as its own kind of finding: it is not a routine bump, and the innocent
+explanations (a new platform wheel, a re-resolution) are worth confirming rather
+than assuming.
+
+The failure this produces is subtle in the wrong direction. A tool that refuses an
+empty selection fails *safe* — but its message says "nothing changed", which is
+the one explanation that is not true, and an operator who believes it dismisses a
+correctly-refused audit.
+
 **A constrained pin is not a stale pin — but only the *lower* fork is
 constrained.** An entry held back by an environment marker (the last release
 supporting an older interpreter) trails the registry permanently and by design,

@@ -28,7 +28,7 @@ sys.path.insert(
     0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
 )
 
-from gate_diff import main
+from gate_diff import cli, main
 
 
 def git_repo(test: unittest.TestCase) -> pathlib.Path:
@@ -46,7 +46,7 @@ def git_repo(test: unittest.TestCase) -> pathlib.Path:
 
 
 class GateDiffHarness(unittest.TestCase):
-    def _run(self, tree, runs, as_json=False):
+    def _run(self, tree, runs, as_json=False, entry_point=None):
         argv = ["gate_diff.py", "--tree", str(tree)]
         if as_json:
             argv.append("--json")
@@ -59,7 +59,7 @@ class GateDiffHarness(unittest.TestCase):
             contextlib.redirect_stderr(err),
         ):
             try:
-                code: int | str | None = main()
+                code: int | str | None = (entry_point or main)()
             except SystemExit as exc:  # fail() raises rather than returns
                 code = exc.code
         return code, out.getvalue(), err.getvalue()
@@ -196,6 +196,25 @@ class TestSafety(GateDiffHarness):
         code, _, err = self._run(directory, [("a", "true"), ("b", "true")])
         self.assertEqual(code, 2)
         self.assertIn("not a git worktree", err)
+
+    def test_an_unforeseen_exception_exits_2_not_1(self):
+        """Exit 1 here means the runs disagreed. An unhandled exception exits 1
+        too, so a crash reads as a finding unless the boundary is guarded."""
+        tree = git_repo(self)
+        with mock.patch("gate_diff.snapshot_changes", side_effect=RuntimeError("boom")):
+            code, out, err = self._run(tree, [("a", "true"), ("b", "true")], entry_point=cli)
+        self.assertEqual(code, 2)
+        self.assertIn("RuntimeError", err)
+        self.assertNotIn("RESULT", out)
+
+    def test_the_guard_does_not_swallow_a_real_disagreement(self):
+        """SystemExit re-raises first, or exit 1 and exit 2 both become 2."""
+        tree = git_repo(self)
+        code, out, _ = self._run(
+            tree, [("locked", "true"), ("proposed", "printf x > doc.md")], entry_point=cli
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("GATES DIFFER", out)
 
     def test_a_single_run_is_refused(self):
         tree = git_repo(self)
