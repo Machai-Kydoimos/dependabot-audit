@@ -26,8 +26,9 @@ import sys
 import unittest
 import urllib.request
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "skills/dependabot-audit/scripts"))
+sys.path.insert(
+    0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
+)
 
 from audit import UA, _version_key, fetch_project, files_by_version, latest_version
 

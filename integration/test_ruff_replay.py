@@ -35,8 +35,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "skills/dependabot-audit/scripts"))
+sys.path.insert(
+    0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
+)
 
 from gate_diff import main
 

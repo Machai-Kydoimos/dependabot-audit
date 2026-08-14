@@ -45,6 +45,8 @@ select = [
 # S603/S607: the gate_diff tests build throwaway git repos to run against, which
 #       means invoking `git` from PATH. Same call shape the script itself uses.
 "tests/*" = ["S101", "E501", "S603", "S607"]
+# Same reasoning for the live checks, which build the same throwaway git repos.
+"integration/*" = ["S101", "E501", "S603", "S607"]
 
 # ── mypy (static type checker) ───────────────────────────────────────────────
 [tool.mypy]
