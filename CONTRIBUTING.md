@@ -14,6 +14,19 @@ python3 -m unittest discover -s tests -v
 The suite is stdlib-only, offline, and finishes in under a second. There is no
 install step and nothing to set up.
 
+Two checks live outside it, in `integration/`, because they genuinely need the
+network — a replay of a real ruff bump, and a cross-check of the registry
+assumptions `audit.py` makes:
+
+```bash
+RUN_NETWORK_TESTS=1 python3 -m unittest discover -s integration -v
+```
+
+They run weekly in their own CI job and are **never required**: they go red for
+reasons that are not this repo's fault. Keep them that way. The value of the
+hermetic suite is that it is cheap and trustworthy on every commit, and anything
+that needs a registry does not belong in it.
+
 ## Tests
 
 **Every case corresponds to a defect that actually shipped, or to a failure the

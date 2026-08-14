@@ -220,8 +220,14 @@ assuming one.
 
 For PyPI that one invocation covers this phase **plus the mechanical half of
 Phases 2 and 3** — it also reports the registry's true latest version with
-publish timestamps, and runs the OSV batch across the whole lockfile. Read its
-output there rather than repeating those queries by hand.
+publish timestamps, PEP 740 build provenance where PyPI has it, and the OSV batch
+across the whole lockfile. Read its output there rather than repeating those
+queries by hand.
+
+**`PUBLISHER CHANGED` outranks everything else in the output.** It means the
+release being adopted was built somewhere the previous one was not. Absence of an
+attestation is *not* a finding — it is normal for anything predating Trusted
+Publishing — and the script distinguishes the two.
 
 For npm, Cargo, Go, and GitHub Actions, follow the per-registry recipes in
 `references/ecosystems.md` — they are short API comparisons you can run directly.

@@ -107,6 +107,22 @@ highest pin is live, the rest are held back.
 
 ## Registry and pinning
 
+**A hash comparison cannot catch what the registry itself is serving.** Comparing
+a lockfile's recorded hash against what the registry serves today catches a
+lockfile edited after it was written honestly. It cannot catch a bad artifact the
+registry is serving, because in that case the record and the lockfile agree — and
+agreement is the entire test. Build provenance (PyPI's PEP 740 attestations, npm
+provenance) closes that gap by naming the repository and workflow that produced
+the file. Where it exists, compare the publisher against the release being
+replaced: *the previous version was built by the project's own CI and this one was
+not* is the signal, and it needs no external source of truth.
+
+Report it as three states. **Absent is not a warning** — coverage is partial and
+version-dependent everywhere it exists, so treating absence as suspicious makes
+the row noise on most lockfiles and trains the reader to skip it. And be explicit
+that reading a registry's *summary* of an attestation is not verifying the
+signature: it is stronger than a hash echo, not independent of the registry.
+
 **A version is not a dotted tuple of integers.** Splitting on `.` and comparing
 numerically is the obvious ordering and it is wrong at the edges that matter. A
 PEP 440 epoch (`2!1.0`) lives in the *first* segment, so the obvious parse makes

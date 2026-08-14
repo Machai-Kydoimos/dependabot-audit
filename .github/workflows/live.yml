@@ -1,0 +1,35 @@
+name: Live checks
+
+# Deliberately separate from CI, and deliberately not required.
+#
+# Everything in `tests/` is stdlib-only and offline, which is what makes it cheap
+# enough to run on every commit and honest enough to trust. These two cannot be:
+# one fetches two historical ruff releases to replay a real bump, the other asks
+# PyPI whether the assumptions `audit.py` makes about its API still hold. Both
+# will go red for reasons that are not this repo's fault — a registry outage, a
+# rate limit — so they must never gate a merge. They are a tripwire, not a gate.
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly. What they watch changes on the scale of months, not hours.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: Live checks (network)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      # uv is unpinned on purpose: this job is already non-hermetic by design, and
+      # pinning it here would create a second version pin with nothing keeping it
+      # honest. The ruff versions the replay measures *are* pinned, in the test.
+      - run: pip install uv
+      - run: python -m unittest discover -s integration -v
+        env:
+          RUN_NETWORK_TESTS: "1"

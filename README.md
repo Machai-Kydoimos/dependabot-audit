@@ -22,6 +22,12 @@ actually cost you something are not "is this package malicious":
 
 All three are observed in the wild. The procedure exists for them.
 
+There is a fourth it can now speak to, which a hash comparison structurally
+cannot: **a bad artifact the registry itself is serving.** If the registry record
+and the lockfile agree, agreement is the whole test — so Phase 1 also reads PyPI's
+PEP 740 attestations, which name the repository and workflow that built each file,
+and compares the publisher against the release being replaced.
+
 ## Install
 
 ```
@@ -55,7 +61,7 @@ the verdict, and the merge command **left un-run**.
 | Phase | |
 |---|---|
 | 0 | Discover the repo — required checks, bot config, the repo's own CI gates and their scopes; pin the PR's head SHA and fetch it once |
-| 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status vs. the live registry, read out of git at the pinned ref |
+| 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status and PEP 740 build provenance vs. the live registry, read out of git at the pinned ref. A **gate**: if anything here fails, the audit stops before the phases that execute code |
 | 2 | Currency — the registry's true latest, publish times vs. PR open time, and changelogs across the gap |
 | 3 | Known vulnerabilities — OSV batch plus the ecosystem's own auditor |
 | 4 | Behavior change — each gate run at the old and new versions, comparing what they *do to the files* |
@@ -94,14 +100,24 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-97 cases, stdlib only, no network — they run offline and free. Every case
+108 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
-to detect. They fall into seven groups:
+to detect. They fall into nine groups:
 
 - **Provenance** — a corrupted hash, a size mismatch, a yanked release, an
   artifact missing from the registry, an sdist checked alongside the wheels, and
   an *absent* size, which must report as not-compared rather than as a mismatch:
   "the hash matches but the size does not" reads like tampering.
+- **Build provenance** — PEP 740 attestations as three states: attested, absent
+  (which is **not** a finding — Trusted Publishing postdates most of PyPI), and a
+  publisher that moved between the release being replaced and the one being
+  adopted, which is.
+- **Registry shape** — the Simple API carries no per-file version, so files are
+  attributed to releases by filename: the longest match wins, and a file that
+  cannot be attributed costs a *timestamp*, never a gap entry. Plus "latest" as a
+  computation — excluding pre-releases and fully-yanked releases, and including a
+  release whose files could not be attributed, because omitting a real version is
+  the worse error.
 - **Currency** — a lagging version; a package pinned at two versions under
   different resolution-markers, where the *held-back* fork must not read as stale
   and the *live* one must still be checked; a publish time taken from the earliest
@@ -185,13 +201,28 @@ Two of those four are the same forward-reference shape, which is what turned the
 prose group from an idea into a necessity: a defect class that recurs is cheaper
 to gate than to keep finding, and prose was the only lever being spent on it.
 
-**Also not covered: the end-to-end `gate_diff` replay.** Dependabot's ruff
-`0.15.22` → `0.16.0` PR, replayed against a sibling repo's tree as it stood that
-day, reproduced the six Markdown files the newer version had started formatting —
-while both versions exit 0. That was **verified by hand, once**, against a tree
-that is not in this repository, and nothing re-runs it. It is the observation
-`gate_diff.py` was built from, recorded in `references/traps.md`; it is not a test
-result, and this section is the wrong place to imply otherwise.
+### Live checks
+
+```
+RUN_NETWORK_TESTS=1 python3 -m unittest discover -s integration -v
+```
+
+Two things the hermetic suite cannot reach, in their own directory and their own
+CI job — scheduled weekly, **never required**, because they go red for reasons
+that are not this repo's fault:
+
+- **The `gate_diff` replay.** Dependabot's ruff `0.15.22` → `0.16.0` PR, against a
+  checked-in fixture: the newer version reformats six Markdown files the older one
+  leaves alone, **while both exit 0**. This is the observation `gate_diff.py` was
+  built from, and until now the README asserted it while nothing re-ran it — it
+  had been verified by hand, once, against a tree in another repository. It is the
+  only case in either suite that runs a real tool rather than a shell one-liner,
+  which is why it needs the network and cannot join the hermetic set.
+- **The live registry.** `audit.py` reads the Simple API, which has no
+  `info.version`, so "latest" is now the script's own computation. This checks that
+  computation against what the legacy endpoint still declares, across fourteen
+  real projects, and asserts the response still has the shape the script reads.
+  It is the standing guard on the one real cost of that migration.
 
 ## What it executes
 

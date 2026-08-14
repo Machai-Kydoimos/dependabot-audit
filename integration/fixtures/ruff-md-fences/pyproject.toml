@@ -1,0 +1,4 @@
+# The audited repo's config, not this one's. Present because ruff reads its
+# settings from here, which is half of what Phase 4 measures.
+[tool.ruff]
+line-length = 88

@@ -14,6 +14,12 @@
 [tool.ruff]
 target-version = "py311"        # tomllib
 line-length = 100
+# The ruff replay fixture is deliberately mis-formatted Python inside Markdown
+# fences: it is the input whose reformatting the test measures. Left included,
+# this repo's own `ruff format` hook would tidy it on the next commit and the
+# test would pass against a fixture with nothing left to find — the evidence
+# erased by the tool it is evidence about.
+extend-exclude = ["integration/fixtures"]
 
 [tool.ruff.lint]
 select = [
@@ -43,9 +49,10 @@ select = [
 # ── mypy (static type checker) ───────────────────────────────────────────────
 [tool.mypy]
 python_version = "3.11"
-files = ["skills/dependabot-audit/scripts", "tests"]
+files = ["skills/dependabot-audit/scripts", "tests", "integration"]
 mypy_path = "skills/dependabot-audit/scripts"
 strict = true
+exclude = ["integration/fixtures"]
 
 [[tool.mypy.overrides]]
 # Test functions and their calls to each other are exempt, matching the policy
@@ -56,6 +63,6 @@ strict = true
 # override then disappears with no warning, not even under
 # --warn-unused-configs (tested: errors went 25 -> 175). Adding a test file
 # means adding it here; forgetting is loud, which is the safer direction.
-module = ["test_audit", "test_gate_diff", "test_skill_prose"]
+module = ["test_audit", "test_gate_diff", "test_skill_prose", "test_ruff_replay", "test_live_registry"]
 disallow_untyped_defs = false
 disallow_untyped_calls = false

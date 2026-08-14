@@ -11,6 +11,63 @@ patch.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-14
+
+### Added
+
+- **PEP 740 build provenance.** Comparing a lockfile's hash against what the
+  registry serves today catches a lockfile edited after it was written honestly.
+  It cannot catch a bad artifact PyPI itself is serving, because then the record
+  and the lockfile agree and agreement is the whole test. An attestation names the
+  repository and workflow that built the file — *this wheel was built by the
+  project's own CI*, not merely *this wheel is what PyPI is serving*.
+
+  Reported as three states, never two: attested; **no attestation, which is not a
+  finding** (Trusted Publishing postdates most of PyPI, and collapsing absence
+  into a warning would make the row noise on most lockfiles); and a publisher that
+  moved, which is a loud one.
+
+  In `--changed-vs` mode the publisher is compared against the release being
+  replaced — both versions are in the same Simple API response, so it costs one
+  request and needs no external source of truth. "The previous release was built
+  by the project's CI and this one was not" is the signal worth having.
+
+  Scope: this reads PyPI's *summary* of the bundle. It does not verify the
+  Sigstore signature, which would mean a dependency, and stdlib-only is
+  load-bearing. The report says so — stronger than a hash echo, not independent.
+- **A live-checks suite and its own CI job**, scheduled weekly and never required.
+  It holds the two things the hermetic suite cannot reach, both of which have
+  wanted a home:
+  - the ruff `0.15.22` → `0.16.0` replay, now against a checked-in fixture — six
+    Markdown files reformatted by the newer version, both exiting 0. The README
+    asserted this while nothing re-ran it; it had been verified by hand, once,
+    against a tree in another repository.
+  - a cross-check of the computed "latest" against what the legacy endpoint still
+    declares, across fourteen real projects, plus assertions that the Simple API
+    still has the shape `audit.py` reads.
+
+### Changed
+
+- **Migrated to the Simple API** (PEP 691/700/714) from the legacy
+  `/pypi/<name>/json`, whose `releases` key is its undocumented, long-discouraged
+  half. It is the specified interface, the one with a stability commitment, and
+  the only one exposing `provenance`. One request either way.
+
+  Two consequences worth stating plainly. `check_provenance` gets simpler — the
+  flat `files` list is already keyed on filename, which is what it matched on
+  anyway. And `latest` is now **computed** rather than declared, because the
+  Simple API has no `info.version`; that is what the previous release's PEP 440
+  comparator was for, and what the live cross-check now guards.
+- Files are attributed to releases by filename, since the Simple API carries no
+  per-file version. Measured across 24,512 real files from 12 projects: 2
+  unattributable, both old setuptools sdists whose filename version predates
+  normalisation. An unattributed file costs a **timestamp**, never a gap entry —
+  which versions exist comes from `versions`, and that is complete.
+- `latest` excludes pre-releases and fully-yanked releases, and deliberately
+  *includes* a release whose files could not be attributed: naming an empty
+  release as latest is a visible, recoverable wrong answer, while silently
+  omitting a real one is how the epoch defect hid.
+
 ## [0.4.0] — 2026-08-14
 
 ### Changed
@@ -454,7 +511,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.1...v0.3.0

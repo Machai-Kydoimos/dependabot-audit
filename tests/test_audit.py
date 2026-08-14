@@ -36,12 +36,15 @@ from audit import (
     _is_prerelease,
     _normalize,
     _version_key,
+    check_attestations,
     check_currency,
     check_provenance,
     check_vulns,
     cli,
     derive_changed,
+    files_by_version,
     fork_context,
+    latest_version,
     load_lock,
     main,
     pypi_sourced,
@@ -112,22 +115,42 @@ def artifact(filename, digest="a" * 64, size=100):
 
 
 def pypi_meta(version, files, latest=None, releases=None):
-    """A minimal PyPI JSON response."""
+    """A minimal Simple API (PEP 691/700) project response.
+
+    `latest` is accepted and ignored: the Simple API has no `info.version`, so
+    "latest" is computed from `versions`. Tests that pass it are asserting that
+    the computation agrees with what PyPI used to declare.
+    """
+    releases = releases if releases is not None else {version: files}
     return {
-        "info": {"version": latest or version},
-        "releases": (releases or {version: files}),
+        "meta": {"api-version": "1.4"},
+        "name": "p",
+        # PEP 700 says this is unordered; sorting it here would hide a comparator
+        # that only works because the input arrived sorted.
+        "versions": list(reversed(list(releases))),
+        "files": [f for group in releases.values() for f in group],
     }
 
 
-def pypi_file(filename, digest="a" * 64, size=100, yanked=False, uploaded="2026-01-01T00:00:00Z"):
-    return {
+def pypi_file(
+    filename,
+    digest="a" * 64,
+    size=100,
+    yanked=False,
+    uploaded="2026-01-01T00:00:00Z",
+    provenance=None,
+):
+    record = {
         "filename": filename,
-        "digests": {"sha256": digest},
+        "hashes": {"sha256": digest},
         "size": size,
         "url": f"https://files.pythonhosted.org/packages/xx/{filename}",
         "yanked": yanked,
-        "upload_time_iso_8601": uploaded,
+        "upload-time": uploaded,
     }
+    if provenance:
+        record["provenance"] = provenance
+    return record
 
 
 class TestNormalize(unittest.TestCase):
@@ -375,9 +398,9 @@ class TestCurrency(unittest.TestCase):
             [],
             latest="2026.6.3",
             releases={
-                "0.30.0": [pypi_file("a.whl", uploaded="2019-01-01T00:00:00Z")],
-                "2020.1.1": [pypi_file("b.whl", uploaded="2020-01-01T00:00:00Z")],
-                "2026.6.3": [pypi_file("c.whl", uploaded="2026-06-03T00:00:00Z")],
+                "0.30.0": [pypi_file("p-0.30.0.whl", uploaded="2019-01-01T00:00:00Z")],
+                "2020.1.1": [pypi_file("p-2020.1.1.whl", uploaded="2020-01-01T00:00:00Z")],
+                "2026.6.3": [pypi_file("p-2026.6.3.whl", uploaded="2026-06-03T00:00:00Z")],
             },
         )
 
@@ -427,9 +450,9 @@ class TestCurrency(unittest.TestCase):
             [],
             latest="1.3.0",
             releases={
-                "1.2.3": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
-                "1.3.0rc1": [pypi_file("b.whl", uploaded="2026-02-01T00:00:00Z")],
-                "1.3.0": [pypi_file("c.whl", uploaded="2026-03-01T00:00:00Z")],
+                "1.2.3": [pypi_file("p-1.2.3.whl", uploaded="2026-01-01T00:00:00Z")],
+                "1.3.0rc1": [pypi_file("p-1.3.0rc1.whl", uploaded="2026-02-01T00:00:00Z")],
+                "1.3.0": [pypi_file("p-1.3.0.whl", uploaded="2026-03-01T00:00:00Z")],
             },
         )
         gap = check_currency(pkg, meta)["gap"]
@@ -443,8 +466,8 @@ class TestCurrency(unittest.TestCase):
             [],
             latest="1.0.post1",
             releases={
-                "1.0": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
-                "1.0.post1": [pypi_file("b.whl", uploaded="2026-02-01T00:00:00Z")],
+                "1.0": [pypi_file("p-1.0.whl", uploaded="2026-01-01T00:00:00Z")],
+                "1.0.post1": [pypi_file("p-1.0.post1.whl", uploaded="2026-02-01T00:00:00Z")],
             },
         )
         gap = check_currency(pkg, meta)["gap"]
@@ -460,9 +483,9 @@ class TestCurrency(unittest.TestCase):
             [],
             latest="1.10",
             releases={
-                "1.0": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
-                "1.10": [pypi_file("c.whl", uploaded="2026-02-01T00:00:00Z")],
-                "1.9": [pypi_file("b.whl", uploaded="2026-03-01T00:00:00Z")],
+                "1.0": [pypi_file("p-1.0.whl", uploaded="2026-01-01T00:00:00Z")],
+                "1.10": [pypi_file("p-1.10.whl", uploaded="2026-02-01T00:00:00Z")],
+                "1.9": [pypi_file("p-1.9.whl", uploaded="2026-03-01T00:00:00Z")],
             },
         )
         gap = check_currency(pkg, meta)["gap"]
@@ -484,14 +507,20 @@ class TestCurrency(unittest.TestCase):
             "1.0",
             [],
             latest="2!1.0",
+            # A wheel filename escapes the version, so `2!1.0` appears as
+            # `2_1.0` — which is exactly the case where the file cannot be
+            # attributed back to its version. Gap membership comes from
+            # `versions`, so the release is still listed; only its timestamp is
+            # unknown, and that degradation is visible rather than silent.
             releases={
-                "1.0": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
-                "2!1.0": [pypi_file("b.whl", uploaded="2026-02-01T00:00:00Z")],
+                "1.0": [pypi_file("p-1.0.whl", uploaded="2026-01-01T00:00:00Z")],
+                "2!1.0": [pypi_file("p-2_1.0.whl", uploaded="2026-02-01T00:00:00Z")],
             },
         )
         result = check_currency(pkg, meta)
         self.assertFalse(result["current"])
         self.assertEqual([r["version"] for r in result["gap"]], ["2!1.0"])
+        self.assertIsNone(result["gap"][0]["published"], "an unattributable file is not a guess")
 
     def test_a_dev_release_is_not_listed_in_the_gap(self):
         """Same class as an rc: a bot never proposes one."""
@@ -501,16 +530,21 @@ class TestCurrency(unittest.TestCase):
             [],
             latest="1.1",
             releases={
-                "1.0": [pypi_file("a.whl", uploaded="2026-01-01T00:00:00Z")],
-                "1.1.dev3": [pypi_file("b.whl", uploaded="2026-02-01T00:00:00Z")],
-                "1.1": [pypi_file("c.whl", uploaded="2026-03-01T00:00:00Z")],
+                "1.0": [pypi_file("p-1.0.whl", uploaded="2026-01-01T00:00:00Z")],
+                "1.1.dev3": [pypi_file("p-1.1.dev3.whl", uploaded="2026-02-01T00:00:00Z")],
+                "1.1": [pypi_file("p-1.1.whl", uploaded="2026-03-01T00:00:00Z")],
             },
         )
         self.assertEqual([r["version"] for r in check_currency(pkg, meta)["gap"]], ["1.1"])
 
     def test_unconstrained_pin_is_not_marked_constrained(self):
         pkg = entry("p", "1.0")
-        meta = pypi_meta("1.0", [], latest="1.1", releases={"1.0": [], "1.1": []})
+        meta = pypi_meta(
+            "1.0",
+            [],
+            latest="1.1",
+            releases={"1.0": [pypi_file("p-1.0.whl")], "1.1": [pypi_file("p-1.1.whl")]},
+        )
         self.assertFalse(check_currency(pkg, meta)["constrained"])
 
     def test_current_version_reports_current(self):
@@ -573,6 +607,165 @@ class TestVersionOrdering(unittest.TestCase):
             self.assertFalse(_is_prerelease(version), f"{version} is a release a bot can propose")
 
 
+class TestSimpleApiShape(unittest.TestCase):
+    """The Simple API carries no per-file version, so files must be attributed.
+
+    Measured across 24,512 real files from 12 projects: 2 unattributed, both old
+    setuptools sdists named `setuptools-69.3.tar.gz` where PyPI lists the version
+    as `69.3.0`. The property that matters is not the hit rate — it is that a miss
+    costs a *timestamp*, never a gap entry.
+    """
+
+    def test_files_are_attributed_to_their_version(self):
+        project = pypi_meta(
+            "1.0",
+            [],
+            releases={
+                "1.0": [pypi_file("p-1.0-py3-none-any.whl"), pypi_file("p-1.0.tar.gz")],
+                "1.1": [pypi_file("p-1.1-py3-none-any.whl")],
+            },
+        )
+        grouped = files_by_version(project)
+        self.assertEqual(len(grouped["1.0"]), 2)
+        self.assertEqual(len(grouped["1.1"]), 1)
+
+    def test_the_longest_matching_version_wins(self):
+        """`1.0.1` must not be filed under `1.0`."""
+        project = pypi_meta(
+            "1.0",
+            [],
+            releases={
+                "1.0": [pypi_file("p-1.0.tar.gz")],
+                "1.0.1": [pypi_file("p-1.0.1.tar.gz")],
+            },
+        )
+        grouped = files_by_version(project)
+        self.assertEqual([f["filename"] for f in grouped["1.0"]], ["p-1.0.tar.gz"])
+        self.assertEqual([f["filename"] for f in grouped["1.0.1"]], ["p-1.0.1.tar.gz"])
+
+    def test_an_unattributable_file_costs_a_timestamp_not_a_version(self):
+        project = pypi_meta("1.0", [], releases={"1.0": [pypi_file("mystery-file.whl")]})
+        self.assertEqual(files_by_version(project)["1.0"], [])
+        self.assertIn("1.0", project["versions"], "the version itself must survive")
+
+    def test_latest_is_computed_and_excludes_prereleases(self):
+        project = pypi_meta(
+            "1.0",
+            [],
+            releases={
+                "1.0": [pypi_file("p-1.0.whl")],
+                "1.1": [pypi_file("p-1.1.whl")],
+                "2.0rc1": [pypi_file("p-2.0rc1.whl")],
+            },
+        )
+        self.assertEqual(latest_version(project, files_by_version(project)), "1.1")
+
+    def test_a_fully_yanked_release_is_not_the_latest(self):
+        """Recommending a version whose every file is yanked would be wrong."""
+        project = pypi_meta(
+            "1.0",
+            [],
+            releases={
+                "1.0": [pypi_file("p-1.0.whl")],
+                "1.1": [pypi_file("p-1.1.whl", yanked=True)],
+            },
+        )
+        self.assertEqual(latest_version(project, files_by_version(project)), "1.0")
+
+    def test_a_partly_yanked_release_still_counts(self):
+        """One yanked wheel out of several does not withdraw the release."""
+        project = pypi_meta(
+            "1.0",
+            [],
+            releases={
+                "1.0": [pypi_file("p-1.0.whl")],
+                "1.1": [pypi_file("p-1.1-a.whl", yanked=True), pypi_file("p-1.1-b.whl")],
+            },
+        )
+        self.assertEqual(latest_version(project, files_by_version(project)), "1.1")
+
+
+PUBLISHER = {"kind": "GitHub", "repository": "python-attrs/attrs", "workflow": "pypi-package.yml"}
+OTHER_PUBLISHER = {"kind": "GitHub", "repository": "evil/attrs", "workflow": "release.yml"}
+
+
+class TestAttestations(unittest.TestCase):
+    """PEP 740 answers the question a hash comparison cannot.
+
+    A hash check catches a lockfile edited after it was written honestly. It
+    cannot catch a bad artifact PyPI itself is serving, because then the record
+    and the lockfile agree — and agreement is the whole test.
+    """
+
+    def _project(self, *, previous_publisher=None, current_publisher=None):
+        releases = {
+            "1.0": [pypi_file("p-1.0.whl", provenance="https://pypi.org/integrity/p/1.0/x")],
+            "2.0": [pypi_file("p-2.0.whl", provenance="https://pypi.org/integrity/p/2.0/x")],
+        }
+        if previous_publisher is None:
+            del releases["1.0"][0]["provenance"]
+        if current_publisher is None:
+            del releases["2.0"][0]["provenance"]
+        project = pypi_meta("2.0", [], releases=releases)
+        responses = {
+            "https://pypi.org/integrity/p/1.0/x": previous_publisher,
+            "https://pypi.org/integrity/p/2.0/x": current_publisher,
+        }
+
+        def fake(url, payload=None, accept=None):
+            publisher = responses[url]
+            return {"attestation_bundles": [{"publisher": publisher}] if publisher else []}
+
+        return project, fake
+
+    def _check(self, project, fake, *, previous=""):
+        pkg = entry("p", "2.0", wheels=[artifact("p-2.0.whl")])
+        with mock.patch("audit._get_json", fake):
+            return check_attestations(pkg, project, previous=previous)
+
+    def test_an_attested_artifact_names_its_publisher(self):
+        result = self._check(*self._project(current_publisher=PUBLISHER))
+        self.assertEqual(result["attested"], 1)
+        self.assertEqual(result["artifacts"][0]["publisher"], PUBLISHER)
+
+    def test_no_attestation_is_not_a_finding(self):
+        """Normal for anything predating Trusted Publishing. Collapsing it into a
+        warning would make the row noise on most lockfiles and train the reader
+        to skip it — which is the failure ecosystems.md warns about."""
+        result = self._check(*self._project())
+        self.assertEqual(result["attested"], 0)
+        self.assertEqual(result["unattested"], 1)
+        self.assertFalse(result["changed"], "absence must not read as a change")
+
+    def test_the_same_publisher_across_a_bump_is_not_a_finding(self):
+        result = self._check(
+            *self._project(previous_publisher=PUBLISHER, current_publisher=PUBLISHER),
+            previous="1.0",
+        )
+        self.assertFalse(result["changed"])
+        self.assertEqual(result["previous"]["version"], "1.0")
+
+    def test_a_publisher_that_moved_between_releases_is_a_finding(self):
+        """The takeover signal, and it needs no external source of truth: both
+        versions are in the same Simple API response."""
+        result = self._check(
+            *self._project(previous_publisher=PUBLISHER, current_publisher=OTHER_PUBLISHER),
+            previous="1.0",
+        )
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["previous"]["publisher"], PUBLISHER)
+
+    def test_an_unattested_predecessor_is_not_a_change(self):
+        """A project that adopted Trusted Publishing between releases is the
+        common case, and reporting it as a publisher change would be wrong."""
+        result = self._check(
+            *self._project(current_publisher=PUBLISHER),
+            previous="1.0",
+        )
+        self.assertFalse(result["changed"])
+        self.assertIsNone(result["previous"])
+
+
 FORK_PINS = {"rpds-py": ["0.30.0", "2026.6.3"], "rumdl": ["0.2.53"]}
 
 
@@ -616,7 +809,7 @@ source = {{ editable = "." }}
         is actually enforced against an *unforeseen* failure.
         """
 
-        def fake_get_json(url, payload=None):
+        def fake_get_json(url, payload=None, accept=None):
             for fragment, exc in (fails or {}).items():
                 if fragment in url:
                     raise exc

@@ -51,9 +51,54 @@ tree. The script reports how many packages and artifacts it checked, and names
 anything it could not reach — a package resolved from git, a path, or a private
 index is outside its scope and is listed rather than dropped.
 
-Metadata by hand: `https://pypi.org/pypi/<pkg>/json` →
-`.info.version` (latest), `.releases["<ver>"][]` with `.digests.sha256`, `.size`,
-`.url`, `.yanked`, `.upload_time_iso_8601`.
+Metadata by hand — the **Simple API** (PEP 691/700/714), which is the specified
+interface and the one the script uses:
+
+```bash
+curl -sH 'Accept: application/vnd.pypi.simple.v1+json' https://pypi.org/simple/<pkg>/
+```
+
+→ `.versions[]` (every release; **unordered**, so "latest" has to be computed)
+and `.files[]` with `.filename`, `.hashes.sha256`, `.size`, `.url`, `.yanked`,
+`.upload-time`, and `.provenance`.
+
+Two things to know before verifying by hand:
+
+- **`files` carries no version.** It is one flat list for the whole project, so a
+  file has to be attributed to a release by its filename. Measured across 24,512
+  real files: 2 unattributable, both old sdists whose filename version predates
+  normalisation. Which versions *exist* comes from `.versions`, which is complete
+  — so a mis-attributed file costs a timestamp, never a release.
+- **The legacy `https://pypi.org/pypi/<pkg>/json` still works**, and its
+  `.info.version` is the one thing the Simple API does not provide. It is
+  undocumented, long-discouraged, and does not expose `provenance` — useful as a
+  cross-check, not as the source.
+
+**PEP 740 build provenance.** Where `.files[].provenance` is present, fetching it
+returns `attestation_bundles[].publisher`:
+
+```json
+{ "kind": "GitHub", "repository": "pyca/cryptography", "workflow": "pypi-publish.yml" }
+```
+
+That is a materially stronger claim than a hash comparison: *this wheel was built
+by the project's own CI*, rather than *this wheel is what PyPI is serving today*.
+A hash check cannot catch a bad artifact the registry itself is serving, because
+then the record and the lockfile agree, and agreement is the whole test.
+
+Read it as three states, never two:
+
+| State | Meaning |
+|---|---|
+| attested, publisher consistent with the release it replaces | the strongest available |
+| **no attestation** | normal for anything predating Trusted Publishing — **not a finding** |
+| attested, publisher changed | a real finding, and a loud one |
+
+Coverage is partial and version-dependent — for `cryptography`, 1104 of 3637
+files. Collapsing "no attestation" into a warning would make the row noise on most
+lockfiles and train the reader to skip it, which is the failure this file opens
+by warning about. And say in the report that this is *PyPI's* summary of the
+bundle, not an independent signature check: stronger than a hash echo, not proof.
 
 **`uv.lock` can contain several `[[package]]` blocks with the same name**, each
 carrying its own `resolution-markers` — typically the last release supporting an

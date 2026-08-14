@@ -42,7 +42,12 @@ import urllib.parse
 import urllib.request
 from typing import Any, NoReturn
 
-PYPI = "https://pypi.org/pypi/{name}/json"
+# The Simple API's JSON form (PEP 691/700/714), not the legacy
+# /pypi/<name>/json. The legacy endpoint's `releases` key is its undocumented,
+# long-discouraged half, and it is the only one that does not expose PEP 740
+# provenance. One request either way.
+SIMPLE = "https://pypi.org/simple/{name}/"
+SIMPLE_ACCEPT = "application/vnd.pypi.simple.v1+json"
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
 # api.osv.dev rejects a larger batch with a 400. Measured at the boundary: 1000
 # queries returns 1000 results, 1001 returns HTTP 400.
@@ -90,7 +95,7 @@ def _retry_delay(exc: urllib.error.HTTPError) -> float:
         return BACKOFF
 
 
-def _get_json(url: str, payload: bytes | None = None) -> Any:
+def _get_json(url: str, payload: bytes | None = None, accept: str | None = None) -> Any:
     # Callers build URLs from the module constants above, but asserting the scheme
     # is cheaper than trusting it: a `file:` or custom scheme is what S310 warns
     # about, and part of these URLs comes from a lockfile written by the PR under
@@ -99,6 +104,8 @@ def _get_json(url: str, payload: bytes | None = None) -> Any:
         raise ValueError(f"refusing a non-https URL: {url}")
     req = urllib.request.Request(url)  # noqa: S310 — scheme checked above
     req.add_header("User-Agent", UA)
+    if accept is not None:
+        req.add_header("Accept", accept)
     if payload is not None:
         req.data = payload
         req.add_header("Content-Type", "application/json")
@@ -138,8 +145,13 @@ def artifact_hashes(pkg: dict[str, Any]) -> tuple[str, ...]:
     lockfile change most worth catching, and a changed-set keyed on the version
     selects nothing at all for it.
     """
-    artifacts = ([pkg["sdist"]] if "sdist" in pkg else []) + list(pkg.get("wheels", []))
-    return tuple(sorted(str(a.get("hash", "")) for a in artifacts))
+    return tuple(sorted(str(a.get("hash", "")) for _, a in iter_artifacts(pkg)))
+
+
+def iter_artifacts(pkg: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """(kind, artifact table) for the sdist and every wheel this entry pins."""
+    sdist = [("sdist", pkg["sdist"])] if "sdist" in pkg else []
+    return sdist + [("wheel", w) for w in pkg.get("wheels", [])]
 
 
 def derive_changed(packages: list[dict[str, Any]], baseline_path: str) -> list[dict[str, str]]:
@@ -221,6 +233,105 @@ _VERSION = re.compile(
     re.VERBOSE | re.IGNORECASE,
 )
 _PRE_ALIAS = {"alpha": "a", "beta": "b", "c": "rc", "pre": "rc", "preview": "rc"}
+
+
+def publisher_of(record: dict[str, Any], cache: dict[str, Any]) -> dict[str, Any] | None:
+    """Who PyPI says built this artifact, per its PEP 740 attestation.
+
+    A hash comparison catches a lockfile edited after it was written honestly. It
+    cannot catch a bad artifact the registry itself is serving, because then the
+    record and the lockfile agree and agreement is the whole test. An attestation
+    names the repository and workflow that built the file, which is a materially
+    stronger claim: *this wheel was built by the project's own CI*, not merely
+    *this wheel is what PyPI is currently serving*.
+
+    Returns None when the artifact carries no attestation, which is **normal** —
+    Trusted Publishing postdates most of PyPI, and packages published by other
+    means never will have one. Treating absence as a warning would make the row
+    noise on most lockfiles and train the reader to skip it.
+
+    Scope: this reads PyPI's *summary* of the bundle. It does not verify the
+    Sigstore signature, which would mean a dependency, and stdlib-only is
+    load-bearing here. The report has to say so — it is stronger than a hash
+    echo, not independent of PyPI.
+    """
+    url = record.get("provenance")
+    if not url:
+        return None
+    if url not in cache:
+        try:
+            bundles = _get_json(url)["attestation_bundles"]
+        except (OSError, json.JSONDecodeError, KeyError):
+            # An integrity endpoint that is down or shaped unexpectedly must not
+            # take the audit with it: the hash checks stand on their own.
+            cache[url] = None
+        else:
+            cache[url] = bundles[0]["publisher"] if bundles else None
+    published: dict[str, Any] | None = cache[url]
+    return published
+
+
+def check_attestations(
+    entry: dict[str, Any],
+    project: dict[str, Any],
+    *,
+    previous: str = "",
+    cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Publisher identity for the locked artifacts, and whether it moved.
+
+    `previous` is the version this package held in the base lockfile, when there
+    was one. Both versions' files are in the same Simple API response, so the
+    comparison costs one extra request and needs no external source of truth —
+    and "the previous release was built by the project's CI, this one by someone
+    else" is the signal worth having.
+    """
+    cache = {} if cache is None else cache
+    live = {f["filename"]: f for f in project.get("files", [])}
+    locked_files = [
+        live[art["url"].rsplit("/", 1)[-1]]
+        for _, art in iter_artifacts(entry)
+        if art.get("url", "").rsplit("/", 1)[-1] in live
+    ]
+
+    artifacts = [
+        {"filename": f["filename"], "publisher": publisher_of(f, cache)} for f in locked_files
+    ]
+    attested = [a["publisher"] for a in artifacts if a["publisher"]]
+
+    result: dict[str, Any] = {
+        "name": entry["name"],
+        "version": entry["version"],
+        "artifacts": artifacts,
+        "attested": len(attested),
+        "unattested": len(artifacts) - len(attested),
+        "previous": None,
+        "changed": False,
+    }
+    if not previous or not attested:
+        return result
+
+    releases = files_by_version(project)
+    for record in releases.get(previous, []):
+        before = publisher_of(record, cache)
+        if before:
+            result["previous"] = {"version": previous, "publisher": before}
+            result["changed"] = any(_publisher_id(before) != _publisher_id(p) for p in attested)
+            break
+    return result
+
+
+def _publisher_id(publisher: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(publisher.get("kind", "")),
+        str(publisher.get("repository", "")),
+        str(publisher.get("workflow", "")),
+    )
+
+
+def format_publisher(publisher: dict[str, Any]) -> str:
+    kind, repository, workflow = _publisher_id(publisher)
+    return f"{kind} {repository} ({workflow})" if workflow else f"{kind} {repository}"
 
 
 def _parse_version(version: str) -> dict[str, Any]:
@@ -318,24 +429,59 @@ def non_pypi(packages: list[dict[str, Any]]) -> list[str]:
     return [p["name"] for p in packages if not _is_pypi(p)]
 
 
-def check_provenance(entry: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+def fetch_project(name: str) -> dict[str, Any]:
+    """The Simple API's record for one project.
+
+    The name comes out of the lockfile under audit, so it does not get to shape
+    the URL path.
+    """
+    safe = urllib.parse.quote(_normalize(name), safe="")
+    project: dict[str, Any] = _get_json(SIMPLE.format(name=safe), accept=SIMPLE_ACCEPT)
+    return project
+
+
+def files_by_version(project: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Group the Simple API's flat file list by version.
+
+    The Simple API carries no per-file version, so each file is attributed by
+    matching its filename against the project's *own* `versions` list rather than
+    by parsing the filename — longest match wins, so `1.0.1` is not mistaken for
+    `1.0`. Measured across 24,512 real files from 12 projects: 2 unattributed,
+    both old setuptools sdists named `setuptools-69.3.tar.gz` where PyPI lists the
+    version as `69.3.0`.
+
+    An unattributed file costs a *timestamp*, never a gap entry: which versions
+    exist comes from `versions`, which is authoritative and complete. That is the
+    important property — a version that drops out of the gap is one whose
+    changelog never gets read.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {v: [] for v in project.get("versions", [])}
+    ordered = sorted(grouped, key=len, reverse=True)
+    for record in project.get("files", []):
+        filename = record.get("filename", "")
+        for version in ordered:
+            if f"-{version}-" in filename or f"-{version}." in filename:
+                grouped[version].append(record)
+                break
+    return grouped
+
+
+def check_provenance(entry: dict[str, Any], project: dict[str, Any]) -> dict[str, Any]:
     """Compare every locked artifact for one package against PyPI's record."""
     name, version = entry["name"], entry["version"]
     result: dict[str, Any] = {"name": name, "version": version, "artifacts": [], "ok": True}
 
-    release = meta.get("releases", {}).get(version)
-    if not release:
+    known = {_version_key(v): v for v in project.get("versions", [])}
+    if _version_key(version) not in known:
         result["ok"] = False
         result["error"] = f"version {version} not present on PyPI"
         return result
 
-    live = {f["filename"]: f for f in release}
-    artifacts = []
-    if "sdist" in entry:
-        artifacts.append(("sdist", entry["sdist"]))
-    artifacts += [("wheel", w) for w in entry.get("wheels", [])]
+    # Keyed on filename, which is what the Simple API's flat list is already keyed
+    # on — no release bucket to index through.
+    live = {f["filename"]: f for f in project.get("files", [])}
 
-    for kind, art in artifacts:
+    for kind, art in iter_artifacts(entry):
         filename = art["url"].rsplit("/", 1)[-1]
         record = live.get(filename)
         if record is None:
@@ -352,9 +498,12 @@ def check_provenance(entry: dict[str, Any], meta: dict[str, Any]) -> dict[str, A
         # match PyPI byte-for-byte. That is the row a reader is least able to
         # dismiss — "the hash matches but the size does not" reads like tampering.
         checks: dict[str, bool | None] = {
-            "sha256": record["digests"]["sha256"] == art["hash"].removeprefix("sha256:"),
-            "size": record["size"] == art["size"] if "size" in art else None,
+            "sha256": record["hashes"].get("sha256") == art["hash"].removeprefix("sha256:"),
+            # PEP 700 made `size` mandatory on the Simple API, but a private index
+            # need not be current with it, so absence stays a third state here too.
+            "size": record["size"] == art["size"] if "size" in art and "size" in record else None,
             "url": record["url"] == art["url"],
+            # PEP 592: `yanked` is false, true, or a *string* giving the reason.
             "not_yanked": not record.get("yanked", False),
         }
         ok = all(v for v in checks.values() if v is not None)
@@ -386,9 +535,44 @@ def fork_context(entry: dict[str, Any], pins: dict[str, list[str]]) -> tuple[int
     return len(versions), _version_key(entry["version"]) >= highest
 
 
+def latest_version(project: dict[str, Any], releases: dict[str, list[dict[str, Any]]]) -> str:
+    """The newest release a bot could propose.
+
+    The Simple API has no `info.version`, so "latest" is this script's own
+    computation rather than something the registry hands over. That is the one
+    real cost of using the specified interface, and it is why `_version_key` is
+    a parser rather than a heuristic.
+
+    Pre-releases are excluded because a bot never proposes one, and a version
+    whose files are *known* to be entirely yanked is excluded because
+    recommending it would be wrong — but it stays visible in the gap, marked,
+    rather than disappearing.
+
+    A version with no attributed files is deliberately still eligible.
+    `all_yanked` is false for an empty list, so unknown yank status does not
+    exclude. Excluding it would drop an epoch release from consideration for
+    exactly the reason this function was rewritten — through a different door.
+    Naming an empty release as latest is a visible, recoverable wrong answer;
+    silently omitting a real one is not.
+    """
+    usable = [
+        v
+        for v in project.get("versions", [])
+        if not _is_prerelease(v) and not all_yanked(releases.get(v, []))
+    ]
+    if not usable:
+        raise ValueError("no usable release on PyPI (every version is a pre-release or yanked)")
+    return str(max(usable, key=_version_key))
+
+
+def all_yanked(files: list[dict[str, Any]]) -> bool:
+    """True only when there is something to judge and all of it is yanked."""
+    return bool(files) and all(f.get("yanked", False) for f in files)
+
+
 def check_currency(
     entry: dict[str, Any],
-    meta: dict[str, Any],
+    project: dict[str, Any],
     *,
     pins: int = 1,
     newest: bool = True,
@@ -399,26 +583,23 @@ def check_currency(
     package, which is what decides whether `resolution-markers` excuse a gap.
     """
     name, locked = entry["name"], entry["version"]
-    latest = meta["info"]["version"]
-    releases = meta.get("releases", {})
+    releases = files_by_version(project)
+    latest = latest_version(project, releases)
 
     def published(version: str) -> str | None:
         # The *earliest* artifact, not an arbitrary one. The currency question is
         # whether this version existed before the PR was opened, and wheels built
         # by CI can land hours after the sdist they accompany.
-        stamps = [
-            f["upload_time_iso_8601"]
-            for f in releases.get(version) or []
-            if f.get("upload_time_iso_8601")
-        ]
+        stamps = [f["upload-time"] for f in releases.get(version) or [] if f.get("upload-time")]
         return min(stamps, default=None)
 
+    # Membership comes from `versions`, which is authoritative and complete, not
+    # from the files — a version whose files could not be attributed still shows
+    # up here, without a timestamp, rather than silently leaving the gap.
     gap = [
         v
-        for v in releases
-        if releases[v]
-        and not _is_prerelease(v)
-        and _version_key(locked) < _version_key(v) <= _version_key(latest)
+        for v in project.get("versions", [])
+        if not _is_prerelease(v) and _version_key(locked) < _version_key(v) <= _version_key(latest)
     ]
     # Ordered by publish time, because that is the comparison the report asks the
     # reader to make. _version_key breaks ties and covers an absent timestamp.
@@ -429,7 +610,7 @@ def check_currency(
         "name": name,
         "locked": locked,
         "latest": latest,
-        "current": locked == latest,
+        "current": _version_key(locked) == _version_key(latest),
         "constrained": constrained,
         "pins": pins,
         # uv stamps resolution-markers on *every* block of a forked package, so
@@ -444,7 +625,7 @@ def check_currency(
             {
                 "version": v,
                 "published": published(v),
-                "yanked": all(f.get("yanked", False) for f in releases[v]),
+                "yanked": all_yanked(releases.get(v, [])),
             }
             for v in gap
         ],
@@ -566,6 +747,32 @@ def render(report: dict[str, Any]) -> None:
             print(f"      {rel['version']:12s} published {rel['published']}{mark}")
         print("      earliest first; compare it against the PR's createdAt\n")
 
+    for att in report.get("attestations", []):
+        if not att["artifacts"]:
+            continue
+        head = f"=== {att['name']} {att['version']}: build provenance"
+        if att["changed"]:
+            before = format_publisher(att["previous"]["publisher"])
+            now = format_publisher(next(a["publisher"] for a in att["artifacts"] if a["publisher"]))
+            print(f"{head}  <-- PUBLISHER CHANGED")
+            print(f"      {att['previous']['version']} was built by {before}")
+            print(f"      {att['version']} is built by  {now}")
+            print("      A release built somewhere new is worth explaining before merging.\n")
+            continue
+        if att["attested"]:
+            for art in att["artifacts"]:
+                if art["publisher"]:
+                    print(f"{head}\n      {format_publisher(art['publisher'])}")
+                    break
+            if att["previous"]:
+                print(f"      same publisher as {att['previous']['version']}")
+            if att["unattested"]:
+                print(f"      {att['unattested']} of {len(att['artifacts'])} artifacts unattested")
+            print("      PyPI's summary of a PEP 740 attestation, not an independent")
+            print("      signature check — stronger than a hash echo, not proof.\n")
+        else:
+            print(f"{head}\n      none — normal for a release predating Trusted Publishing\n")
+
     vulns = report["vulns"]
     if vulns["hits"]:
         for hit in vulns["hits"]:
@@ -686,6 +893,7 @@ def main() -> int:
         "selection": selection,
         "provenance": [],
         "currency": [],
+        "attestations": [],
         "skipped": skipped,
     }
     # Fork structure comes from the whole lockfile, not just the selected set: a
@@ -694,22 +902,34 @@ def main() -> int:
     for pkg in packages:
         pins.setdefault(_normalize(pkg["name"]), []).append(pkg["version"])
 
-    meta_cache: dict[str, Any] = {}
+    # What each selected package held in the base lockfile, so an attestation can
+    # be compared against the release it replaces.
+    was = {_normalize(c["name"]): c["was"] for c in selection if c["kind"] == "version"}
+
+    project_cache: dict[str, Any] = {}
+    publisher_cache: dict[str, Any] = {}
     for entry in targets:
         key = _normalize(entry["name"])
-        if key not in meta_cache:
+        if key not in project_cache:
             try:
-                # The name comes out of the lockfile under audit, so it does not
-                # get to shape the URL path.
-                safe = urllib.parse.quote(entry["name"], safe="")
-                meta_cache[key] = _get_json(PYPI.format(name=safe))
+                project_cache[key] = fetch_project(entry["name"])
             except (OSError, json.JSONDecodeError) as exc:
                 fail(f"PyPI lookup failed for {entry['name']}: {exc}")
-        meta = meta_cache[key]
+        project = project_cache[key]
         try:
             n_pins, newest = fork_context(entry, pins)
-            report["provenance"].append(check_provenance(entry, meta))
-            report["currency"].append(check_currency(entry, meta, pins=n_pins, newest=newest))
+            report["provenance"].append(check_provenance(entry, project))
+            report["currency"].append(check_currency(entry, project, pins=n_pins, newest=newest))
+            report["attestations"].append(
+                check_attestations(
+                    entry,
+                    project,
+                    # A forked package's `was` names every base version at once;
+                    # only compare when it is unambiguous.
+                    previous=was.get(key, "") if "," not in was.get(key, "") else "",
+                    cache=publisher_cache,
+                )
+            )
         except ValueError as exc:
             # A version this script cannot order is one whose currency it cannot
             # judge. Refusing is the contract; sorting it to the bottom quietly is
@@ -725,6 +945,10 @@ def main() -> int:
     report["clean"] = (
         all(p["ok"] for p in report["provenance"])
         and all(c["current"] or c["held_back"] for c in report["currency"])
+        # A publisher that moved between two attested releases is a finding. A
+        # *missing* attestation is not — it is normal for anything predating
+        # Trusted Publishing, and flagging it would make the row noise.
+        and not any(a["changed"] for a in report["attestations"])
         and not report["vulns"]["hits"]
     )
 
