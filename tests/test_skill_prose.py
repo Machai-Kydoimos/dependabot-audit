@@ -7,10 +7,21 @@ one specific repo's required check names. Two of them are the same
 forward-reference shape. Each was found by a human reading in order, and each was
 answered by editing the prose — which is the same lever that produced them.
 
+What is checkable here is narrow and still worth having: whether the document is
+consistent **with itself**. Two gaps stay open around it, and they are different
+gaps — a green run here is evidence of neither.
+
 Whether the model *follows* the phases is behavioral and belongs in
-`claude plugin eval`, which is unavailable on this account. That gap stays open
-and stays stated. What is checkable here is narrower and still worth having:
-whether the document is consistent **with itself**.
+`claude plugin eval`, which is unavailable on this account.
+
+Whether the prose is **true** is not checkable at all. Consistency is not
+correctness: every case below can pass on a phase that names a real endpoint,
+consumes a properly-derived Phase 0 output, and asks it the wrong question. That
+shipped in 0.10.0 — six passing guards on a Phase 6 whose attribution query, run
+against the one PR the finding came from, produced a false Hold. One of those
+guards asserted the property that *was* the defect, because it was written from
+the fix rather than from a measurement. Replaying the PR is what caught it, and
+nothing in this file could have.
 
     a phase may not consume what a later phase creates
     the required-context list must be read from a Phase 0 artifact, never typed
