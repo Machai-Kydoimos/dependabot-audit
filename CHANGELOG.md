@@ -11,6 +11,19 @@ patch.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`traps.md`'s `403 Upgrade to GitHub Pro…` row read as a permission symptom.**
+  It sits directly beneath *"you lack `admin`"*, in a table about a
+  permission-gated read, and said only "a private repo on a free plan" — so the
+  natural response to it is to go chasing access that would not help. Measured on
+  this repo, private on a free org, holding
+  `{"admin":true,"maintain":true,"pull":true,"push":true,"triage":true}`:
+  `branches/<b>/protection`, `rules/branches/<b>` and `rulesets` all return the
+  same 403. The row now carries the one clause neither it nor Phase 0 had — the
+  plan gate survives the top permission tier, and only the plan or the repo's
+  visibility changes it.
+
 ## [0.10.0] — 2026-08-15
 
 The last three findings from the `BIRSAx2/mdcat` run. All three are the same
