@@ -261,6 +261,58 @@ class TestNoRepoSpecificLiterals(SkillHarness):
             )
 
 
+class TestEveryPhaseCarriesBothEcosystems(SkillHarness):
+    """A phase written for one ecosystem silently assumes it for the other.
+
+    The supported surface is `uv.lock` and GitHub Actions. Phases 1-6 all do
+    ecosystem-specific work, and the failure mode is not that the actions method
+    is wrong — it is that the phase reads as though only lockfiles exist, so the
+    model either skips it or invents a method.
+
+    "Not applicable" is itself an assertion, and one shipped false: three places
+    in this repo stated that GitHub Actions has no vulnerability database. GHSA
+    carries an `actions` ecosystem, and a Phase 3 that believed the claim skipped
+    a real check. Hence a question per phase and a method per ecosystem, rather
+    than a phase that applies to one and is marked N/A for the other.
+    """
+
+    WORKING_PHASES = (1, 2, 3, 4, 5, 6)
+
+    def test_no_phase_is_written_for_only_one_ecosystem(self):
+        bodies = dict(self.phases)
+        for n in self.WORKING_PHASES:
+            self.assertIn(
+                "actions",
+                bodies[n].lower(),
+                f"Phase {n} does ecosystem-specific work but never mentions "
+                f"actions, so it reads as though only lockfiles exist",
+            )
+
+    def test_phase_3_names_an_advisory_source_for_actions(self):
+        """The claim that there is none was false, and skipped a real check."""
+        self.assertIn(
+            "ecosystem=actions",
+            dict(self.phases)[3],
+            "Phase 3 must name the GHSA advisory source for actions",
+        )
+
+    def test_phase_3_records_the_osv_version_trap_for_actions(self):
+        """The obvious port of the uv.lock query reports clean on a compromise.
+
+        OSV carries the actions advisories but its entries have no usable version
+        ranges, so a version-qualified query returns empty. Measured against
+        tj-actions/changed-files: package-only returns 2, every version-qualified
+        form returns 0 — including 0.0.0, which a working range check would match.
+        """
+        phase3 = dict(self.phases)[3].lower()
+        self.assertIn(
+            "tj-actions/changed-files",
+            phase3,
+            "Phase 3 must keep the measured case behind the OSV version trap; "
+            "without it the warning reads as caution rather than a result",
+        )
+
+
 class TestPhase4MeasuresTheRightTree(SkillHarness):
     """Measuring on the PR's tree hides the finding whenever it is real.
 

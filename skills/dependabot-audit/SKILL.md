@@ -327,9 +327,10 @@ attestation is *not* a finding — it is normal for anything predating Trusted
 Publishing — and the script distinguishes the two.
 
 **This plugin covers `uv.lock` and GitHub Actions, and nothing else.** For an
-actions bump the script does not apply at all — no lockfile, no artifact hash, no
-vulnerability database — so follow the recipe in `references/ecosystems.md`, which
-is that ecosystem's whole mechanical half.
+actions bump the script does not apply — there is no lockfile and no artifact
+hash — so follow the recipe in `references/ecosystems.md` for this phase. The
+later phases still apply: every one of them has an actions method, and its
+section says so.
 
 For any **other** ecosystem, say so and stop. Do not improvise a procedure from
 the shape of the ones that are here: an unverified verifier reports green rather
@@ -345,8 +346,26 @@ latest version actually is, and compare publish timestamps against the PR's
 `createdAt`. If a newer version existed *before* the PR was opened, that is
 ingestion lag, not a deliberate hold.
 
+**For GitHub Actions, "current" is a question about the tag line, not the pin.**
+A moving major tag picks up new releases on its own, so a newer patch is not a
+gap. What matters is whether the *major* being adopted is still the newest one,
+and whether the tag still points where the PR proposed — `references/ecosystems.md`
+has the `compare` that separates *ahead* from **behind**.
+
 Rule out the innocent explanations before reporting a gap: a yanked release, or
 an `ignore` rule in `dependabot.yml`/`renovate.json`.
+
+**A bot's ignore state is not always in a config file.** `@dependabot ignore this
+major version` records the hold in the *PR*, not the repo, so a dependency can be
+pinned indefinitely with nothing in `dependabot.yml` to show it. The evidence is a
+closed bot PR carrying a comment like "OK, I won't notify you again about this
+release". When a gap looks unexplained, list closed bot PRs for the same
+dependency before reporting it as lag:
+
+```bash
+gh pr list --state closed --author "app/dependabot" --search "<dependency>" \
+  --json number,title,closedAt
+```
 
 Then **read the changelog for every version in the gap**, plus the versions being
 adopted. Look for two things, in this order:
@@ -360,18 +379,43 @@ adopted. Look for two things, in this order:
 
 ## Phase 3 — Known vulnerabilities
 
-*Requires: the Phase 1 script output.*
+*Requires: the Phase 1 output for this ecosystem.*
 
-Batch-query OSV across the whole locked set, then corroborate with the
-ecosystem's own auditor. Expect this to agree with Phase 2 only sometimes — that
-divergence is the point, not a contradiction.
+**The question: what does the world already know is wrong with this?** Expect it
+to agree with Phase 2 only sometimes — that divergence is the point, not a
+contradiction. The method differs by ecosystem; the question does not.
 
-**For PyPI the OSV half is already done** — the Phase 1 script ran it. Read that
-result instead of issuing a second query; what remains here is the ecosystem
-auditor.
+**uv.lock.** Batch-query OSV across the whole locked set, then corroborate with
+the ecosystem's own auditor. The OSV half is already done — the Phase 1 script
+ran it — so read that result instead of issuing a second query, and what remains
+here is the auditor. See `references/ecosystems.md` for its invocation and traps;
+`pip-audit` in particular audits the wrong interpreter if invoked casually.
 
-See `references/ecosystems.md` for the auditor invocations and their traps; the
-Python one in particular audits the wrong interpreter if invoked casually.
+**GitHub Actions.** Actions *do* have an advisory database, and an audit that
+skips this phase for them is skipping a real check:
+
+```bash
+gh api "/advisories?ecosystem=actions&affects=<owner>/<name>" \
+  --jq '.[] | "\(.ghsa_id)\t\(.severity)\t\(.summary)"'
+```
+
+Also read the action repository's own status — `archived`, `disabled`, or a
+transfer to a new owner are all supply-chain facts that no advisory records.
+
+**Do not query OSV by version for this ecosystem.** OSV carries the same
+advisories, but its GitHub Actions entries have no usable version ranges, so a
+version-qualified query returns empty and reads as clean. Measured against
+`tj-actions/changed-files`, the 2025 compromise:
+
+| Query | Result |
+|---|---|
+| package only | **2 vulns** |
+| `+ version 45.0.7` (the compromised release) | 0 |
+| `+ version 0.0.0` | 0 — a range check would match everything |
+| PyPI control: `requests` 2.19.0, version-qualified | 10, so the pattern itself is sound |
+
+Copying the `uv.lock` shape here — batch by `(package, version)` — therefore
+reports **clean on a known-compromised action**. Query by name, or use GHSA.
 
 ## Phase 4 — Behavior change (the highest-yield phase)
 
@@ -380,8 +424,13 @@ if Phase 0 found the base rewritten — and the repo's own gates.*
 *Executes code from the PR. Skipped under `--no-execute`; skip it if Phase 1
 found anything.*
 
-Not "is it safe" but **"does it change what this repo's gates accept"**. Measure
-that; do not predict it from the changelog.
+**The question: does this change what runs here, or what this repo's gates
+accept?** Not "is it safe". For `uv.lock` you can measure it, and you must —
+predicting it from the changelog is what this phase exists to replace. For
+GitHub Actions you cannot run the thing at all, so the method is different and
+the section for it is below.
+
+### uv.lock — measure it
 
 **Measure on the merge base, not on the PR's tree.** This is the difference
 between finding the change and missing it, and the wrong choice fails silently:
@@ -445,11 +494,55 @@ read-only invocation, or the tree already satisfies every version, or the gate h
 nothing to write. Only the first is a mistake; the second is a real agreement.
 Decide which, and say so — do not report the weaker reading by default.
 
+### GitHub Actions — establish whether the change reaches this repo
+
+You cannot run an action locally at two versions, so measurement is unavailable
+and reading the release notes is the method rather than the shortcut. That makes
+the second step load-bearing: **a change is only a finding here if this repo's
+workflows are in its scope.**
+
+Read the notes for every version in the gap, looking for changes to a *default*,
+a *trigger*, an *input*, or a *runner requirement* — then find the line in this
+repo's workflows that decides whether it applies:
+
+| Change | What to grep for here |
+|---|---|
+| a trigger is newly restricted | `pull_request_target:`, `workflow_run:` in this repo's workflows |
+| a default input flips | that input's name — an explicit setting pins the old behaviour |
+| a minimum runner or Node version | `runs-on:` — GitHub-hosted is fine, a self-hosted label is not |
+| credential or token handling | `permissions:`, `persist-credentials`, and what later steps do with the token |
+
+**Report "inert here" as a result, not as silence.** Reaching it deliberately is
+this phase working; reaching it by not looking is the failure. Observed:
+`actions/checkout@v7` blocks fork-PR checkout under `pull_request_target` and
+`workflow_run` — a security change shipped as a plain bullet with no heading and
+no ⚠️ — and it was genuinely inert on a repo that uses neither trigger. The report
+should say so and name the greps that settled it.
+
+**Two signals that the notes alone will not give you.** Both were observed:
+
+- **A coordinated release across every supported major is a security backport.**
+  `actions/checkout` published v7.0.1, v6.1.0, v5.1.0, v4.4.0, v3.7.0 and v2.8.0
+  within 35 minutes of each other; the backports carry `[BREAKING]` and a
+  changelog link that the original major's notes do not. Check the sibling majors'
+  release dates, not just the line you are on.
+- **Version-coupled actions must move together.** `upload-artifact` and
+  `download-artifact` ship majors in lockstep — the v7/v8 pair went out eight
+  seconds apart. If the bump moves one half, check the sibling's pin in the same
+  workflow and say whether the repo is now split across generations.
+
 ## Phase 5 — Independent reproduction
 
 *Requires from Phase 0: the `$SCRATCH/pr-<N>` worktree, `$HEAD_SHA`, `pr-<N>`.*
 *Executes code from the PR — the most of any phase. Skipped under
 `--no-execute`; skip it if Phase 1 found anything.*
+
+**The question: has this been shown to work, independently of the bot saying so?**
+For `uv.lock` you answer it by building and running the thing. For GitHub Actions
+no local reproduction exists at all, so the answer has to come from somewhere
+else — and "no reproduction available" is a result to report, not a phase to skip.
+
+### uv.lock — install frozen and run the suite
 
 Phase 0 built the worktree and proved it points at `$HEAD_SHA`, so the user's
 working tree is untouched throughout and this phase inherits a tree it can trust.
@@ -469,12 +562,34 @@ uv sync --locked                                   # then add the project itself
 installing itself editable is a build; `references/ecosystems.md` has the error
 and the reasoning.
 
-An actions bump installs nothing, so this phase has no frozen install to run. What
-there is to reproduce is the pin itself, and that is Phase 1's tag comparison in
-`references/ecosystems.md` rather than anything here. Say the phase did not apply;
-do not report it as passed.
-
 Then run the repo's own gates from Phase 0, and its full test suite.
+
+### GitHub Actions — substitute run history
+
+There is nothing to install and no way to execute an action outside GitHub's
+runners, so local reproduction is unavailable. The substitute is **evidence that
+this pin has already run**: ask the workflow the bump changed.
+
+```bash
+gh run list --workflow <changed>.yml --limit 10 \
+  --json conclusion,headBranch,createdAt,displayTitle \
+  --jq '.[] | "\(.conclusion)\t\(.createdAt)\t\(.displayTitle)"'
+```
+
+Read it against the merge date, and be strict about what it proves. Runs *after*
+the bump landed exercised the new pin; runs before it did not, and a green history
+that predates the merge says nothing at all about the version being adopted.
+
+| Situation | What you can honestly report |
+|---|---|
+| the workflow ran green on this pin since the bump landed | reproduced — the strongest evidence available for an actions bump |
+| the workflow has not run since | **not reproduced.** State it; do not let Phase 6's green stand in for it |
+| the workflow is not PR-triggered and the PR is open | reproduction is impossible before merge. That is a property of the change, and it belongs in the report |
+
+Observed: a bump to `actions/upload-artifact` in a release-only workflow, merged
+alongside a `download-artifact` pin two majors behind. Nothing in the PR could
+show whether the pair still interoperated — seven green release runs over the
+following month did.
 
 **Record which install you ran.** The script-suppressing flags are the documented
 default and they weaken the proof: a package that genuinely needs its install
@@ -504,9 +619,28 @@ is not.
 
 *Requires from Phase 0: `$HEAD_SHA`, `$OWNER`, `$NAME`, `$PERMS`.*
 
-Confirm the green you are trusting belongs to **this** commit. Use the full
-40-character `$HEAD_SHA` pinned in Phase 0 — a short one matches nothing and
-reads exactly like "CI never ran":
+Confirm the green you are trusting belongs to **this** commit, **and that it
+exercised the change**. Those are two questions, and an actions bump routinely
+passes the first while failing the second.
+
+**Check that the changed file is reachable from a pull request.** A workflow
+triggered only by `push: tags:` or `schedule:` never runs on a PR, so every check
+on it comes from *other* workflows and none of them execute the changed line:
+
+```bash
+# for each workflow the diff touched, read its triggers
+git show "pr-<N>:.github/workflows/<changed>.yml" | sed -n '/^on:/,/^[a-z]/p'
+```
+
+If the intersection of "workflows the diff touched" and "workflows a
+`pull_request` can trigger" is **empty**, say so plainly: CI is green and it is
+green for reasons unrelated to this diff. Then fall back to Phase 5's run-history
+substitute. Observed: a PR changing only `release.yml`, which triggers on
+`push: tags: [<prefix>-*]`, carried three green checks — all of them from the
+repo's separate test workflow.
+
+Use the full 40-character `$HEAD_SHA` pinned in Phase 0 — a short one matches
+nothing and reads exactly like "CI never ran":
 
 ```bash
 gh run list --commit "$HEAD_SHA" --workflow <ci>.yml
