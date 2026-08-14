@@ -115,6 +115,29 @@ there. A phase that consumes what a later phase creates cannot be run in order,
 and that has now shipped twice — `tests/test_skill_prose.py` is what stops the
 third.
 
+**An output that could not be derived is not an output.** Every row above has
+*three* states, not two: derived; genuinely absent, which is often a finding in
+its own right; and **underivable**, where the call failed or its precondition did
+not hold. Record which one you got, and never let the third collapse into either
+of the others.
+
+That collapse is not hypothetical, and it is the shape both known defects take.
+These two fail into a *plausible* value rather than an error:
+
+| Output | How it fails quietly | What it then asserts |
+|---|---|---|
+| `$BASE_SHA` | the base branch was rewritten under the PR, so `git merge-base` walks back to a much older shared ancestor | a real commit, which is the wrong one — Phase 1 sees a diff full of files the bump never touched, and Phase 4 measures a tree the PR would never land on |
+| `$SCRATCH/required.txt` | the protection call failed and wrote its error body to **stdout** | a well-formed file that reads as "no required checks", which is indistinguishable from a repo that has none |
+
+Neither raises. Both travel downstream as fact, and the report says something
+false with full confidence — which costs more than a crash, because the shape of
+the report invites trust in every row.
+
+So: a phase handed an underivable input says so in its evidence row instead of
+proceeding on the value, and Phase 7 does not print a row whose input was never
+established. "Could not check" is a legitimate thing for this procedure to
+report. "Checked, found nothing" when you could not check is not.
+
 **Classify the PR before trusting it enough to run it.** Dependabot and Renovate
 push their branches *into* the repository, so a dependency bump arriving from a
 fork did not come from the bot:
