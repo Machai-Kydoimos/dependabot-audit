@@ -119,10 +119,15 @@ shape: a row that is accurate and asserts more than it established.
   the case that is not — the same substitution #19 established for Phase 1's
   scope diff.
 
-  The replay also surfaced a second cause for the underivable state: check names
-  drift. `mdcat`'s `main` now reports `test` and `test-windows` where the PR
-  reports `test (ubuntu-latest)`, so a name match against a distant commit finds
-  nothing and reads as "never ran".
+  Two more causes of the underivable state came out of the same replay and out
+  of dogfooding the query on this repo's own PR #26. Check names drift —
+  `mdcat`'s `main` now reports `test` and `test-windows` where the PR reports
+  `test (ubuntu-latest)`, so a name match against a distant commit finds nothing
+  and reads as "never ran". And an intermediate commit of a multi-commit branch
+  is often never built at all: `pr-26^` carries zero check runs, because CI ran
+  on the head and nowhere else. Phase 6 falls back to `$BASE_SHA` there and says
+  which question it answered — red *before this branch* is a weaker claim than
+  red *before this commit*, and passing one off as the other is the failure.
 
   **The obvious query for this is wrong in the same direction as the defect.**
   `gh run list --commit <sha> --json name` returns the *workflow* name, so a

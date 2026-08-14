@@ -806,10 +806,25 @@ Then label the row, in three states and never two:
 | the same check is red | **pre-existing** | the tree the bump landed on was already red. A real finding, a *different* one, and it must not produce a Hold on this bump |
 | **no run at the base**, or no check by that name | **underivable**, per Phase 0 | say so rather than defaulting to attributable |
 
-**The third row has two causes and they look identical.** The commit may predate
-the workflow or its run may have aged out — or the check may simply be *named*
-something else there. Names drift: `mdcat`'s `main` now reports `test` and
-`test-windows` where the PR reports `test (ubuntu-latest)`, so a name match
+**When `pr-<N>^` has no runs at all, fall back to `$BASE_SHA` and weaken the
+claim out loud.** An intermediate commit of a multi-commit branch is often never
+built — CI ran on the head and nowhere else — so the parent has nothing to
+compare against while the merge base, being on the default branch, does. That
+fallback answers a *different* question and the label has to say so:
+
+| Compared against | What a red result establishes |
+|---|---|
+| `pr-<N>^` | it was red **before this commit** — attribution to the bump |
+| `$BASE_SHA` | it was red **before this branch** — everything below the bump is inside the claim |
+
+Reaching for the second is legitimate and better than reporting nothing; passing
+it off as the first is the failure. Observed on this plugin's own PR #26:
+`pr-26^` is an intermediate commit of the branch and carries zero check runs.
+
+**The third row has two more causes and they look identical.** The commit may
+predate the workflow or its run may have aged out — or the check may simply be
+*named* something else there. Names drift: `mdcat`'s `main` now reports `test`
+and `test-windows` where the PR reports `test (ubuntu-latest)`, so a name match
 against a distant commit finds nothing and reads as "never ran". Compare the
 whole name list, not just the one you are chasing.
 
