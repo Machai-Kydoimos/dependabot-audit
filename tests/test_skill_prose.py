@@ -217,6 +217,32 @@ class TestEverythingTheProseNamesExists(SkillHarness):
         self.assertEqual(numbered, list(range(9)), "a phase is missing, duplicated, or reordered")
 
 
+class TestExecutionIsDisclosed(SkillHarness):
+    """The audit runs code from the PR it audits, and once said so nowhere.
+
+    That was a non-issue on repos whose dependencies the maintainer already ran,
+    and becomes the plugin's largest unstated risk the moment it is pointed at an
+    arbitrary repository's fork PR. The disclosure is prose, so it is exactly the
+    kind of thing a later edit can quietly drop.
+    """
+
+    def test_the_executing_phases_are_labelled(self):
+        for number in (4, 5):
+            self.assertIn(
+                "Executes code from the PR",
+                dict(self.phases)[number],
+                f"Phase {number} runs PR-controlled code and must say so in its header",
+            )
+
+    def test_the_read_only_mode_is_documented(self):
+        self.assertIn("--no-execute", self.text, "the read-only mode is undocumented")
+
+    def test_phase_1_stops_rather_than_continuing(self):
+        """Running the cheap read-only checks first is worth something only if
+        they are allowed to refuse."""
+        self.assertIn("stop before Phase 4", dict(self.phases)[1])
+
+
 class TestFrontmatter(SkillHarness):
     """0.1.9 shipped `tools:`, which is not a field and withheld nothing.
 

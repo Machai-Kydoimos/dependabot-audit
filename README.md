@@ -94,7 +94,7 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-63 cases, stdlib only, no network — they run offline and free. Every case
+66 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into six groups:
 
@@ -120,9 +120,9 @@ to detect. They fall into six groups:
 - **Skill prose** — `SKILL.md` checked against itself: no phase may consume what
   a later phase creates, the required-context list must be read from a Phase 0
   artifact rather than typed, every script and reference path the prose names
-  must exist, and the frontmatter key that withholds tools must be the one that
-  works. Each corresponds to a defect that shipped in the prose, where the other
-  groups cannot reach.
+  must exist, the phases that execute PR code must say so, and the frontmatter key
+  that withholds tools must be the one that works. Each corresponds to a defect
+  that shipped in the prose, where the other groups cannot reach.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target
@@ -182,9 +182,44 @@ that is not in this repository, and nothing re-runs it. It is the observation
 `gate_diff.py` was built from, recorded in `references/traps.md`; it is not a test
 result, and this section is the wrong place to imply otherwise.
 
+## What it executes
+
+**The audit runs code from the PR it is auditing.** Two of the eight phases do,
+and it is worth knowing which before pointing this at a repository you do not
+control:
+
+| Phase | What runs |
+|---|---|
+| 4 | the repo's own gates, at a version taken from the diff under audit, through a shell |
+| 5 | a frozen install — npm lifecycle scripts, an sdist build, `build.rs` — and then the PR's own test suite, from the PR's tree |
+
+Phases 0–3 and 6–8 are network reads and `git` queries, and execute nothing.
+
+Three things follow, all of them in the skill:
+
+- **Phase 1 is a gate.** If the diff reaches past the manifest and lockfile, or
+  provenance fails, the audit stops there rather than continuing into the phases
+  that execute. Running the cheap read-only checks first is only worth something
+  if they are allowed to refuse.
+- **`--no-execute` runs Phases 0–3 and 6–7 only** — provenance, currency,
+  changelogs, OSV, CI state. That is most of the value, and it is the right
+  default for a PR you have no reason to trust. Phase 0 flags a cross-repository
+  or non-bot-authored bump and switches to it, because neither Dependabot nor
+  Renovate opens a fork PR.
+- **The narrowed install is the documented default** — `npm ci --ignore-scripts`,
+  `uv sync --locked --no-build`. Cargo has no equivalent for `build.rs`, and the
+  reference says so rather than implying parity. The report names which form ran,
+  because they prove different things.
+
+**This is not a sandbox and does not pretend to be one.** The Phase 5 worktree
+isolates *your working tree from the audit*; it does nothing to isolate *the
+machine from the PR*. If you need that, it comes from outside — a container, a
+throwaway VM, a Landlock confinement — and the plugin cannot verify you have one.
+
 ## Read-only
 
-The skill declares `disallowed-tools: Edit, Write, NotebookEdit`, which removes
+That is a separate claim, about what the plugin itself writes. The skill declares
+`disallowed-tools: Edit, Write, NotebookEdit`, which removes
 those from Claude's pool while it is active. `Bash` remains and could reach
 `gh pr merge`, so "reports, never merges" is still a **contract, not a sandbox**.
 It is stated at the top of the skill, and the report ends with the merge command

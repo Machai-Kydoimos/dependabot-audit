@@ -11,6 +11,52 @@ patch.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-14
+
+The audit executes code from the PR it audits, and said so nowhere. On a repo
+whose dependencies you already run that is a non-issue; pointed at an arbitrary
+repository's fork PR it is the largest thing this tool does that it cannot undo.
+This release states it, orders the phases so the read-only checks can refuse, and
+gives the read-only subset a name.
+
+### Added
+
+- **A `--no-execute` mode** — Phases 0–3 and 6–7 only. Every one is a network
+  read: provenance, currency, changelogs, OSV, CI state. That is most of the
+  procedure's value and the right default for a PR there is no reason to trust.
+  The report names the phases that did not run.
+- **Phase 0 classifies the PR.** Dependabot and Renovate push their branches
+  *into* the repository, so a bump arriving from a fork did not come from the bot.
+  `isCrossRepository`, or an author that is neither, is a finding in its own right
+  and switches the run to `--no-execute` unless the user authorises otherwise.
+- **A "What it executes" section** in the README, an execution section at the top
+  of `SKILL.md` beside the read-only contract, and an *Installing is executing*
+  table in `references/ecosystems.md`. The phases that run PR code are labelled in
+  their own headers, and a test asserts they stay labelled.
+- `SECURITY.md` and `CONTRIBUTING.md`. The skill's Phase 8 offers to write into a
+  repo's `CONTRIBUTING.md` gotchas section, so the plugin had been recommending a
+  file it did not have.
+
+### Changed
+
+- **Phase 1 is a gate, not a step.** A diff reaching past the manifest and
+  lockfile, or a provenance discrepancy, stops the audit *before* Phase 4. Running
+  the cheap read-only checks first is only worth something if they are allowed to
+  refuse; a procedure whose thesis is "verify before you trust" must not run the
+  artifact before it has finished deciding whether to trust it. Stopping there is
+  a complete audit that reached a verdict early, and
+  `references/report-template.md` now carries the row shapes for saying so.
+- **Narrowed frozen installs are the documented default** — `npm ci
+  --ignore-scripts`, `uv sync --locked --no-build`. They cost something real: a
+  package that genuinely needs its install script is not exercised, so the report
+  must name which form ran. `cargo build --locked` runs every crate's `build.rs`
+  and has no equivalent flag, which the reference states rather than implying
+  parity.
+- The README distinguishes two claims that had been running together: what the
+  *plugin* writes (the `disallowed-tools` contract) and what the *audited code*
+  does. The worktree isolates the user's working tree from the audit; it does not
+  isolate the machine from the PR, and nothing here is a sandbox.
+
 ## [0.2.1] — 2026-08-14
 
 ### Fixed
@@ -327,7 +373,8 @@ patch.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.1.9...v0.1.10

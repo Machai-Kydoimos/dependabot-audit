@@ -31,6 +31,23 @@ turns on.
 An unmarked table asserts that everything in it was observed this run. If that is
 not true, the table is lying — see the reuse rules in Phase 7.
 
+**A phase that did not run gets a row saying so, never a missing row.** The three
+reasons, each of which the reader needs and none of which is a failure:
+
+| Phase | Result | Observed |
+|---|---|---|
+| **Behavior change** | *Not run* — `--no-execute`. Phase 4 executes the PR's code. | — |
+| **Local reproduction** | *Not run* — Phase 1 found a file outside the manifest and lockfile, and the audit stopped before any phase that executes. | — |
+| **Local reproduction** | *Not run* — PR is cross-repository, so the bots did not open it; execution not authorised. | — |
+
+An audit that stops at Phase 1 is complete, not failed: it reached a verdict
+early, on the evidence that mattered. Say what the verdict rests on, and say what
+running the remaining phases would add — that is the difference between a report
+and an apology.
+
+Where an install ran, name the form: `npm ci --ignore-scripts` and `npm ci` prove
+different things, and "frozen install passed" is not the same claim in both.
+
 ## Reasoning
 
 Why the verdict follows from the evidence. This is where a finding that no

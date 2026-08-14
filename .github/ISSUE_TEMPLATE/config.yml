@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Something with a security dimension
+    url: https://github.com/Machai-Kydoimos/dependabot-audit/blob/main/SECURITY.md
+    about: >-
+      Read SECURITY.md first. Note that the audit executes code from the PR it
+      audits, in Phases 4 and 5, by design — that is documented, not a finding.

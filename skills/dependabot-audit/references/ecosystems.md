@@ -13,6 +13,30 @@ Do not extend the script to a new ecosystem without a repo to test it against.
 An unverified verifier is worse than none — it produces confident green output
 that nobody checks.
 
+## Installing is executing
+
+Every frozen install below runs code the PR controls. This is not a footnote; it
+is the largest thing the audit does that the audit cannot undo:
+
+| Ecosystem | What an install runs | How to narrow it |
+|---|---|---|
+| npm | `preinstall` / `install` / `postinstall` scripts — the standard supply-chain vector | `npm ci --ignore-scripts` |
+| PyPI / uv | any sdist in the resolution builds, running `setup.py` or the PEP 517 backend | `uv sync --locked --no-build` |
+| Cargo | every crate's `build.rs` | **nothing** — there is no flag |
+| Go | nothing at install time; `go build` does not run third-party build hooks | not needed |
+
+The narrowed forms are the **documented default**. They cost something real: a
+package that genuinely needs its install script is not exercised, so the frozen
+install proves slightly less than it would otherwise. That is a trade worth making
+by default and worth reversing deliberately — **say in the report which one you
+ran.** "Frozen install passed" is not the same claim in the two cases.
+
+Cargo has no equivalent, so for a crate bump the only mitigations are outside the
+tool: a container, a throwaway VM, or a Landlock confinement. The Phase 5 worktree
+isolates the user's working tree from the audit; it does nothing about this. If
+you have no isolation and no reason to trust the PR, `--no-execute` is the honest
+answer — Phases 0–3 and 6–7 are all network reads and cover most of the ground.
+
 ## Python — PyPI, `uv.lock`
 
 Covered by the script:
@@ -66,7 +90,8 @@ publish timestamps.
 Note the digest is **base64 SHA-512**, not hex — decode before comparing to
 anything computed locally.
 
-Frozen install is `npm ci`. Auditor is `npm audit --json`.
+Frozen install is `npm ci --ignore-scripts` by default; see *Installing is
+executing* above before dropping the flag. Auditor is `npm audit --json`.
 
 ## Rust — crates.io, `Cargo.lock`
 
@@ -75,7 +100,9 @@ Each `[[package]]` carries `checksum` (hex sha256) matching
 Currency from `https://crates.io/api/v1/crates/<name>` → `.crate.max_stable_version`,
 with `.versions[].created_at` for timestamps and `.versions[].yanked`.
 
-Frozen install is `cargo build --locked`. Auditor is `cargo audit`.
+Frozen install is `cargo build --locked`, which runs every crate's `build.rs` and
+offers no flag to stop it — isolation for a crate bump has to come from outside
+the tool. Auditor is `cargo audit`.
 
 ## Go — module proxy, `go.sum`
 

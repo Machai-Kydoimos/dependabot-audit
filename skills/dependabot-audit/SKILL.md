@@ -17,6 +17,38 @@ Phase 8 hands its memory entry back rather than writing it, precisely because
 reaching for `Bash` to do what the withheld tools would have done makes the
 withholding theatre.
 
+## This audit executes the code it audits
+
+The contract above governs what *this skill* writes. It says nothing about what
+the audited code does, and two phases run it:
+
+- **Phase 5** installs frozen and runs the PR's own test suite from the PR's tree.
+  `npm ci` runs `preinstall`/`install`/`postinstall` scripts, `uv sync` builds any
+  sdist in the resolution — which runs `setup.py` or the project's build backend —
+  and `cargo build` runs every crate's `build.rs`.
+- **Phase 4** runs the repo's gates at a version taken from the diff under audit.
+- **`gate_diff.py`** passes its `--run` commands to a shell, and those commands are
+  transcribed from the audited repo's CI config, which an actions bump legitimately
+  modifies.
+
+**The worktree isolates the user's working tree from the audit. It does not
+isolate the machine from the PR.** Nothing here is a sandbox; if you need one, it
+has to come from outside — a container, a throwaway VM, or a Landlock confinement
+— and this skill cannot verify that you have one.
+
+The ordering is the mitigation available inside the skill. Phases 1–3 are the
+read-only checks that would catch a bad dependency, and **Phase 1 is a gate**: if
+the diff reaches beyond the manifest and lockfile, or provenance fails, stop there.
+Do not continue into the phases that execute. A procedure whose thesis is "verify
+before you trust" must not run the artifact before it has finished deciding
+whether to trust it.
+
+**`--no-execute`** runs Phases 0–3 and 6–7 only. Every one of those is a network
+read: provenance, currency, changelogs, OSV, CI state. That is most of this
+procedure's value, and it is the right default for a PR you have no reason to
+trust yet. Use it when the user asks, and when Phase 0 classifies the PR as one
+the bots did not open. Say in the report which phases did not run.
+
 ## Why this procedure exists
 
 The failure modes that bite are not "is this package malicious" — they are a
@@ -32,7 +64,7 @@ renamed, and a cached profile silently audits a repo that no longer exists.
 Deriving costs one call each.
 
 ```bash
-gh pr view <N> --json number,title,headRefOid,mergeStateStatus,files,author,createdAt
+gh pr view <N> --json number,title,headRefOid,mergeStateStatus,files,author,createdAt,isCrossRepository
 
 # derive the default branch — never assume "main"
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
@@ -82,6 +114,21 @@ there. A phase that consumes what a later phase creates cannot be run in order,
 and that has now shipped twice — `tests/test_skill_prose.py` is what stops the
 third.
 
+**Classify the PR before trusting it enough to run it.** Dependabot and Renovate
+push their branches *into* the repository, so a dependency bump arriving from a
+fork did not come from the bot:
+
+| Observation | Meaning |
+|---|---|
+| `isCrossRepository: false`, author `dependabot[bot]` or `renovate[bot]` | the ordinary case |
+| `isCrossRepository: true` | a fork PR — neither bot opens one |
+| any other author | a human PR shaped like a bump, which it may well be, and may not |
+
+Either of the last two is a **finding** in its own right, and it changes the
+default: run `--no-execute`, report what the read-only phases found, and let the
+user decide whether to authorise Phases 4 and 5. Say plainly that those phases
+would run the PR's code.
+
 **Pin the head SHA here and audit that one commit everywhere.** The lockfile
 Phase 1 reads, the worktree Phase 5 reproduces in, and the CI run Phase 6 checks
 must all describe the *same* commit, or the report's evidence table asserts a coherence it
@@ -129,8 +176,16 @@ them). Treat those as leads to check, not as facts — verify before repeating.
 
 *Requires from Phase 0: `$SCRATCH`, `$BASE_SHA`, `pr-<N>`.*
 
-The diff should touch **only** the manifest and the lockfile (or a single
-workflow file for an actions bump). Anything else is a finding — say so and stop.
+**This phase is a gate, not just a step.** The diff should touch **only** the
+manifest and the lockfile (or a single workflow file for an actions bump).
+Anything else is a finding: report it, and **stop before Phase 4**. The same
+applies if provenance comes back with a discrepancy. Phases 4 and 5 execute the
+PR's code, and the whole point of running the cheap read-only checks first is that
+they can refuse to hand it a shell. Continuing anyway spends the ordering for
+nothing.
+
+Stopping here is not a failed audit. It is a complete one that reached a verdict
+early — write the report with the phases that ran and say which did not.
 
 Verify every artifact the lockfile pins for the changed packages against the live
 registry: sha256/integrity, size, URL, and yanked status.
@@ -205,6 +260,8 @@ Python one in particular audits the wrong interpreter if invoked casually.
 ## Phase 4 — Behavior change (the highest-yield phase)
 
 *Requires from Phase 0: the `$SCRATCH/pr-<N>` worktree, and the repo's own gates.*
+*Executes code from the PR. Skipped under `--no-execute`; skip it if Phase 1
+found anything.*
 
 Not "is it safe" but **"does it change what this repo's gates accept"**. Measure
 that; do not predict it from the changelog.
@@ -252,13 +309,24 @@ implying the same confidence as a tree diff.
 ## Phase 5 — Independent reproduction
 
 *Requires from Phase 0: the `$SCRATCH/pr-<N>` worktree, `$HEAD_SHA`, `pr-<N>`.*
+*Executes code from the PR — the most of any phase. Skipped under
+`--no-execute`; skip it if Phase 1 found anything.*
 
 Phase 0 built the worktree and proved it points at `$HEAD_SHA`, so the user's
 working tree is untouched throughout and this phase inherits a tree it can trust.
+That isolation protects the *working tree*, not the machine — see the execution
+section at the top, and `references/ecosystems.md` for the per-registry flags that
+narrow what an install is allowed to run.
 
-Install **frozen** (`uv sync --locked`, `npm ci`, `cargo build --locked`) — that
-proves the lockfile is self-consistent and resolves nothing. Then run the repo's
-own gates from Phase 0, and its full test suite.
+Install **frozen** (`uv sync --locked --no-build`, `npm ci --ignore-scripts`,
+`cargo build --locked`) — that proves the lockfile is self-consistent and resolves
+nothing. Then run the repo's own gates from Phase 0, and its full test suite.
+
+**Record which install you ran.** The script-suppressing flags are the documented
+default and they weaken the proof: a package that genuinely needs its install
+script is not exercised. Re-running without them is a legitimate choice, and the
+report has to say which one produced the row rather than asserting "frozen install
+passed" for either.
 
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.
