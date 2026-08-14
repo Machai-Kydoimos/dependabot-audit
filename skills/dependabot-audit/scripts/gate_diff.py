@@ -217,11 +217,15 @@ def render(report: dict[str, Any]) -> None:
                 print("  (and the exit code is unchanged)")
         print()
 
-    if report["no_write_mode"]:
-        print("NOTE: no run changed any file. If these gates have a write mode, this")
-        print("      measured the wrong thing — re-run with it (`ruff format .`, not")
-        print("      `--check`). If they genuinely have none (a type checker, a test")
-        print("      suite), exit code is the only signal here, and it is the weaker one.\n")
+    if report["nothing_touched"]:
+        print("NOTE: no run changed any file. Three things look like this, and they")
+        print("      are not the same result — decide which before quoting it:")
+        print("      1. the gate was given a read-only mode (`--check`), so this")
+        print("         measured the wrong thing — re-run with the write mode;")
+        print("      2. the tree already satisfies every version, which is a real")
+        print("         agreement and the strongest kind — say so;")
+        print("      3. the gate has no write mode (a type checker, a test suite),")
+        print("         so exit code is the only signal, and it is the weaker one.\n")
 
     print("RESULT:", "GATES AGREE" if report["agree"] else "GATES DIFFER")
     print("This is the mechanical half of Phase 4. Whether a difference matters")
@@ -256,7 +260,10 @@ def main() -> int:
         "tree": str(tree),
         "runs": runs,
         "comparisons": comparisons,
-        "no_write_mode": all(not r["changed"] for r in runs),
+        # What was observed, not what it implies. The old name for this key was
+        # `no_write_mode`, which asserted one of three possible causes — and the
+        # common one in practice is a tree that is simply already compliant.
+        "nothing_touched": all(not r["changed"] for r in runs),
         "agree": all(
             not c["only_in_other"]
             and not c["only_in_base"]

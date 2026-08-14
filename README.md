@@ -101,7 +101,7 @@ have a repo to test it against.
 python3 -m unittest discover -s tests -v
 ```
 
-108 cases, stdlib only, no network — they run offline and free. Every case
+109 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into nine groups:
 

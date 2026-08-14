@@ -21,9 +21,36 @@ is the largest thing the audit does that the audit cannot undo:
 | Ecosystem | What an install runs | How to narrow it |
 |---|---|---|
 | npm | `preinstall` / `install` / `postinstall` scripts — the standard supply-chain vector | `npm ci --ignore-scripts` |
-| PyPI / uv | any sdist in the resolution builds, running `setup.py` or the PEP 517 backend | `uv sync --locked --no-build` |
+| PyPI / uv | any sdist in the resolution builds, running `setup.py` or the PEP 517 backend | `uv sync --locked --no-build --no-install-project` |
 | Cargo | every crate's `build.rs` | **nothing** — there is no flag |
 | Go | nothing at install time; `go build` does not run third-party build hooks | not needed |
+
+**`--no-install-project` is not optional there, and the reason is worth knowing.**
+`--no-build` refuses *every* source build, including the project's own — and a
+project with a `[project]` table installs itself editable, which is a build. On
+its own it fails outright:
+
+```
+error: Distribution `<project>==<v> @ editable+.` can't be installed because it is
+       marked as `--no-build` but has no binary distribution
+```
+
+uv has `--no-build-package` to exclude specific packages but no inverse, so there
+is no single flag for "build my project, nothing else". Verified against uv 0.12.
+
+That makes Phase 5 two steps for Python, which is a better shape anyway because
+the steps prove different things:
+
+```bash
+uv sync --locked --no-build --no-install-project   # 1. the dependency set, zero source builds
+uv sync --locked                                    # 2. add the project, to run its suite
+```
+
+Step 1 is the one with the security value: if it succeeds, every dependency in
+the lockfile resolved to a **wheel** and no third-party build code ran at all. If
+it fails, it names the package that needs an sdist build — which is a thing worth
+knowing about a dependency bump, not an obstacle. Step 2 then builds only the
+project's own code, which is code the repo already runs.
 
 The narrowed forms are the **documented default**. They cost something real: a
 package that genuinely needs its install script is not exercised, so the frozen

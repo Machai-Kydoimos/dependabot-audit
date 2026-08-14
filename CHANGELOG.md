@@ -11,6 +11,37 @@ patch.
 
 ## [Unreleased]
 
+Both of these were found by running the procedure end-to-end against two real
+Dependabot PRs in `Machai-Kydoimos/fpga-board-sim` — which is the only kind of
+test that reaches them.
+
+### Fixed
+
+- **`uv sync --locked --no-build` does not work**, and 0.3.0 documented it as the
+  default. `--no-build` refuses *every* source build including the project's own,
+  and a project with a `[project]` table installs itself editable — which is a
+  build. It fails outright:
+
+  ```
+  error: Distribution `fpga-simulator==0.20.0 @ editable+.` can't be installed
+         because it is marked as `--no-build` but has no binary distribution
+  ```
+
+  uv has `--no-build-package` but no inverse, so there is no single flag for
+  "build my project, nothing else". Phase 5 for Python is now two commands:
+  `uv sync --locked --no-build --no-install-project` proves every dependency
+  resolved to a wheel and ran no third-party build code, then `uv sync --locked`
+  adds the project so its suite can run. The two-step is the better shape anyway,
+  because the steps prove different things.
+- **`gate_diff`'s "no run changed any file" note asserted a cause it could not
+  know.** It told the operator they had "measured the wrong thing" and should
+  re-run with the write mode — advice that is wrong when the write mode *was*
+  given and the tree is simply already compliant with every version under test.
+  That was the outcome on all three real runs. The note now names all three
+  causes and hands the choice over. The report key is renamed `nothing_touched`
+  from `no_write_mode` for the same reason: it now says what was observed rather
+  than what it implies.
+
 ## [0.5.0] — 2026-08-14
 
 ### Added

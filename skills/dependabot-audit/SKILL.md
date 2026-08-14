@@ -330,9 +330,21 @@ That isolation protects the *working tree*, not the machine — see the executio
 section at the top, and `references/ecosystems.md` for the per-registry flags that
 narrow what an install is allowed to run.
 
-Install **frozen** (`uv sync --locked --no-build`, `npm ci --ignore-scripts`,
-`cargo build --locked`) — that proves the lockfile is self-consistent and resolves
-nothing. Then run the repo's own gates from Phase 0, and its full test suite.
+Install **frozen** — that proves the lockfile is self-consistent and resolves
+nothing. For Python this is two commands, and they prove different things:
+
+```bash
+uv sync --locked --no-build --no-install-project   # every dep resolved to a wheel
+uv sync --locked                                   # then add the project itself
+```
+
+`--no-build` alone **fails** on any project with a `[project]` table, because
+installing itself editable is a build; `references/ecosystems.md` has the error
+and the reasoning. For npm it is `npm ci --ignore-scripts`; for Cargo,
+`cargo build --locked`, which runs every crate's `build.rs` and has no flag that
+stops it.
+
+Then run the repo's own gates from Phase 0, and its full test suite.
 
 **Record which install you ran.** The script-suppressing flags are the documented
 default and they weaken the proof: a package that genuinely needs its install

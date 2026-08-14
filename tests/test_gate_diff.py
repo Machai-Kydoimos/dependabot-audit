@@ -223,12 +223,25 @@ class TestSafety(GateDiffHarness):
         self.assertIn("at least two", err)
 
 
-class TestNoWriteMode(GateDiffHarness):
-    def test_a_check_only_gate_says_so(self):
+class TestNothingTouched(GateDiffHarness):
+    def test_a_run_that_changed_nothing_says_so(self):
         """Measuring a --check invocation measures the weaker signal; say it."""
         tree = git_repo(self)
         _, out, _ = self._run(tree, [("locked", "echo a"), ("proposed", "echo b")])
         self.assertIn("no run changed any file", out)
+
+    def test_the_note_does_not_assert_which_of_the_three_causes_it_was(self):
+        """Observed live: on a repo already compliant with every version under
+        test, the old note told the operator they had "measured the wrong thing"
+        and to re-run with the write mode they had already given. An already-clean
+        tree is a real agreement, not a mistake."""
+        tree = git_repo(self)
+        _, out, _ = self._run(tree, [("locked", "true"), ("proposed", "true")])
+        note = out.split("NOTE:", 1)[1]
+        self.assertIn("read-only mode", note, "cause 1: the wrong invocation")
+        self.assertIn("already satisfies every version", note, "cause 2: a compliant tree")
+        self.assertIn("no write mode", note, "cause 3: nothing to write")
+        self.assertIn("decide which", note, "the note must hand the choice over, not make it")
 
 
 if __name__ == "__main__":
