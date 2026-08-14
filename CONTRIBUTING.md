@@ -27,6 +27,48 @@ reasons that are not this repo's fault. Keep them that way. The value of the
 hermetic suite is that it is cheap and trustworthy on every commit, and anything
 that needs a registry does not belong in it.
 
+## The gate with no script
+
+**A change to a phase's method is replayed against the PR that motivated it
+before it is committed, and the commit says what the replay showed.** Replayed,
+not reasoned about: issue the phase's actual query against that PR and read what
+comes back. Every defect below survived someone reasoning carefully about the
+same change, including the author who had just written the fix.
+
+No round of this has yet come back empty:
+
+| Replayed | What it found |
+|---|---|
+| `fpga-board-sim` #359, #355 | `uv sync --locked --no-build`, shipped as Phase 5's documented default, fails on any project with a `[project]` table — installing itself editable *is* a build |
+| `fpga-board-sim` #334 | Phase 4 measured the PR's own tree, which already carried the maintainer's fixup, so it reported `GATES AGREE` on the ruff bump this plugin's founding observation came from |
+| `mdcat` #15, #14, #6 | two releases' worth, #19 and #20 among them; 0.8.0 narrowed the supported surface rather than patching what it found |
+| `mdcat` #6, replayed against the fix written for it | Phase 6's new attribution query read `$BASE_SHA`, wrong in exactly the direction the fix existed to prevent (#25) |
+| this repo's #26, against the corrected rule | `pr-<N>^` can have no runs to compare against, and the rule as committed discarded an answer sitting on the merge base |
+
+**The fourth row is why this is a gate and not a habit.** Three prose guards went
+with it, taking Phase 6's total to six, each mutation-checked against the previous
+`SKILL.md` in the usual way, alongside ruff, mypy, 136 tests and CI green on four
+interpreters — and one of the three asserted that Phase 6 read `$BASE_SHA`, which
+*was* the defect. Mutation checking proves a guard discriminates between the old
+prose and the new. It says nothing about whether the new prose is right, and a
+guard written from the fix cannot supply that. The replay costs one `gh` call and
+would have caught this before the commit rather than one commit later.
+
+**The fifth row is the same gate showing its limit.** `mdcat` #6 could not have
+found it — there the bot's parent has runs — so it took a second replay against a
+PR exercising the other path. A defect on a path no PR you can reach exercises
+survives this gate. Choose the target for what it *exercises* rather than for
+recency, and prefer one whose consequences the repository's history already
+records: #334 was decisive because the right answer was known before the phase
+ran.
+
+**This is a checklist item, and checklists are visibly skippable.** By this file's
+own ordering that is the middle lever, and no stronger one is available here: for
+*is this claim true about the world* there is no script, only contact with the
+world. A tool that claimed to be one, and could not itself be verified, would be
+the unverified verifier this repo exists to argue against — so do not build one,
+however productive it would look.
+
 ## Tests
 
 **Every case corresponds to a defect that actually shipped, or to a failure the
@@ -87,9 +129,10 @@ gaps** — treating the suite's green as coverage of either is the mistake:
   Phase 0 output, and asks it the wrong question. That shipped in 0.10.0: six
   passing guards on a Phase 6 that produced a false Hold on the only PR it had
   ever been run against. Nothing here could have caught it, and no plausible tool
-  could — a checker for whether the prose is true, that could not itself be
-  verified, is the unverified verifier this repo exists to argue against. It is
-  closed by replaying the PR a finding came from, and by nothing else. See #27.
+  could. It is closed by replaying the PR a finding came from and by nothing else,
+  which is why that replay is a gate rather than a habit — see **The gate with no
+  script** above, including why the tool you are about to reach for is the
+  unverified verifier this repo exists to argue against.
 
 **A new inline trap is a signal that something wants mechanising.** Prose is the
 weakest of the three levers — a trap a script refuses cannot be skipped, one on a
