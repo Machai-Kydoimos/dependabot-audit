@@ -313,6 +313,60 @@ class TestEveryPhaseCarriesBothEcosystems(SkillHarness):
         )
 
 
+class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
+    """`--locked` checks every fork; the install materialises one of them.
+
+    `uv sync --locked` asserts the whole lockfile is consistent with the
+    manifest, across every `resolution-markers` fork, and Phase 1 verifies every
+    fork's artifacts against the registry. The install then covers only the
+    resolution matching the interpreter present — so a green row on 3.14 says
+    nothing about whether the 3.11 fork's artifacts fetch or install, and nothing
+    in the report distinguished the two.
+
+    Phase 5 already insists the row name *which install* ran. The same rule was
+    not applied to the interpreter, where it matters more.
+    """
+
+    def test_the_interpreter_is_read_from_the_synced_environment(self):
+        """The auditor's own `python3` need not be the one uv chose."""
+        self.assertIn(
+            "uv run python -V",
+            self.shell[5],
+            "Phase 5 must record the interpreter that produced the row, from inside "
+            "the environment rather than from the shell that ran the audit",
+        )
+
+    def test_the_forks_that_were_only_verified_are_named(self):
+        phase5 = dict(self.phases)[5].lower()
+        self.assertIn(
+            "resolution-markers",
+            phase5,
+            "Phase 5 must say that a lockfile can fork, or the single install reads "
+            "as covering every pin",
+        )
+        self.assertIn(
+            "only verified",
+            phase5,
+            "the asymmetry is the finding: every fork verified, one installed. "
+            "Naming the mechanism without it still leaves the row overstating",
+        )
+
+    def test_the_quoted_script_output_is_what_the_script_prints(self):
+        """The prose points the reader at a line `audit.py` emits.
+
+        A cross-artifact check, in the same family as "every path the prose names
+        must exist": reword the script and the quotation goes stale, sending the
+        reader to look for a line that is no longer there.
+        """
+        quoted = "forked packages: every pin verified, one of them installed"
+        self.assertIn(quoted.split(":")[0], dict(self.phases)[5])
+        self.assertIn(
+            quoted,
+            (PLUGIN / "scripts/audit.py").read_text(encoding="utf-8"),
+            "SKILL.md quotes a line audit.py no longer prints",
+        )
+
+
 class TestPhase4MeasuresTheRightTree(SkillHarness):
     """Measuring on the PR's tree hides the finding whenever it is real.
 

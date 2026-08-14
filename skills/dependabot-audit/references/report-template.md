@@ -25,7 +25,7 @@ turns on.
 | **Security** | Changelog `Security` sections across the gap — including their absence. | this run *or* reused — release notes immutable |
 | **Vulnerabilities** | OSV result and the ecosystem auditor's, over N packages. | this run |
 | **Behavior change** | Added rules / changed defaults, whether config is opt-in or opt-out, and what running the tool actually showed. | this run *or* reused — head `<sha>` unchanged |
-| **Local reproduction** | Frozen install, each repo gate with its exit code, test count. | this run *or* reused — head `<sha>` unchanged, worktree verified |
+| **Local reproduction** | Frozen install *in the form that ran*, the interpreter it ran under, any fork verified but not installed, each repo gate with its exit code, test count. | this run *or* reused — head `<sha>` unchanged, worktree verified |
 | **CI** | Run ID and conclusion against the full head SHA; required contexts; job count. | this run |
 
 An unmarked table asserts that everything in it was observed this run. If that is
@@ -47,7 +47,10 @@ and an apology.
 
 Where an install ran, name the form: `uv sync --locked --no-build
 --no-install-project` and a plain `uv sync --locked` prove different things, and
-"frozen install passed" is not the same claim in both.
+"frozen install passed" is not the same claim in both. Name the **interpreter**
+too, and any fork the install did not materialise — `--locked` checks the whole
+lockfile, the install covers one resolution out of it, and the bare row asserts
+both.
 
 ## Reasoning
 

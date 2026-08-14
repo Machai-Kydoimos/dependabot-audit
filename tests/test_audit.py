@@ -24,6 +24,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+from typing import ClassVar
 from unittest import mock
 
 sys.path.insert(
@@ -407,7 +408,7 @@ class TestCurrency(unittest.TestCase):
     def test_held_back_fork_is_not_reported_as_stale(self):
         """The lower fork of a split package trails the registry by design."""
         pkg = entry("rpds-py", "0.30.0", markers=["python_full_version < '3.11'"])
-        result = check_currency(pkg, self._split(), pins=2, newest=False)
+        result = check_currency(pkg, self._split(), pinned=["0.30.0", "2020.1.1"], newest=False)
         self.assertFalse(result["current"])
         self.assertTrue(result["held_back"], "must not read as a staleness finding")
 
@@ -419,7 +420,7 @@ class TestCurrency(unittest.TestCase):
         pin a follow-up bump could ever move.
         """
         pkg = entry("rpds-py", "2020.1.1", markers=["python_full_version >= '3.11'"])
-        result = check_currency(pkg, self._split(), pins=2, newest=True)
+        result = check_currency(pkg, self._split(), pinned=["0.30.0", "2020.1.1"], newest=True)
         self.assertTrue(result["constrained"])
         self.assertFalse(result["held_back"], "markers must not excuse the live pin")
         self.assertEqual([r["version"] for r in result["gap"]], ["2026.6.3"])
@@ -767,19 +768,30 @@ class TestAttestations(unittest.TestCase):
 
 
 FORK_PINS = {"rpds-py": ["0.30.0", "2026.6.3"], "rumdl": ["0.2.53"]}
+SPLIT = FORK_PINS["rpds-py"]
 
 
 class TestForkContext(unittest.TestCase):
-    """Which pin of a forked package is the live one."""
+    """Which pin of a forked package is the live one, and what the others are."""
 
     def test_highest_pin_of_a_fork_is_the_newest(self):
-        self.assertEqual(fork_context(entry("rpds-py", "2026.6.3"), FORK_PINS), (2, True))
+        self.assertEqual(fork_context(entry("rpds-py", "2026.6.3"), FORK_PINS), (SPLIT, True))
 
     def test_lower_pin_of_a_fork_is_not(self):
-        self.assertEqual(fork_context(entry("rpds-py", "0.30.0"), FORK_PINS), (2, False))
+        self.assertEqual(fork_context(entry("rpds-py", "0.30.0"), FORK_PINS), (SPLIT, False))
 
     def test_a_lone_pin_is_its_own_newest(self):
-        self.assertEqual(fork_context(entry("rumdl", "0.2.53"), FORK_PINS), (1, True))
+        self.assertEqual(fork_context(entry("rumdl", "0.2.53"), FORK_PINS), (["0.2.53"], True))
+
+    def test_siblings_come_back_in_version_order_not_lockfile_order(self):
+        """The report prints these, so the order is part of the output.
+
+        A lockfile's blocks are not sorted by version, and reading a fork list
+        that runs backwards invites the reader to take the first entry as the
+        live pin when it is the held-back one.
+        """
+        pins = {"rpds-py": ["2026.6.3", "0.30.0"]}
+        self.assertEqual(fork_context(entry("rpds-py", "0.30.0"), pins)[0], SPLIT)
 
 
 class _MainHarness(unittest.TestCase):
@@ -1008,6 +1020,260 @@ wheels = [
         )
         self.assertEqual(code, 0)
         self.assertIn("CLEAN", out)
+
+
+class TestEcosystemBoundary(_MainHarness):
+    """Handed another ecosystem's lockfile, the script used to blame itself.
+
+    Observed on `BIRSAx2/mdcat`, a Rust repo:
+
+        error: unexpected AttributeError: 'str' object has no attribute 'get'
+               This is a bug, not a finding.
+
+    Everything about that was right except the diagnosis. Exit 2 is correct and
+    no false CLEAN was printed — the failure-versus-finding contract held against
+    an input it was never designed to see. But `Cargo.lock` writes `source` as a
+    string where uv writes a table, so the run reached `_is_pypi` and died, and
+    the message sent the reader hunting for a defect that does not exist.
+
+    Since 0.8.0 the supported surface is `uv.lock` and GitHub Actions, so this
+    message is the *boundary of the tool* and the first thing anyone arriving
+    with a different lockfile sees. Phase 1 leads with the script, so arriving
+    there innocently is the common path, not the careless one.
+
+    `poetry.lock` was worse than the Rust case and is the reason this class
+    covers more than the three formats the issue named. It parses, yields zero
+    PyPI-sourced packages, and exits 2 saying *"either this lockfile did not
+    change, or it is being compared against itself"* — a confident false
+    diagnosis, in this plugin's own vocabulary, on Python's other lockfile.
+    """
+
+    # Fixtures are the smallest excerpt that carries the real signature; each
+    # was checked against a full file from a public repository.
+    FOREIGN: ClassVar[dict[str, tuple[str, str]]] = {
+        "Cargo.lock": (
+            'version = 4\n\n[[package]]\nname = "adler2"\nversion = "2.0.0"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+            'checksum = "512761e0bb2578dd7380c6baaa0f4ce03e84f95e960231d1dec8bf4d7d6e2627"\n',
+            "Cargo.lock",
+        ),
+        "poetry.lock": (
+            '[[package]]\nname = "anyio"\nversion = "4.14.2"\noptional = false\n'
+            'python-versions = ">=3.10"\nfiles = [\n    {file = "anyio-4.14.2.tar.gz", '
+            'hash = "sha256:cfa1"},\n]\n\n[metadata]\nlock-version = "2.1"\n',
+            "poetry.lock",
+        ),
+        "package-lock.json": (
+            '{\n  "name": "npm",\n  "lockfileVersion": 3,\n  "packages": {}\n}\n',
+            "package-lock.json",
+        ),
+        "go.sum": (
+            "cloud.google.com/go v0.123.0 h1:2NAUJwPR47q+E35uaJeYoNhuNEM9kM8SjgRgdeOJUSE=\n"
+            "cloud.google.com/go v0.123.0/go.mod h1:xBoMV08QcqUGuPW65Qfm1o9Y4zKZBpGS+7b=\n",
+            "go.sum",
+        ),
+        "Pipfile.lock": (
+            '{\n  "_meta": {"pipfile-spec": 6, "hash": {"sha256": "43"}},\n  "default": {}\n}\n',
+            "Pipfile.lock",
+        ),
+        # The header alone is two comment lines, which is *valid TOML* — the
+        # case that proved the sniff has to run before the parse, not after it
+        # fails. The entry below is what a real file carries and is not.
+        "yarn.lock": (
+            "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n"
+            "# yarn lockfile v1\n\n"
+            '"@babel/core@^7.0.0":\n  version "7.26.10"\n',
+            "yarn.lock",
+        ),
+        "pnpm-lock.yaml": (
+            "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n",
+            "pnpm",
+        ),
+        "pyproject.toml": (
+            '[build-system]\nrequires = ["hatchling"]\n\n[project]\nname = "x"\n',
+            "manifest, not a lockfile",
+        ),
+    }
+
+    def _file(self, name: str, body: str) -> str:
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        path = pathlib.Path(directory) / name
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def test_each_foreign_lockfile_is_named_rather_than_blamed_on_the_script(self):
+        for name, (body, expected) in self.FOREIGN.items():
+            with self.subTest(name):
+                code, out, err = self._run([self._file(name, body), "--changed", "p"])
+                self.assertEqual(code, 2, "the exit code was never what needed changing")
+                self.assertIn(expected, err, f"{name} is not named in the message")
+                self.assertNotIn(
+                    "This is a bug",
+                    err,
+                    "reserved for genuinely unexpected exceptions; spending it here is "
+                    "what makes it worthless when it does appear",
+                )
+                self.assertIn("references/ecosystems.md", err, "no route out of the boundary")
+                self.assertNotIn("CLEAN", out)
+
+    def test_a_cargo_lock_no_longer_reaches_the_code_that_crashed_on_it(self):
+        """The specific defect: `source` is a string, `_is_pypi` calls `.get` on it."""
+        body, _ = self.FOREIGN["Cargo.lock"]
+        code, _, err = self._run(
+            [self._file("Cargo.lock", body), "--changed", "p"], entry_point=cli
+        )
+        self.assertEqual(code, 2)
+        self.assertNotIn("AttributeError", err)
+
+    def test_a_poetry_lock_is_not_reported_as_compared_against_itself(self):
+        """It parsed, matched nothing, and diagnosed the *invocation* instead.
+
+        The worst of the set: no crash, no traceback, and a message that reads
+        as a mistake the caller made rather than the boundary they hit.
+        """
+        body, _ = self.FOREIGN["poetry.lock"]
+        path = self._file("poetry.lock", body)
+        code, _, err = self._run([path, "--changed-vs", path])
+        self.assertEqual(code, 2)
+        self.assertIn("poetry.lock", err)
+        self.assertNotIn("compared against itself", err)
+
+    def test_a_foreign_baseline_is_named_too(self):
+        """`--changed-vs` reads a second lockfile, through the same door."""
+        body, _ = self.FOREIGN["Cargo.lock"]
+        code, _, err = self._run(
+            [write_lock(self, self.LOCK), "--changed-vs", self._file("Cargo.lock", body)]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("Cargo.lock", err)
+        self.assertNotIn("cannot read baseline", err, "it reads fine; it is not ours to audit")
+
+    def test_toml_with_packages_that_are_not_uv_shaped_is_refused_not_crashed(self):
+        """The formats above are the ones worth naming, not the whole world.
+
+        Anything else with `[[package]]` blocks still must not be walked into:
+        proceeding means `pypi_sourced` returns nothing and the run reports on an
+        empty selection. Refusing without a name is honest; guessing one is not.
+        """
+        unknown = 'version = 1\n\n[[package]]\nname = "x"\nversion = "1"\ndeps = ["y"]\n'
+        code, _, err = self._run([self._file("mystery.lock", unknown), "--changed", "x"])
+        self.assertEqual(code, 2)
+        self.assertIn("not a uv.lock", err)
+        self.assertNotIn("This is a bug", err)
+
+    def test_a_real_uv_lock_still_loads(self):
+        """The direction that would be worse than the defect being fixed.
+
+        A sniffer that misfires refuses a lockfile the plugin does support. The
+        first draft ordered the checks the other way — identify uv first, then
+        diagnose — and a real `poetry.lock` passed it, because poetry writes a
+        `[package.source]` table too.
+        """
+        packages = load_lock(write_lock(self, self.LOCK))
+        self.assertEqual([p["name"] for p in packages], ["rumdl", "fpga-simulator"])
+
+    def test_a_uv_lock_of_only_git_and_editable_sources_still_loads(self):
+        """No registry, no wheels — the shape most likely to look foreign."""
+        vcs = """
+[[package]]
+name = "x"
+version = "1.0"
+source = { git = "https://example.invalid/x.git" }
+
+[[package]]
+name = "y"
+version = "0.1"
+source = { editable = "." }
+"""
+        self.assertEqual([p["name"] for p in load_lock(write_lock(self, vcs))], ["x", "y"])
+
+
+class TestForkDisclosure(_MainHarness):
+    """A forked package is verified in full and installed in part.
+
+    `uv sync --locked` asserts the whole lockfile is consistent with the
+    manifest, across every fork. The install then materialises only the
+    resolution for the interpreter that happens to be present. Phase 1 verifies
+    every fork's artifacts against the registry, so a green Phase 5 on 3.14 says
+    nothing about whether the 3.11 fork's artifacts install — and nothing in the
+    output distinguished the two.
+
+    Mechanised here rather than left to `SKILL.md`, per the rule in
+    CONTRIBUTING: prose is the weakest of the three levers, and a disclosure the
+    report is merely asked to remember is one it can omit silently.
+    """
+
+    FORKED = f"""
+[[package]]
+name = "rpds-py"
+version = "0.30.0"
+source = {{ registry = "https://pypi.org/simple" }}
+resolution-markers = ["python_full_version < '3.11'"]
+wheels = [
+    {{ url = "https://files.pythonhosted.org/packages/xx/p-0.30.0.whl", hash = "sha256:{"a" * 64}", size = 100 }},
+]
+
+[[package]]
+name = "rpds-py"
+version = "2026.6.3"
+source = {{ registry = "https://pypi.org/simple" }}
+resolution-markers = ["python_full_version >= '3.11'"]
+wheels = [
+    {{ url = "https://files.pythonhosted.org/packages/xx/p-2026.6.3.whl", hash = "sha256:{"a" * 64}", size = 100 }},
+]
+"""
+
+    def _forked_meta(self):
+        return pypi_meta(
+            "2026.6.3",
+            [],
+            releases={
+                "0.30.0": [pypi_file("p-0.30.0.whl")],
+                "2026.6.3": [pypi_file("p-2026.6.3.whl")],
+            },
+        )
+
+    def test_the_report_names_every_pin_of_a_forked_package(self):
+        code, out, _ = self._run(
+            [write_lock(self, self.FORKED), "--changed", "rpds-py"], meta=self._forked_meta()
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("forked packages", out)
+        self.assertIn("0.30.0, 2026.6.3", out, "both pins, in version order")
+
+    def test_the_disclosure_says_the_install_covers_one_of_them(self):
+        """Counting the pins is not the point; the asymmetry is.
+
+        "2 pins" alongside a green install still reads as two installs. The row
+        has to say that the provenance checks covered every fork and the install
+        covered one.
+        """
+        _, out, _ = self._run(
+            [write_lock(self, self.FORKED), "--changed", "rpds-py"], meta=self._forked_meta()
+        )
+        self.assertIn("one of them installed", out)
+        self.assertIn("uv run python -V", out, "the interpreter is the thing to record")
+
+    def test_an_unforked_lockfile_says_nothing_about_forks(self):
+        """The row would be noise on most lockfiles, and noise trains the reader
+        to skip the section it appears in."""
+        code, out, _ = self._run(
+            [write_lock(self, self.LOCK), "--changed", "rumdl"], meta=self._meta()
+        )
+        self.assertEqual(code, 0)
+        self.assertNotIn("forked packages", out)
+
+    def test_the_pins_survive_into_json_mode(self):
+        """The machine-readable half has to carry it too, or a caller reading
+        JSON gets the pre-fix output back."""
+        _, out, _ = self._run(
+            [write_lock(self, self.FORKED), "--changed", "rpds-py", "--json"],
+            meta=self._forked_meta(),
+        )
+        currency = json.loads(out)["currency"]
+        self.assertEqual([c["pinned"] for c in currency], [["0.30.0", "2026.6.3"]] * 2)
+        self.assertEqual({c["pins"] for c in currency}, {2})
 
 
 class TestOsvBatching(_MainHarness):

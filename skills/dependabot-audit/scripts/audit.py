@@ -21,10 +21,11 @@ alone is selected and said out loud rather than passing as "no changes".
 
 Exit status: 0 = nothing to report, 1 = at least one discrepancy, stale version,
 or known vulnerability, 2 = usage/lookup error — including a requested package
-that is not in the lockfile, an empty selection, an unreadable lockfile, and a
-registry that could not be reached. Never audit fewer packages than asked in
-silence, never print CLEAN on a run that verified nothing, and never let a failed
-lookup exit as though it were a finding.
+that is not in the lockfile, an empty selection, an unreadable lockfile, a
+lockfile belonging to an ecosystem this plugin does not cover, and a registry
+that could not be reached. Never audit fewer packages than asked in silence,
+never print CLEAN on a run that verified nothing, and never let a failed lookup
+exit as though it were a finding.
 Requires Python 3.11+ (tomllib) and network access.
 """
 
@@ -40,6 +41,7 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from typing import Any, NoReturn
 
 # The Simple API's JSON form (PEP 691/700/714), not the legacy
@@ -403,12 +405,164 @@ def _version_key(version: str) -> tuple[Any, ...]:
     )
 
 
+class UnsupportedLockfile(ValueError):
+    """A file this script recognised, and does not audit.
+
+    A ValueError, so every handler that already catches a bad lockfile catches
+    this too — but raised separately, because exit 2 is the right answer for
+    both and the *reason* is not. "Cannot read this file" sends the reader
+    looking for corruption; "this is a Cargo.lock" sends them to the ecosystem
+    boundary, which is where they actually are.
+    """
+
+
+# Signatures for the lockfiles this plugin does **not** audit. Since 0.8.0 the
+# supported surface is `uv.lock` and GitHub Actions, so this message is the edge
+# of the tool and the first thing anyone arriving with a different lockfile
+# sees. Pointed at a real `Cargo.lock` it used to say `unexpected AttributeError
+# ... This is a bug, not a finding` — every part of that right except the
+# diagnosis, and it sent the reader hunting for a defect that does not exist.
+#
+# Listed: the three ecosystems whose recipes were removed in 0.8.0, Python's
+# other lockfiles, and the manifest that sits beside `uv.lock`. Each signature
+# was checked against a real file from a public repository. Anything not on the
+# list keeps the generic message — a wrong name is worse than no name.
+GO_SUM = re.compile(r"^\S+ v\S+ h1:[A-Za-z0-9+/=]+$", re.MULTILINE)
+# Yarn v1 writes a banner; Berry writes a `__metadata:` block instead.
+YARN_LOCK = re.compile(r"^# yarn lockfile v1$|^__metadata:$", re.MULTILINE)
+PNPM_LOCK = re.compile(r"^lockfileVersion: ", re.MULTILINE)
+
+
+def _boundary(path: str, what: str) -> str:
+    return (
+        f"{path} is {what}.\n"
+        "       This plugin audits uv.lock and GitHub Actions, and nothing else.\n"
+        "       npm, Cargo and Go recipes were removed rather than left as sketches:\n"
+        "       an unverified verifier reports green instead of erroring. Report what\n"
+        "       the ecosystem-independent phases established and say what was not\n"
+        "       checked — see references/ecosystems.md."
+    )
+
+
+def _sniff_text(raw: str) -> str | None:
+    """Formats identified from the bytes, before anything tries to parse them.
+
+    Most of these reach `tomllib` and die on a syntax error, which names a
+    column rather than a format — true and useless. Yarn v1 is the one that does
+    not: its two-line header is valid TOML, so a sniff that only ran after a
+    parse failure never saw it.
+    """
+    if GO_SUM.search(raw):
+        return "a go.sum (Go)"
+    if YARN_LOCK.search(raw):
+        return "a yarn.lock (JavaScript, Yarn)"
+    if PNPM_LOCK.search(raw):
+        return "a pnpm-lock.yaml (JavaScript, pnpm)"
+    return None
+
+
+def _sniff_json(raw: str) -> str | None:
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if "lockfileVersion" in data:
+        return "a package-lock.json (JavaScript, npm)"
+    meta = data.get("_meta")
+    if isinstance(meta, dict) and "pipfile-spec" in meta:
+        return "a Pipfile.lock (Python, Pipenv)"
+    return None
+
+
+def _sniff_toml(data: dict[str, Any], packages: list[Any]) -> str | None:
+    """TOML that parses cleanly and is not a uv.lock.
+
+    `Cargo.lock` is the dangerous one: it is TOML, it has `[[package]]` blocks,
+    and its `source` is a **string** where uv writes a table — so it got all the
+    way to `_is_pypi` before failing with an `AttributeError`.
+
+    **Every signature here must be one a uv.lock cannot produce**, because this
+    runs before the positive identification below and a misfire refuses a
+    lockfile the plugin does support. Checked against a real uv.lock: top-level
+    keys are `package`, `requires-python`, `resolution-markers`, `revision`,
+    `version` — no `metadata` — and no `[[package]]` block carries `checksum`,
+    `python-versions`, `files`, or a `source` that is not a table.
+
+    The first draft ordered these the other way, on the theory that identifying
+    uv first was the safe direction. It was not: poetry writes a `[package.source]`
+    table too, so a real `poetry.lock` read as uv-shaped and fell through to the
+    message claiming it was being compared against itself.
+    """
+    entries = [p for p in packages if isinstance(p, dict)]
+    if any("checksum" in p or isinstance(p.get("source"), str) for p in entries):
+        return "a Cargo.lock (Rust)"
+    metadata = data.get("metadata")
+    if (isinstance(metadata, dict) and "lock-version" in metadata) or any(
+        "python-versions" in p and "files" in p for p in entries
+    ):
+        return "a poetry.lock (Python, Poetry)"
+    if not entries and ("build-system" in data or "project" in data):
+        return "a pyproject.toml — a manifest, not a lockfile (the lockfile is uv.lock)"
+    return None
+
+
+def _looks_like_uv(packages: list[Any]) -> bool:
+    """Whether these `[[package]]` blocks are uv's.
+
+    Deliberately broad — it runs after every foreign signature has already been
+    ruled out, so its job is to admit anything uv might write rather than to
+    discriminate. uv puts a `source` table on every block; `sdist` and `wheels`
+    are its artifact keys.
+    """
+    return any(
+        isinstance(p, dict) and (isinstance(p.get("source"), dict) or "sdist" in p or "wheels" in p)
+        for p in packages
+    )
+
+
 def load_lock(path: str) -> list[dict[str, Any]]:
+    """The `[[package]]` blocks of a uv.lock — or a refusal that names the file.
+
+    Raises `UnsupportedLockfile` for a format this script recognises and does not
+    audit, and plain `ValueError`/`TOMLDecodeError` for one it cannot read at
+    all. Both exit 2 through `main`; only the message differs.
+    """
     with open(path, "rb") as fh:
-        data = tomllib.load(fh)
-    if "package" not in data:
+        # Decoded here rather than handing the handle to `tomllib` so the same
+        # bytes can be sniffed. `errors="replace"` turns invalid UTF-8 into a
+        # TOML syntax error, which is caught, instead of a UnicodeDecodeError,
+        # which is not — and would print "this is a bug".
+        raw = fh.read().decode("utf-8", errors="replace")
+
+    # Sniff before parsing, not only after a parse failure. A yarn v1 lockfile
+    # opens with two comment lines, which is *valid TOML*, so an
+    # only-on-TOMLDecodeError sniff never looked at it. Every signature here is
+    # one a uv.lock cannot produce, which is what makes running them first safe.
+    found = _sniff_text(raw) or _sniff_json(raw)
+    if found:
+        raise UnsupportedLockfile(_boundary(path, found))
+
+    # A TOMLDecodeError from here is a real parse error on a file nothing
+    # recognised, and its line and column are the useful part. Let it out.
+    data = tomllib.loads(raw)
+
+    packages = data["package"] if isinstance(data.get("package"), list) else None
+    found = _sniff_toml(data, packages or [])
+    if found:
+        raise UnsupportedLockfile(_boundary(path, found))
+    if packages and _looks_like_uv(packages):
+        return [p for p in packages if isinstance(p, dict)]
+    if packages is None:
         raise ValueError("no [[package]] entries — is this a lockfile?")
-    return list(data["package"])
+    raise UnsupportedLockfile(
+        _boundary(
+            path,
+            "not a uv.lock: it has [[package]] entries, but none of them carries a\n"
+            "       `source` table, an `sdist` or a `wheels` list",
+        )
+    )
 
 
 def _is_pypi(pkg: dict[str, Any]) -> bool:
@@ -524,15 +678,18 @@ def _is_prerelease(version: str) -> bool:
     return parsed["pre"] is not None or parsed["dev"] is not None
 
 
-def fork_context(entry: dict[str, Any], pins: dict[str, list[str]]) -> tuple[int, bool]:
-    """How often this package is pinned in the lock, and whether this is the highest.
+def fork_context(entry: dict[str, Any], pins: dict[str, list[str]]) -> tuple[list[str], bool]:
+    """Every version this package is pinned at, and whether this entry is the highest.
 
     uv forks a package into several `[[package]]` blocks when different parts of
     the resolution need different versions.
+
+    Returns the versions rather than a count, because the count alone cannot be
+    reported: a frozen install materialises one fork, and naming which requires
+    naming the others.
     """
-    versions = pins.get(_normalize(entry["name"])) or [entry["version"]]
-    highest = max(_version_key(v) for v in versions)
-    return len(versions), _version_key(entry["version"]) >= highest
+    versions = sorted(pins.get(_normalize(entry["name"])) or [entry["version"]], key=_version_key)
+    return versions, _version_key(entry["version"]) >= _version_key(versions[-1])
 
 
 def latest_version(project: dict[str, Any], releases: dict[str, list[dict[str, Any]]]) -> str:
@@ -574,15 +731,18 @@ def check_currency(
     entry: dict[str, Any],
     project: dict[str, Any],
     *,
-    pins: int = 1,
+    pinned: Sequence[str] = (),
     newest: bool = True,
 ) -> dict[str, Any]:
     """Report the registry's true latest version alongside the locked one.
 
-    `pins` and `newest` place the entry among the lockfile's pins of the same
-    package, which is what decides whether `resolution-markers` excuse a gap.
+    `pinned` is every version of this package the lockfile carries and `newest`
+    whether this entry is the highest of them. Together they place the entry
+    among its siblings, which is what decides whether `resolution-markers`
+    excuse a gap — and what lets the report say which fork an install exercised.
     """
     name, locked = entry["name"], entry["version"]
+    siblings = list(pinned) or [locked]
     releases = files_by_version(project)
     latest = latest_version(project, releases)
 
@@ -612,7 +772,11 @@ def check_currency(
         "latest": latest,
         "current": _version_key(locked) == _version_key(latest),
         "constrained": constrained,
-        "pins": pins,
+        "pins": len(siblings),
+        # The sibling versions themselves, not just how many. Phase 5 installs
+        # one fork and Phase 1 verified all of them; a report that cannot name
+        # the others cannot state the difference.
+        "pinned": siblings,
         # uv stamps resolution-markers on *every* block of a forked package, so
         # the markers alone cannot say which pin is expected to trail. A lower
         # fork is held back by design; the highest is the live pin, and its
@@ -747,6 +911,24 @@ def render(report: dict[str, Any]) -> None:
             print(f"      {rel['version']:12s} published {rel['published']}{mark}")
         print("      earliest first; compare it against the PR's createdAt\n")
 
+    # A forked package is checked in full and installed in part, and nothing in
+    # the output said so. Phase 1 verifies every fork's artifacts against the
+    # registry; a frozen install materialises one resolution. A green Phase 5
+    # then reads as though it covered all of them, which is a claim the run
+    # never made. Mechanised here rather than left to the prose, because a
+    # disclosure the report is merely asked to remember is one it can omit.
+    forked = {c["name"]: c["pinned"] for c in report["currency"] if c["pins"] > 1}
+    if forked:
+        print("=== forked packages: every pin verified, one of them installed")
+        for name, versions in forked.items():
+            print(f"      {name:24s} {len(versions)} pins: {', '.join(versions)}")
+        print("      uv splits a package across blocks under different resolution-markers.")
+        print("      The provenance rows above cover all of them; a frozen install")
+        print("      materialises only the resolution matching the interpreter and")
+        print("      platform present — which need not be the highest pin. Name the one")
+        print("      Phase 5 exercised (`uv run python -V` inside the synced environment)")
+        print("      rather than reporting the install as though it covered every fork.\n")
+
     for att in report.get("attestations", []):
         if not att["artifacts"]:
             continue
@@ -822,6 +1004,11 @@ def main() -> int:
 
     try:
         locked = load_lock(args.lock)
+    except UnsupportedLockfile as exc:
+        # Already names the file and what it is. Prefixing "cannot read" here
+        # would say the file is unreadable when it reads fine and is simply not
+        # this plugin's to audit.
+        fail(str(exc))
     except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
         fail(f"cannot read {args.lock}: {exc}")
 
@@ -832,6 +1019,8 @@ def main() -> int:
     if args.changed_vs:
         try:
             selection = derive_changed(packages, args.changed_vs)
+        except UnsupportedLockfile as exc:
+            fail(str(exc))
         except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
             fail(f"cannot read baseline {args.changed_vs}: {exc}")
         changed = [c["name"] for c in selection]
@@ -917,9 +1106,9 @@ def main() -> int:
                 fail(f"PyPI lookup failed for {entry['name']}: {exc}")
         project = project_cache[key]
         try:
-            n_pins, newest = fork_context(entry, pins)
+            pinned, newest = fork_context(entry, pins)
             report["provenance"].append(check_provenance(entry, project))
-            report["currency"].append(check_currency(entry, project, pins=n_pins, newest=newest))
+            report["currency"].append(check_currency(entry, project, pinned=pinned, newest=newest))
             report["attestations"].append(
                 check_attestations(
                     entry,

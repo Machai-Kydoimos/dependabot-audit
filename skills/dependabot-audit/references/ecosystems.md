@@ -42,6 +42,14 @@ the removals exist to prevent, and it produces a green result rather than an
 error. Report what the ecosystem-independent phases established — Phase 0's
 classification, Phase 6's CI state — and name plainly what was not checked.
 
+`audit.py` enforces its half of that rather than leaving it to this file. Handed
+a `Cargo.lock`, `poetry.lock`, `package-lock.json`, `Pipfile.lock`, `go.sum`,
+`yarn.lock`, `pnpm-lock.yaml`, or a `pyproject.toml`, it exits 2 naming the
+format and pointing back here. Anything else with `[[package]]` blocks that are
+not uv-shaped is refused without a guess. Exit 2 was always the answer; before
+0.10.0 the message was `unexpected AttributeError ... This is a bug`, which sent
+the first reader to arrive with a Rust repo hunting for a defect in the script.
+
 ## Installing is executing
 
 A frozen install runs code the PR controls. This is not a footnote; it is the
@@ -170,6 +178,23 @@ older Python alongside the current one. The script handles this; if you verify b
 hand, do not assume one block per name. Do not report the *lower* block as stale
 — but do check the highest one, which carries markers just the same and is still
 expected to track the registry.
+
+**A fork is verified in full and installed in part**, and the two halves of the
+audit disagree about how much they covered:
+
+| Step | Scope |
+|---|---|
+| `audit.py` provenance | **every** fork's artifacts, against the registry |
+| `uv sync --locked` | asserts the whole lockfile is consistent with the manifest |
+| the install that follows | **one** resolution — the interpreter and platform present |
+
+So a green Phase 5 on 3.14 says nothing about whether the 3.11 fork's artifacts
+fetch or its older release installs. The script prints the pins for any forked
+package it selected; the report names the interpreter (`uv run python -V` from
+inside the synced environment, not the auditor's `python3`) and says which forks
+were verified without being installed. A second `uv sync --locked --python
+<floor>` is the thorough answer and is worth the interpreter download only when
+the un-installed fork belongs to a package under audit.
 
 **Auditor trap.** `pip-audit` audits the environment of the interpreter it runs
 under. Activating a virtualenv does **not** redirect a `pip-audit` installed
