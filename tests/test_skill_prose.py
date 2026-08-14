@@ -207,6 +207,44 @@ class TestNoRepoSpecificLiterals(SkillHarness):
                 f"it needs admin and fails into a plausible value without it",
             )
 
+    def test_phase_0_proves_the_merge_base_is_the_branch_point(self):
+        """`git merge-base` always returns a commit, even a badly wrong one.
+
+        When the base branch is force-pushed under an open PR the merge base
+        falls back to a much older shared ancestor, and every later phase
+        consumes it as fact: Phase 1's gate fires on files the bump never
+        touched, and Phase 4 measures a tree the PR would never land on.
+        Observed on a two-file bump whose merge-base diff was 14 files.
+
+        `gh pr view --json files` is not a cross-check — GitHub computes the PR's
+        file list from the merge base too, and agrees with the wrong answer.
+        """
+        self.assertIn(
+            "base_ref_force_pushed",
+            self.shell[0],
+            "Phase 0 must check whether the base branch was rewritten; merge-base "
+            "cannot tell you on its own",
+        )
+        self.assertRegex(
+            self.shell[0],
+            r"git log[^\n]*\$BASE_SHA\.\.pr-<N>",
+            "Phase 0 must attribute the commits above the merge base; a genuine "
+            "bot PR is one commit by the bot",
+        )
+
+    def test_a_rewritten_base_falls_back_to_the_bots_own_commit(self):
+        """The substitute has to be named, or the gate fires on a stale base.
+
+        Halting is the wrong response to a rewritten base: it stops the audit for
+        a reason that is not true, and reads in the report exactly like a bump
+        that reaches into source.
+        """
+        self.assertIn(
+            "pr-<N>^..pr-<N>",
+            self.text,
+            "the fallback diff for a rewritten base must be the bot's own commit",
+        )
+
     def test_no_phase_reads_required_checks_from_the_rules_endpoint(self):
         """Readable without admin, which is exactly what makes it a trap.
 

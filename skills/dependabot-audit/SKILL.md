@@ -79,6 +79,12 @@ BASE_SHA=$(git merge-base "$DEFAULT" "pr-<N>")
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
 
+# prove the merge base is where the bot branched: a genuine bot PR is one commit
+# by the bot, so any other author above it means the base moved underneath
+git log --format='%h %an' "$BASE_SHA..pr-<N>"
+gh api "repos/:owner/:repo/issues/<N>/events" \
+  --jq '.[] | select(.event=="base_ref_force_pushed") | "\(.actor.login) \(.created_at)"'
+
 # owner and name, for the GraphQL query Phase 6 issues — `:owner/:repo` is a
 # REST-path convenience and does not expand in a GraphQL variable
 OWNER=$(gh repo view --json owner --jq .owner.login)
@@ -108,7 +114,7 @@ If either check fails, `git worktree remove` it and re-add.
 | `$DEFAULT` | the repo's default branch, derived |
 | `$SCRATCH` | scratch directory, outside the repo |
 | `$HEAD_SHA` | the full 40-character commit under audit |
-| `$BASE_SHA` | merge base of `$DEFAULT` and `pr-<N>` |
+| `$BASE_SHA` | merge base of `$DEFAULT` and `pr-<N>` — **and whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
 | `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it |
 | `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below |
@@ -175,6 +181,43 @@ Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwis
 `git status`, and a gate that walks the tree (a linter, a formatter, a test
 collector) will descend into a full second copy of the project and report on it.
 
+**Prove the merge base is where the bot branched.** `git merge-base` always
+returns *a* commit, and when the base branch has been rewritten under an open PR
+it returns one that is far too old — silently, with every later phase consuming it
+as fact. This is the `$BASE_SHA` row of the underivable table above, and either
+signal in the block settles it:
+
+| Signal | Meaning |
+|---|---|
+| any commit above `$BASE_SHA` whose author is not the bot | the base moved; `$BASE_SHA` is not the branch point |
+| a `base_ref_force_pushed` event on the PR | the same fact, stated by GitHub, with actor and timestamp |
+
+Observed: a two-file `Cargo.toml` / `Cargo.lock` bump whose merge-base diff was 14
+files and 3,682 deletions, appearing to delete the repo's entire vendored
+`supply-chain/` tree. The base branch had been force-pushed eleven minutes after
+the PR opened, and `merge-base` fell back to an ancestor nineteen months earlier.
+
+**Do not reach for `gh pr view --json files` as a cross-check.** GitHub computes
+the PR's file list from the merge base too, and reported the same 14 files. It
+agrees with the wrong answer rather than correcting it.
+
+When `$BASE_SHA` is not the branch point, report that as the finding and
+substitute:
+
+```bash
+git fetch origin "$DEFAULT"
+git worktree add --detach "$SCRATCH/tip-<N>" "origin/$DEFAULT"
+```
+
+- **Phase 1** takes its scope diff from `pr-<N>^..pr-<N>` — the bot's own commit.
+- **Phase 4** measures in `$SCRATCH/tip-<N>` rather than `$SCRATCH/base-<N>`,
+  because the tree this PR would land on is the default branch's tip, and the
+  merge base is no longer a tree that exists anywhere.
+
+Say both substitutions in the report. "The base branch was rewritten under this
+PR" is a true and useful finding; "this bump reaches beyond the manifest and
+lockfile" is not, and they are easy to confuse because they produce the same diff.
+
 **`$PERMS` decides two separate things, and conflating them gets both wrong.**
 The tier that can read branch protection is `admin`. The tier that can *merge* is
 `push`. They are different, and the common case — a maintainer with `push` but not
@@ -222,6 +265,13 @@ them). Treat those as leads to check, not as facts — verify before repeating.
 ## Phase 1 — Scope and provenance
 
 *Requires from Phase 0: `$SCRATCH`, `$BASE_SHA`, `pr-<N>`.*
+
+**Check the branch point before you read the diff.** If Phase 0 found the base
+rewritten, a merge-base diff shows the whole divergence and the gate below will
+fire on files the bump never touched — so take the diff from `pr-<N>^..pr-<N>`
+and report the rewritten base as its own finding. Firing the gate on a stale
+base is not a safe default: it stops the audit for a reason that is not true, and
+it reads in the report exactly like a bump that reaches into source.
 
 **This phase is a gate, not just a step.** The diff should touch **only** the
 manifest and the lockfile (or a single workflow file for an actions bump).
@@ -325,7 +375,8 @@ Python one in particular audits the wrong interpreter if invoked casually.
 
 ## Phase 4 — Behavior change (the highest-yield phase)
 
-*Requires from Phase 0: the `$SCRATCH/base-<N>` worktree, and the repo's own gates.*
+*Requires from Phase 0: the `$SCRATCH/base-<N>` worktree — or `$SCRATCH/tip-<N>`
+if Phase 0 found the base rewritten — and the repo's own gates.*
 *Executes code from the PR. Skipped under `--no-execute`; skip it if Phase 1
 found anything.*
 
