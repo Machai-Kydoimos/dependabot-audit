@@ -23,9 +23,8 @@ The contract above governs what *this skill* writes. It says nothing about what
 the audited code does, and two phases run it:
 
 - **Phase 5** installs frozen and runs the PR's own test suite from the PR's tree.
-  `npm ci` runs `preinstall`/`install`/`postinstall` scripts, `uv sync` builds any
-  sdist in the resolution — which runs `setup.py` or the project's build backend —
-  and `cargo build` runs every crate's `build.rs`.
+  `uv sync` builds any sdist in the resolution, which runs `setup.py` or the
+  project's build backend.
 - **Phase 4** runs the repo's gates at a version taken from the diff under audit.
 - **`gate_diff.py`** passes its `--run` commands to a shell, and those commands are
   transcribed from the audited repo's CI config, which an actions bump legitimately
@@ -166,7 +165,8 @@ has no enforced required checks, which changes what a green CI run is worth. Say
 so explicitly in the report rather than omitting the row.
 
 Then read the CI workflow and the pre-commit config to learn the repo's **own**
-verification commands — do not assume `pytest`/`npm test`. Note where each tool
+verification commands — do not assume `pytest`; it may be `uv run pytest`, `tox`,
+`nox`, or a `make` target, and the workflow is what says so. Note where each tool
 runs and **at what scope**: a hook scoped to `types_or: [python, pyi]` and a CI
 step running the same tool over `.` are different gates, and Phase 4 turns on
 that difference.
@@ -231,8 +231,15 @@ release being adopted was built somewhere the previous one was not. Absence of a
 attestation is *not* a finding — it is normal for anything predating Trusted
 Publishing — and the script distinguishes the two.
 
-For npm, Cargo, Go, and GitHub Actions, follow the per-registry recipes in
-`references/ecosystems.md` — they are short API comparisons you can run directly.
+**This plugin covers `uv.lock` and GitHub Actions, and nothing else.** For an
+actions bump the script does not apply at all — no lockfile, no artifact hash, no
+vulnerability database — so follow the recipe in `references/ecosystems.md`, which
+is that ecosystem's whole mechanical half.
+
+For any **other** ecosystem, say so and stop. Do not improvise a procedure from
+the shape of the ones that are here: an unverified verifier reports green rather
+than erroring, which is why npm, Cargo and Go were removed rather than left as
+sketches. `references/ecosystems.md` has the case that settled it.
 
 ## Phase 2 — Currency
 
@@ -364,9 +371,12 @@ uv sync --locked                                   # then add the project itself
 
 `--no-build` alone **fails** on any project with a `[project]` table, because
 installing itself editable is a build; `references/ecosystems.md` has the error
-and the reasoning. For npm it is `npm ci --ignore-scripts`; for Cargo,
-`cargo build --locked`, which runs every crate's `build.rs` and has no flag that
-stops it.
+and the reasoning.
+
+An actions bump installs nothing, so this phase has no frozen install to run. What
+there is to reproduce is the pin itself, and that is Phase 1's tag comparison in
+`references/ecosystems.md` rather than anything here. Say the phase did not apply;
+do not report it as passed.
 
 Then run the repo's own gates from Phase 0, and its full test suite.
 

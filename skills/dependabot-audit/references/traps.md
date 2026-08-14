@@ -16,8 +16,8 @@ destructive `--fix` bugs.
 or an `ignore` rule in the bot's config. Both look identical from the outside.
 
 **Changelog `Security` sections outrank every vulnerability database.** A
-privately disclosed fix ships with no CVE and no GHSA, so OSV, `pip-audit`, and
-`npm audit` all report clean while the changelog says otherwise. Read the
+privately disclosed fix ships with no CVE and no GHSA, so OSV and `pip-audit`
+both report clean while the changelog says otherwise. Read the
 changelog for the whole gap, not just the adopted version.
 
 **Destructive-fix bugs never appear in a security feed.** A changelog entry like
@@ -241,8 +241,8 @@ a confident audit of nothing. Read both sides out of git at a ref you pinned
 refuse an empty selection, so that failure cannot present itself as a pass.
 
 **Frozen installs prove the lockfile; unfrozen ones hide drift.** `uv sync
---locked`, `npm ci`, `cargo build --locked`. Without the flag the resolver is
-free to paper over an inconsistent lockfile.
+--locked`, never a bare `uv sync`. Without the flag the resolver is free to paper
+over an inconsistent lockfile.
 
 **Auditors can measure the wrong environment.** A vulnerability scanner installed
 outside the project audits *its own* interpreter or environment, not the

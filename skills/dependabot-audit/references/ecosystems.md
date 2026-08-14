@@ -1,29 +1,59 @@
-# Per-ecosystem recipes
+# Ecosystem recipes
 
-`scripts/audit.py` implements **PyPI / `uv.lock`** end-to-end (artifact
-verification, currency, OSV) because that is what it was written and tested
-against. Everything else below is a short API comparison you run directly — the
-work is the same three questions in each registry's vocabulary:
+This plugin audits two ecosystems, and only two: **Python / `uv.lock`** and
+**GitHub Actions**. Together they are what a Python project's Dependabot queue
+contains.
+
+`scripts/audit.py` implements `uv.lock` end-to-end — artifact verification,
+currency, OSV — because that is what it was written and tested against. It
+answers three questions:
 
 1. Does the lockfile's recorded hash match what the registry serves today?
 2. What is the registry's actual latest version, and when was it published?
 3. What does the vulnerability database say about the whole locked set?
 
+GitHub Actions has none of the inputs those questions need — no lockfile, no
+artifact hash, no vulnerability database — so the script does not apply to it at
+all, and its section below is the entire mechanical half.
+
+**npm, Cargo and Go are out of scope.** Recipes for them used to live here and
+were removed rather than deferred. They broke the rule immediately below, in
+exactly the way it predicts: followed faithfully against a real Cargo bump, the
+recipe returned matching checksums, a current latest version and a clean OSV
+batch — on a PR that raised the project's minimum Rust version past its own
+declared floor. Nothing in that output looked partial.
+
 Do not extend the script to a new ecosystem without a repo to test it against.
 An unverified verifier is worse than none — it produces confident green output
-that nobody checks.
+that nobody checks. **A prose recipe is a verifier too.** It carries none of the
+guards the script has earned — batch limits, retries, version ordering, the
+refusal to report `CLEAN` on an empty selection — so every run either re-derives
+them or silently does without.
+
+**If the PR is for an ecosystem not covered here, say so and stop.** Do not
+improvise a procedure from this file's shape; that improvisation is the failure
+the removals exist to prevent, and it produces a green result rather than an
+error. Report what the ecosystem-independent phases established — Phase 0's
+classification, Phase 6's CI state — and name plainly what was not checked.
 
 ## Installing is executing
 
-Every frozen install below runs code the PR controls. This is not a footnote; it
-is the largest thing the audit does that the audit cannot undo:
+A frozen install runs code the PR controls. This is not a footnote; it is the
+largest thing the audit does that the audit cannot undo:
 
 | Ecosystem | What an install runs | How to narrow it |
 |---|---|---|
+| **PyPI / uv** | any sdist in the resolution builds, running `setup.py` or the PEP 517 backend | `uv sync --locked --no-build --no-install-project` |
 | npm | `preinstall` / `install` / `postinstall` scripts — the standard supply-chain vector | `npm ci --ignore-scripts` |
-| PyPI / uv | any sdist in the resolution builds, running `setup.py` or the PEP 517 backend | `uv sync --locked --no-build --no-install-project` |
 | Cargo | every crate's `build.rs` | **nothing** — there is no flag |
 | Go | nothing at install time; `go build` does not run third-party build hooks | not needed |
+
+**Only the first row is an install this plugin performs.** The others are kept
+deliberately: the hazard is true whatever this plugin audits, and someone reading
+this file while looking at an out-of-scope repository should find the warning
+rather than silence. This is the half of a removed recipe that fails *safe* — a
+warning that is ignored costs nothing, where a verification that is wrong reports
+green. Their presence is not an invitation to audit those ecosystems.
 
 **`--no-install-project` is not optional there, and the reason is worth knowing.**
 `--no-build` refuses *every* source build, including the project's own — and a
@@ -52,17 +82,18 @@ it fails, it names the package that needs an sdist build — which is a thing wo
 knowing about a dependency bump, not an obstacle. Step 2 then builds only the
 project's own code, which is code the repo already runs.
 
-The narrowed forms are the **documented default**. They cost something real: a
-package that genuinely needs its install script is not exercised, so the frozen
+The narrowed form is the **documented default**. It costs something real: a
+dependency that ships only an sdist is refused rather than built, so the frozen
 install proves slightly less than it would otherwise. That is a trade worth making
 by default and worth reversing deliberately — **say in the report which one you
 ran.** "Frozen install passed" is not the same claim in the two cases.
 
-Cargo has no equivalent, so for a crate bump the only mitigations are outside the
-tool: a container, a throwaway VM, or a Landlock confinement. The Phase 5 worktree
-isolates the user's working tree from the audit; it does nothing about this. If
-you have no isolation and no reason to trust the PR, `--no-execute` is the honest
-answer — Phases 0–3 and 6–7 are all network reads and cover most of the ground.
+**The worktree is not isolation.** It isolates the user's working tree from the
+audit and nothing more; it does not isolate the machine from the PR, and a source
+build runs whatever its backend wants. Mitigation has to come from outside the
+tool — a container, a throwaway VM, or a Landlock confinement. If you have none
+and no reason to trust the PR, `--no-execute` is the honest answer: Phases 0–3
+and 6–7 are all network reads and cover most of the ground.
 
 ## Python — PyPI, `uv.lock`
 
@@ -150,40 +181,6 @@ Default service is PyPI's advisory DB; `-s osv` selects OSV.
 
 `pip-audit --locked` does not necessarily parse `uv.lock`; auditing the synced
 environment is the reliable path.
-
-## JavaScript — npm, `package-lock.json`
-
-Lockfile entries carry `resolved` (URL) and `integrity`
-(`sha512-<base64>`). Compare against
-`https://registry.npmjs.org/<pkg>` → `.versions["<ver>"].dist.integrity` and
-`.dist.tarball`; `.["dist-tags"].latest` for currency, `.time["<ver>"]` for
-publish timestamps.
-
-Note the digest is **base64 SHA-512**, not hex — decode before comparing to
-anything computed locally.
-
-Frozen install is `npm ci --ignore-scripts` by default; see *Installing is
-executing* above before dropping the flag. Auditor is `npm audit --json`.
-
-## Rust — crates.io, `Cargo.lock`
-
-Each `[[package]]` carries `checksum` (hex sha256) matching
-`https://crates.io/api/v1/crates/<name>/<version>` → `.version.checksum`.
-Currency from `https://crates.io/api/v1/crates/<name>` → `.crate.max_stable_version`,
-with `.versions[].created_at` for timestamps and `.versions[].yanked`.
-
-Frozen install is `cargo build --locked`, which runs every crate's `build.rs` and
-offers no flag to stop it — isolation for a crate bump has to come from outside
-the tool. Auditor is `cargo audit`.
-
-## Go — module proxy, `go.sum`
-
-`go.sum` records `h1:` dirhashes, not plain artifact hashes. The verification is
-`go mod verify`, and `GONOSUMDB`/`GONOSUMCHECK` must not be disabling the
-checksum database. Currency from
-`https://proxy.golang.org/<module>/@latest`. Auditor is `govulncheck`, which is
-call-graph aware — it reports reachability, so a "no findings" result on a
-vulnerable dependency is meaningful rather than a miss.
 
 ## GitHub Actions
 

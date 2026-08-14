@@ -45,8 +45,9 @@ early, on the evidence that mattered. Say what the verdict rests on, and say wha
 running the remaining phases would add — that is the difference between a report
 and an apology.
 
-Where an install ran, name the form: `npm ci --ignore-scripts` and `npm ci` prove
-different things, and "frozen install passed" is not the same claim in both.
+Where an install ran, name the form: `uv sync --locked --no-build
+--no-install-project` and a plain `uv sync --locked` prove different things, and
+"frozen install passed" is not the same claim in both.
 
 ## Reasoning
 

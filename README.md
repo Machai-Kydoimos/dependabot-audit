@@ -14,8 +14,8 @@ actually cost you something are not "is this package malicious":
    bots ingest, so a bump can land already stale — and the gap can contain the
    thing you cared about.
 2. **The gap contains a fix no vulnerability database knows about.** A privately
-   disclosed fix has no CVE and no GHSA, so OSV, `pip-audit`, and `npm audit` all
-   report clean while the changelog says `Security`.
+   disclosed fix has no CVE and no GHSA, so OSV and `pip-audit` both report clean
+   while the changelog says `Security`.
 3. **The bump changes a *default*, not just behavior.** A linter that gains a rule
    or a formatter that widens its file scope can newly fail a *required* CI check
    that the repo's own pre-commit hooks are scoped too narrowly to catch.
@@ -77,23 +77,46 @@ cannot be derived — the landmines you otherwise learn by getting bitten twice 
 and hands it to you rather than saving it itself. Nothing derivable is cached;
 nothing hard-won is re-derived.
 
-## Ecosystem coverage
+## Scope
 
-`scripts/audit.py` implements PyPI / `uv.lock` end-to-end, and is tested against
-it. npm, Cargo, Go, and GitHub Actions are covered as short per-registry
-procedures in `references/ecosystems.md` that the model runs directly — the same
-three questions in each registry's vocabulary.
+Two ecosystems, because together they are what a Python project's Dependabot
+queue actually contains — on this plugin's own test repo the bot PRs split
+`uv: 11` / `github_actions: 10`:
 
-`scripts/gate_diff.py` (Phase 4) is **ecosystem-independent**, because it parses
-nothing. It runs a gate once per version in a disposable worktree and compares
-which files each run changed, and how. That works for any tool in any language —
-the operator supplies the invocations, and the tool's own output format is
-irrelevant, which is the point: version bumps change output formats about as
-often as they change behavior.
+| | |
+|---|---|
+| **Python — `uv.lock`** | `scripts/audit.py`, end-to-end and tested against it: artifact hashes, PEP 740 build provenance, the registry's true latest, and the OSV batch |
+| **GitHub Actions** | a procedure in `references/ecosystems.md`. There is no lockfile and no artifact hash, so resolving the pinned tag to a SHA and asking which way it moved is the whole mechanical half |
 
-This is deliberate. An unverified verifier is worse than none: it emits confident
-green output nobody checks. Don't extend the script to an ecosystem you don't
-have a repo to test it against.
+**npm, Cargo and Go are out of scope** — not unimplemented, out of scope. Their
+recipes were removed rather than left as sketches, on this file's own rule: an
+unverified verifier is worse than none, because it emits confident green output
+nobody checks.
+
+That is not hypothetical. Followed faithfully against a real Cargo bump, the
+recipe returned matching checksums, a current latest version and a clean OSV
+batch — on a PR that raised the project's minimum Rust version past its own
+declared floor. Nothing in the recipe's output looked partial. Adding the missing
+check would have fixed that one bump and left the class untouched, and a hand-run
+recipe also silently lacks every guard the script has already earned: the Cargo
+OSV query written while investigating it re-introduced two defects this repo had
+already fixed once.
+
+What survives the cut is the half that **warns** rather than the half that
+**verifies**. `references/ecosystems.md` keeps what a frozen install executes in
+each ecosystem — including `cargo build --locked` running every crate's
+`build.rs` with no flag that stops it — because that stays true no matter which
+lockfiles this plugin will read.
+
+Other Python lockfiles are out of scope too. The script reads `uv.lock`
+specifically, not Poetry, pip-tools or PDM.
+
+`scripts/gate_diff.py` (Phase 4) is the exception: it is
+**ecosystem-independent**, because it parses nothing. It runs a gate once per
+version in a disposable worktree and compares which files each run changed, and
+how. That works for any tool in any language — the operator supplies the
+invocations, and the tool's own output format is irrelevant, which is the point:
+version bumps change output formats about as often as they change behavior.
 
 ## Tests
 
@@ -242,7 +265,7 @@ control:
 | Phase | What runs |
 |---|---|
 | 4 | the repo's own gates, at a version taken from the diff under audit, through a shell |
-| 5 | a frozen install — npm lifecycle scripts, an sdist build, `build.rs` — and then the PR's own test suite, from the PR's tree |
+| 5 | a frozen install, which builds any sdist in the resolution — running `setup.py` or the project's PEP 517 backend — and then the PR's own test suite, from the PR's tree |
 
 Phases 0–3 and 6–8 are network reads and `git` queries, and execute nothing.
 
@@ -257,10 +280,12 @@ Three things follow, all of them in the skill:
   default for a PR you have no reason to trust. Phase 0 flags a cross-repository
   or non-bot-authored bump and switches to it, because neither Dependabot nor
   Renovate opens a fork PR.
-- **The narrowed install is the documented default** — `npm ci --ignore-scripts`,
-  `uv sync --locked --no-build`. Cargo has no equivalent for `build.rs`, and the
-  reference says so rather than implying parity. The report names which form ran,
-  because they prove different things.
+- **The narrowed install is the documented default** — `uv sync --locked
+  --no-build --no-install-project`, which succeeds only if every dependency in
+  the lockfile resolved to a **wheel**, so no third-party build code runs at all.
+  If it fails it names the package that needs an sdist build, which is worth
+  knowing about a bump rather than an obstacle. The report names which form ran,
+  because the narrowed and full installs prove different things.
 
 **This is not a sandbox and does not pretend to be one.** The Phase 5 worktree
 isolates *your working tree from the audit*; it does nothing to isolate *the

@@ -11,6 +11,84 @@ patch.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-14
+
+Found by auditing `BIRSAx2/mdcat` PRs #15, #14 and #6 — the first run against a
+repository this account does not administer, and the first against a `Cargo.lock`.
+Both were new ground; the Cargo half is what this release acts on.
+
+The deciding observation is that the Cargo recipe, followed faithfully, returned
+matching checksums, a current `max_stable_version` and a clean OSV batch on a bump
+that raised the project's minimum Rust version from 1.83 to 1.85. Nothing in that
+output looked partial. `references/ecosystems.md` already warned that an
+unverified verifier is worse than none, because it emits confident green output
+nobody checks — this is that sentence describing the file it appears in.
+
+Documentation only; no code moved. Under this file's versioning rule that is still
+a minor bump, because it changes what the procedure claims to verify.
+
+### Removed
+
+- **The npm, Cargo and Go recipes.** Out of scope now, not deferred. Removing them
+  rather than completing them is the point: adding the missing MSRV check would
+  have corrected one bump and left the class untouched. A prose recipe is a
+  verifier too, and it inherits none of the guards `scripts/audit.py` has earned —
+  the Cargo OSV query written while investigating that bump had no batch cap and
+  no 429 retry, which is 0.3.1 and 0.4.0 re-derived from scratch and got wrong.
+  The audited lockfile's 286 crates fit under the cap; a larger one would have
+  failed exactly as 0.3.1 describes.
+
+### Changed
+
+- **The supported surface is `uv.lock` and GitHub Actions, and it is now stated
+  rather than implied.** Together they are what a Python project's Dependabot queue
+  actually holds — on this plugin's own test repo the bot PRs split `uv: 11` /
+  `github_actions: 10`. Actions is not a partial ecosystem here: it has no
+  lockfile, no artifact hash and no vulnerability database, so its recipe is the
+  whole mechanical half rather than a stopgap for absent script support.
+- **Phase 1 now says what to do with an ecosystem that is not covered — say so and
+  stop.** Deleting the recipes without this would have left silence for a model to
+  fill, and that improvisation is the exact failure the deletion exists to prevent.
+  It also fails in the dangerous direction: it returns a green result rather than
+  an error.
+- **The `Installing is executing` table keeps its npm, Cargo and Go rows.** The cut
+  runs between the half that *warns* and the half that *verifies* — a warning that
+  is ignored costs nothing, where a verification that is wrong reports green.
+  `cargo build --locked` running every crate's `build.rs` with no flag to stop it
+  stays true whatever this plugin reads; 58 of them fired on the audited repo.
+- Phase 5's install forms, the "name the form" rule in
+  `references/report-template.md`, and two lines in `references/traps.md` are now
+  `uv`-only. Two other cross-ecosystem mentions in `traps.md` stay deliberately:
+  they illustrate general lockfile and provenance principles, and the examples are
+  what show a reader those are not uv quirks.
+- **Other Python lockfiles are named as out of scope too.** The script reads
+  `uv.lock` specifically, so "Python" was a wider promise than it could keep —
+  Poetry, pip-tools and PDM are not covered.
+
+### Verified, unchanged
+
+- Phase 0's pin-and-worktree discipline held across all three PRs, including one
+  whose head branch had been deleted from the remote: `refs/pull/<N>/head` still
+  fetches.
+- Phase 2's timestamp comparison correctly *suppressed* a false currency finding.
+  A release newer than the lockfile's, published after the PR was opened, is
+  elapsed time rather than ingestion lag, and the rule already said so.
+- `scripts/audit.py` exits 2, never 1, when handed a `Cargo.lock`, and never prints
+  a false `CLEAN`. The failure-versus-finding contract held against an input it was
+  never designed to see. Its *message* is wrong — it blames itself for a bug rather
+  than naming an unsupported format — which the scope statement now makes worth
+  fixing rather than moot.
+
+### Not addressed here
+
+The same run found two defects in the ecosystem-**independent** phases, which this
+release does not touch and which affect `uv.lock` audits identically: Phase 1's
+scope gate false-fires when the base branch has been rewritten (#19), and Phase 0's
+branch-protection call requires admin, with its failure indistinguishable from an
+unprotected branch (#20). #20 bears on the public flip tracked in #14 — after the
+flip, most runs will be against repositories the user does not administer, which
+is precisely when it misfires.
+
 ## [0.7.0] — 2026-08-14
 
 Found by auditing `Machai-Kydoimos/fpga-board-sim` PR #99, a SHA-to-SHA GitHub
@@ -620,7 +698,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.4.0...v0.5.0
