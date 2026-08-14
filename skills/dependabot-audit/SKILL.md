@@ -337,6 +337,11 @@ the shape of the ones that are here: an unverified verifier reports green rather
 than erroring, which is why npm, Cargo and Go were removed rather than left as
 sketches. `references/ecosystems.md` has the case that settled it.
 
+This phase leads with the script, so reaching for it on an unfamiliar repo is
+the ordinary path rather than a careless one. It now refuses by name — `is a
+Cargo.lock (Rust)`, `is a poetry.lock` — at exit 2. Report that as the boundary
+it is, not as a failed audit: the ecosystem-independent phases still ran.
+
 ## Phase 2 — Currency
 
 *Requires: the Phase 1 script output, and the PR's `createdAt` from Phase 0.*
@@ -564,6 +569,42 @@ and the reasoning.
 
 Then run the repo's own gates from Phase 0, and its full test suite.
 
+**`--locked` checks the whole lockfile; the install materialises one resolution
+out of it.** Those are different claims and the row must not merge them. A
+`uv.lock` can carry several `[[package]]` blocks for the same name under
+different `resolution-markers` — typically the last release supporting an older
+Python alongside the current one. Phase 1 verifies **every** fork's artifacts
+against the registry. `uv sync` then installs only the resolution matching the
+interpreter and platform in front of it, which need not be the highest pin.
+
+So a green row here on 3.14 says nothing about whether the 3.11 fork's artifacts
+still fetch or its older release still installs. **Ask the environment which one
+it built**, rather than the auditor's own `python3`, which may not be the
+interpreter uv chose:
+
+```bash
+uv run python -V                  # inside the synced environment
+uv pip list --format=freeze       # the versions actually materialised
+```
+
+The Phase 1 script prints the fork list — `forked packages: every pin verified,
+one of them installed` — so the names and versions to reconcile against are
+already in the output. Name the interpreter and the fork in the reproduction
+row; do not report the install as though it covered every pin.
+
+**When the bumped package is itself forked, a second sync is the thorough
+version** and it is a deliberate escalation, not the default:
+
+```bash
+uv sync --locked --python <floor>   # the floor from requires-python
+```
+
+It costs an interpreter download and can fail for reasons that have nothing to
+do with the bump. The cheap version — installing once and disclosing which fork
+that was — is honest and is what this phase requires. The second sync is worth
+it when the fork you did *not* install is one of the packages under audit, and
+the report should say which of the two you did.
+
 ### GitHub Actions — substitute run history
 
 There is nothing to install and no way to execute an action outside GitHub's
@@ -591,11 +632,20 @@ alongside a `download-artifact` pin two majors behind. Nothing in the PR could
 show whether the pair still interoperated — seven green release runs over the
 following month did.
 
-**Record which install you ran.** The script-suppressing flags are the documented
-default and they weaken the proof: a package that genuinely needs its install
-script is not exercised. Re-running without them is a legitimate choice, and the
-report has to say which one produced the row rather than asserting "frozen install
-passed" for either.
+**Three things qualify this phase's row, and "reproduced" alone asserts past all
+of them.** Each has a green result that is true of *one* configuration and reads
+as true of every one:
+
+| Qualifier | Why the bare row overstates it |
+|---|---|
+| **which install** | the script-suppressing flags are the documented default and they weaken the proof: a package that genuinely needs its install script is not exercised. Re-running without them is a legitimate choice — say which produced the row |
+| **which interpreter** | the install materialised one fork of a forked lockfile. `uv run python -V`, not the auditor's `python3` |
+| **which forks were only verified** | Phase 1 checked all of them and Phase 5 installed one. Name the others rather than letting the install stand for them |
+
+None of the three is a failure to disclose. "Frozen install passed under
+`--no-build --no-install-project` on CPython 3.14; the 3.11 fork of `rpds-py` was
+verified but not installed" is a stronger row than "frozen install passed",
+because it is one a reader can falsify.
 
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.

@@ -111,6 +111,15 @@ lockfiles this plugin will read.
 Other Python lockfiles are out of scope too. The script reads `uv.lock`
 specifically, not Poetry, pip-tools or PDM.
 
+The boundary is enforced rather than stated. Handed another ecosystem's lockfile
+the script exits 2 naming the format — `is a Cargo.lock (Rust)`, `is a
+poetry.lock (Python, Poetry)` — and points at `references/ecosystems.md`. That
+message is the edge of the tool and the first thing a reader arriving with a
+different lockfile sees, so it says what they found rather than blaming itself:
+before 0.10.0 a real `Cargo.lock` produced `unexpected AttributeError ... This is
+a bug`, and a real `poetry.lock` produced a confident *"either this lockfile did
+not change, or it is being compared against itself"*.
+
 `scripts/gate_diff.py` (Phase 4) is the exception: it is
 **ecosystem-independent**, because it parses nothing. It runs a gate once per
 version in a disposable worktree and compares which files each run changed, and
