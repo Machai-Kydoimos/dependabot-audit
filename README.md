@@ -124,7 +124,7 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-111 cases, stdlib only, no network — they run offline and free. Every case
+113 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into nine groups:
 
@@ -170,11 +170,12 @@ to detect. They fall into nine groups:
   inherits run one's edits and every comparison after it is fiction.
 - **Skill prose** — `SKILL.md` checked against itself: no phase may consume what
   a later phase creates, Phase 4 must measure on the merge base rather than the
-  PR's tree, the required-context list must be read from a Phase 0 artifact rather
-  than typed, every script and reference path the prose names must exist, the
-  phases that execute PR code must say so, and the frontmatter key that withholds
-  tools must be the one that works. Each corresponds to a defect that shipped in
-  the prose, where the other groups cannot reach.
+  PR's tree, the required contexts must come from the API rather than an authored
+  list — and specifically not from the two endpoints that fail into a plausible
+  answer — every script and reference path the prose names must exist, the phases
+  that execute PR code must say so, and the frontmatter key that withholds tools
+  must be the one that works. Each corresponds to a defect that shipped in the
+  prose, where the other groups cannot reach.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target
@@ -205,7 +206,8 @@ drift from.
 
 **Not covered:** whether the model *follows* the procedure. The prose group checks
 `SKILL.md` against itself — that no phase consumes what a later phase creates,
-that the required-context list is derived rather than typed. It cannot check
+that the required contexts come from the API rather than an authored list. It
+cannot check
 whether Phase 6 gets run at all, or whether an unexpected file in the diff
 actually stops the audit. That is behavioral and belongs in `claude plugin eval`,
 which is in early access and unavailable on this account.

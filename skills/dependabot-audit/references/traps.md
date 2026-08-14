@@ -201,20 +201,38 @@ with whitespace-splitting tools mangles them — `awk '{print $1}'` turns
 that does not exist. Query structured output (`--json statusCheckRollup`) and
 match names as whole strings.
 
-**A check that never reported produces no row.** Filtering a rollup by name
-yields nothing for a context that was never posted, which looks identical to
-"not printed because it passed". Count returned rows against the required list
-and treat any absence as *unreported*, not green.
+**A check that never reported produces no row.** `isRequired` is a field on
+contexts that *reported*, so a required check that never ran is absent from the
+list entirely — indistinguishable from "not printed because it passed". Counting
+rows does not save you here, because there is no authored list to count against.
+`mergeStateStatus` is what closes it: an unsatisfied required check yields
+`BLOCKED` and never `CLEAN`. It is `UNKNOWN` on a merged PR, and computed lazily,
+so an open PR may need the query re-issued before it settles — `UNKNOWN` means
+*not established*, not "nothing blocks".
 
-**"No required checks" and "you asked the wrong question" look the same.**
-Querying branch protection for a branch that does not exist returns an empty
-context list, exactly like a branch with no protection — so a mistyped or
-guessed branch name silently turns the whole required-checks verification into a
-no-op. The HTTP status and message do separate the cases (`404 Branch not
-found` = wrong branch; `404 Branch not protected` = genuinely unprotected;
-`403 Upgrade to GitHub Pro…` = protection unavailable on that plan, e.g. a
-private repo on a free plan), but only if you read them instead of discarding
-stderr.
+**A permission-gated read fails into a plausible answer.** Branch protection
+(`branches/<b>/protection`) requires **admin**, and GitHub answers a bare
+`404 Not Found` without it rather than a `403`, so as not to confirm the resource
+exists. That 404 is indistinguishable from an unprotected branch — and `gh`
+writes the error body to *stdout*, so redirecting the call into a file yields a
+well-formed artifact asserting the opposite of the truth. Verified: a repo whose
+`main` enforces three required checks returns exactly that to a `pull`-only
+account, while `branches/<b>` reports `"protected": true`.
+
+Four states, not three, and only the first is your own mistake:
+
+| Response | Meaning |
+|---|---|
+| `404 Branch not found` | wrong branch name — fix and re-run |
+| `404 Branch not protected` | correct branch, no protection configured |
+| **`404 Not Found`** (bare) | **you lack `admin`** — protection may exist and be invisible to you |
+| `403 Upgrade to GitHub Pro…` | protection unavailable on this plan (a private repo on a free plan) |
+
+`repos/:o/:r/rules/branches/<b>` is not the way around it. It *is* readable
+without admin, which is precisely the trap: it reports **rulesets only**, so a
+repo using classic branch protection returns `[]` and manufactures a false
+"nothing enforced" finding. Ask per-PR instead — `isRequired` is evaluated against
+whatever actually enforces it, and needs only `pull`.
 
 **Neutral / "skipping" security-scan results are normal** on diffs that do not
 touch the scanned surface. Not a failure, and usually not a required check.
