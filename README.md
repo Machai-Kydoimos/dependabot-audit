@@ -436,6 +436,21 @@ Two caveats worth knowing, since both were wrong here until `0.1.9`:
   a hard error. That is a deliberate trade: enforcement in the channel this plugin
   actually ships through beats portability to one it doesn't.
 
+## How this was built
+
+**This plugin was developed with Claude Code**, and every commit carries a
+`Co-Authored-By: Claude ...` trailer naming the model that worked on it.
+
+Said plainly because the product here is prose and judgment — a procedure a model
+follows — and a reader weighing whether to trust it deserves to know how it was
+made. It is disclosure, not authorship: `plugin.json` names one author, the
+maintainer, who answers the security channel above and owns what this repository
+claims. The gates in this file exist because prose written that way needs
+checking, and the honest limits are stated in **Tests** rather than argued away:
+201 hermetic cases check `SKILL.md` for consistency, nothing checks it for truth
+except replaying a real PR, and whether the model *follows* the procedure is
+still ungated.
+
 ## License
 
 MIT.
