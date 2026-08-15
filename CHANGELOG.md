@@ -83,6 +83,72 @@ rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
 file changes what a phase verifies, so it belongs in its own release behind the
 replay gate rather than in this entry.
 
+## [0.16.2] — 2026-08-15
+
+The repository went public. Four statements that were accurate about a private
+free-org repo stopped being accurate the moment it flipped, and one question the
+plugin has argued about for six releases became measurable for the first time.
+
+### Changed
+
+- **CI is the enforcing gate; the hooks are the fast local pre-check.** A ruleset
+  on `main` requires `Lint & type-check` and all four `Test (Python 3.x)` legs.
+  The README said the reverse, correctly — rulesets and branch protection are
+  unavailable on a private free-org repo (`403 Upgrade to GitHub Pro or make this
+  repository public`), so nothing could be marked required and the hooks carried
+  the whole load.
+
+- **`SECURITY.md` points at GitHub private vulnerability reporting**, now enabled.
+  It previously said an issue *was* a private report, which was true while only
+  org members could see the repo and became false on the flip.
+
+- **The install paragraph no longer asks for credentials**, verified rather than
+  assumed with a credential-free anonymous clone — `GIT_TERMINAL_PROMPT=0`, no
+  credential helper, global and system git config discarded. Exit 0.
+
+### Measured
+
+**A required check that never reports blocks the merge and is invisible to the
+auditor — both, at the same time.** Measured on PR #37 by requiring a context
+(`Test (Python 3.99)`) that can never report:
+
+| | Baseline | With the unsatisfiable requirement |
+|---|---|---|
+| contexts in the rollup | 5 | **5** — the missing one produces no row |
+| every listed `isRequired` | true | true |
+| `statusCheckRollup.state` | SUCCESS | **SUCCESS** |
+| `mergeable` | MERGEABLE | MERGEABLE |
+| `mergeStateStatus` | CLEAN | **BLOCKED** |
+
+The repository's view is loud; the auditor's view is silent. A procedure reading
+`isRequired` and the rollup sees five of five required checks green and reports
+all-clear on a PR GitHub will refuse. That is exactly why Phase 6 reads
+`mergeStateStatus` alongside the rollup, and it is the first time the claim has
+been tested on a repository where the right answer was known in advance rather
+than inferred from someone else's PR.
+
+The genuinely silent variant is the inverse and nothing here catches it: rename a
+job *and* update the ruleset but miss a leg, and that leg still runs, still
+reports, is no longer required, and nothing says so. Recorded in
+`CONTRIBUTING.md` as a hand-check.
+
+- **`references/traps.md` gains the mirror of its own endpoint case.** It already
+  recorded classic protection making `rules/branches/<b>` return `[]` on `mdcat`.
+  Measured here at `admin`, ruleset active, no classic protection:
+  `rules/branches/main` reports the three rules, and `branches/main/protection`
+  returns `404 Branch not protected` about a branch requiring five checks. That
+  404 is the *distinguishable* one, not the bare `404 Not Found` that means you
+  lack `admin`, so permissions do not explain it. Neither endpoint answers "what
+  gates this branch"; each answers for its own mechanism and returns a confident
+  nothing about the other.
+
+### Note on the version
+
+A **patch**, by this file's own rule. Nothing changed about what a phase verifies
+or what the report asserts — the procedure is untouched. Going public is not a
+procedural event, which is the same reasoning recorded on #17 for why the flip
+itself earns no bump.
+
 ## [0.16.1] — 2026-08-15
 
 ### Fixed

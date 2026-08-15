@@ -2,15 +2,19 @@
 
 ## Reporting
 
-**This repository is private.** Only members of the Machai-Kydoimos organization
-can see it or open issues on it, so for now an issue *is* a private report: open
-one with `SECURITY` in the title.
+Use GitHub's **private vulnerability reporting** — the *Report a vulnerability*
+button on this repository's [Security
+tab](https://github.com/Machai-Kydoimos/dependabot-audit/security/advisories/new).
+It is enabled, and it is the channel.
 
-That changes when the repository goes public. GitHub's private vulnerability
-reporting is a public-repository feature, so it cannot be the channel today;
-switching to it is tracked in
-[#17](https://github.com/Machai-Kydoimos/dependabot-audit/issues/17). Until then,
-do not assume a channel exists that has not been set up.
+Do not open a public issue for anything with a security dimension. There is no
+email alias to fall back to, deliberately: a single advertised channel that is
+known to work beats two where one is unmonitored.
+
+This replaced the pre-public arrangement, where the repository was visible only to
+the Machai-Kydoimos organization and an issue therefore *was* a private report.
+Private vulnerability reporting is a public-repository feature and could not be
+switched on before the flip.
 
 ## The risk most worth understanding is not a bug
 
