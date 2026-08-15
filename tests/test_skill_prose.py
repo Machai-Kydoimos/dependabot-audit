@@ -77,6 +77,9 @@ REF_MADE = re.compile(r"git fetch \S+ \"pull/<N>/head:pr-<N>\"")
 # read it, and two copies would drift.
 PLUGIN_PATH = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)")
 
+# A reference the prose hands off to, e.g. `references/actions.md`.
+REFERENCE = re.compile(r"references/([a-z0-9_-]+\.md)")
+
 
 def phases(text: str) -> list[tuple[int, str]]:
     """(phase number, body) for each `## Phase N`, plus the preamble as -1."""
@@ -177,10 +180,48 @@ class SkillHarness(unittest.TestCase):
         guard green. A rule must not be satisfiable by a comment claiming it.
         """
         parts = [self.shell[number]]
+        for name, section in self._handoffs(number):
+            del name
+            parts.extend(bash_blocks(section))
         for rel in PLUGIN_PATH.findall(dict(self.phases)[number]):
             path = ROOT / rel
             if path.suffix == ".py" and path.exists():
                 parts.append(_code_only(path.read_text(encoding="utf-8")))
+        return "\n".join(parts)
+
+    def _handoffs(self, number: int) -> list[tuple[str, str]]:
+        """(filename, that file's `## Phase N` section) for each reference named.
+
+        The ecosystem references are sectioned by phase precisely so this works:
+        a phase hands off to `uv-lock.md` and `actions.md`, and the guard follows
+        it to the matching section rather than to the whole file. Matching the
+        whole file would let Phase 1's guard be satisfied by Phase 5's prose,
+        which is the kind of slack that stops a guard discriminating.
+
+        `traps.md` and `report-template.md` carry no `## Phase N` headings, so
+        they contribute nothing here — deliberately. They are cross-cutting, and a
+        guard that swept them would match almost anything.
+        """
+        found: list[tuple[str, str]] = []
+        for name in REFERENCE.findall(dict(self.phases)[number]):
+            ref = PLUGIN / "references" / name
+            if not ref.exists():
+                continue
+            for n, section in phases(ref.read_text(encoding="utf-8")):
+                if n == number:
+                    found.append((name, section))
+        return found
+
+    def material(self, number: int) -> str:
+        """Everything Phase N *says*: its body plus each reference's Phase N.
+
+        The counterpart to `reachable`. Guards about what a phase asserts read
+        this; guards about what it calls read `reachable`. Keeping them apart is
+        what stops a negative assertion firing on a paragraph that warns against
+        the very thing it forbids.
+        """
+        parts = [dict(self.phases)[number]]
+        parts.extend(section for _, section in self._handoffs(number))
         return "\n".join(parts)
 
     def _scan(self, pattern):
@@ -386,7 +427,7 @@ class TestEveryPhaseCarriesBothEcosystems(SkillHarness):
         """The claim that there is none was false, and skipped a real check."""
         self.assertIn(
             "ecosystem=actions",
-            dict(self.phases)[3],
+            self.reachable(3),
             "Phase 3 must name the GHSA advisory source for actions",
         )
 
@@ -407,6 +448,63 @@ class TestEveryPhaseCarriesBothEcosystems(SkillHarness):
         )
 
 
+class TestEveryHandoffLands(SkillHarness):
+    """A phase that points at a reference section which does not exist.
+
+    The ecosystem method moved out of `SKILL.md` in 0.15.0, which buys back
+    roughly a third of the tokens a run loads — and converts every one of those
+    methods from *text the model already has* into *text the model must go and
+    fetch*. That trade is only sound while the pointer resolves.
+
+    The failure is quiet in the worst way: a phase reading "see
+    `references/actions.md` § Phase 4" against a file with no Phase 4 section
+    leaves the model with a question, a promise, and nothing to answer it with —
+    and the likeliest recovery is improvising a method, which is the exact
+    failure the ecosystem boundary exists to prevent.
+
+    Both halves are asserted because they fail independently: renaming a section
+    breaks the target, and dropping a mention breaks the pointer.
+    """
+
+    # Phases doing ecosystem-specific work. Phase 2's uv answer comes out of the
+    # Phase 1 script rather than a section of its own, so it is not on this list;
+    # Phase 6 is ecosystem-independent by construction.
+    SPLIT_PHASES = (1, 3, 4, 5)
+    ECOSYSTEMS = ("uv-lock.md", "actions.md")
+
+    def test_every_split_phase_names_both_ecosystem_references(self):
+        for number in self.SPLIT_PHASES:
+            named = set(REFERENCE.findall(dict(self.phases)[number]))
+            for ecosystem in self.ECOSYSTEMS:
+                self.assertIn(
+                    ecosystem,
+                    named,
+                    f"Phase {number} does ecosystem-specific work and never hands "
+                    f"off to {ecosystem}, so that ecosystem's method is unreachable "
+                    f"from the phase that needs it",
+                )
+
+    def test_every_named_reference_has_the_section_it_is_pointed_at(self):
+        for number in self.SPLIT_PHASES:
+            landed = {name for name, _ in self._handoffs(number)}
+            for ecosystem in self.ECOSYSTEMS:
+                self.assertIn(
+                    ecosystem,
+                    landed,
+                    f"Phase {number} points at {ecosystem} but that file has no "
+                    f"`## Phase {number}` section to land in",
+                )
+
+    def test_the_retired_reference_is_named_nowhere(self):
+        """`ecosystems.md` was split, not kept. A stale pointer reads as content."""
+        for doc in [SKILL, *sorted((PLUGIN / "references").glob("*.md"))]:
+            self.assertNotIn(
+                "ecosystems.md",
+                doc.read_text(encoding="utf-8"),
+                f"{doc.name} still points at the retired ecosystems.md",
+            )
+
+
 class TestTheMergeBaseSurvivesThePRHavingLanded(SkillHarness):
     """`$BASE_SHA` collapses onto `$HEAD_SHA` the moment the PR merges.
 
@@ -423,7 +521,7 @@ class TestTheMergeBaseSurvivesThePRHavingLanded(SkillHarness):
     commit — so the correction is a no-op wherever the old form worked.
 
     Auditing a merged PR is supported, not an edge case: Phase 6 has a row for
-    it, `ecosystems.md` has a paragraph, and CONTRIBUTING's replay gate asks for
+    it, the ecosystem references have a paragraph, and CONTRIBUTING's gate asks for
     one before every method change.
     """
 
@@ -604,13 +702,13 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
         """The auditor's own `python3` need not be the one uv chose."""
         self.assertIn(
             "uv run python -V",
-            self.shell[5],
+            self.reachable(5),
             "Phase 5 must record the interpreter that produced the row, from inside "
             "the environment rather than from the shell that ran the audit",
         )
 
     def test_the_forks_that_were_only_verified_are_named(self):
-        phase5 = dict(self.phases)[5].lower()
+        phase5 = self.material(5).lower()
         self.assertIn(
             "resolution-markers",
             phase5,
@@ -632,7 +730,7 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
         reader to look for a line that is no longer there.
         """
         quoted = "forked packages: every pin verified, one of them installed"
-        self.assertIn(quoted.split(":")[0], dict(self.phases)[5])
+        self.assertIn(quoted.split(":")[0], self.material(5))
         self.assertIn(
             quoted,
             (PLUGIN / "scripts/audit.py").read_text(encoding="utf-8"),
@@ -668,8 +766,6 @@ class TestPhase4MeasuresTheRightTree(SkillHarness):
 class TestEverythingTheProseNamesExists(SkillHarness):
     """A renamed script breaks every phase that invokes it, silently."""
 
-    REFERENCE = re.compile(r"references/([a-z0-9_-]+\.md)")
-
     def _docs(self):
         yield SKILL
         yield from sorted((PLUGIN / "references").glob("*.md"))
@@ -684,7 +780,7 @@ class TestEverythingTheProseNamesExists(SkillHarness):
 
     def test_every_referenced_document_exists(self):
         for doc in self._docs():
-            for name in self.REFERENCE.findall(doc.read_text(encoding="utf-8")):
+            for name in REFERENCE.findall(doc.read_text(encoding="utf-8")):
                 self.assertTrue(
                     (PLUGIN / "references" / name).exists(),
                     f"{doc.name} names references/{name}, which does not exist",

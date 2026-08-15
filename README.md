@@ -105,17 +105,42 @@ OSV query written while investigating it re-introduced two defects this repo had
 already fixed once.
 
 What survives the cut is the half that **warns** rather than the half that
-**verifies**. `references/ecosystems.md` keeps what a frozen install executes in
+**verifies**. `references/traps.md` keeps what a frozen install executes in
 each ecosystem — including `cargo build --locked` running every crate's
 `build.rs` with no flag that stops it — because that stays true no matter which
 lockfiles this plugin will read.
+
+## How it is laid out
+
+Since 0.15.0 the per-ecosystem method lives beside the ecosystem rather than
+inside the procedure, so a run loads the recipe it needs and not the other one:
+
+| File | Loaded |
+|---|---|
+| `SKILL.md` | always — the phases, their gates, the Phase 0 outputs, the verdict table |
+| `references/uv-lock.md` | when the PR is a `uv.lock` bump |
+| `references/actions.md` | when the PR is an actions bump |
+| `references/traps.md` | when a phase points at it |
+| `references/report-template.md` | always, at Phase 7 |
+
+The two ecosystem files are **sectioned by phase**, and that is a constraint
+rather than tidiness: the prose suite attributes a command to the phase whose
+heading it sits under, which is the check that has caught three shipped
+forward-reference defects. It also asserts that every handoff *lands* — a phase
+pointing at a `§ Phase N` that does not exist leaves the model with a question,
+a promise, and nothing to answer it with, and the likeliest recovery is
+improvising a method.
+
+What stays in `SKILL.md` unconditionally is anything that has to fire without a
+reference being fetched: the read-only contract, the execution warning, Phase 1's
+gate, the three-state rule, and the verdict derivation.
 
 Other Python lockfiles are out of scope too. The script reads `uv.lock`
 specifically, not Poetry, pip-tools or PDM.
 
 The boundary is enforced rather than stated. Handed another ecosystem's lockfile
 the script exits 2 naming the format — `is a Cargo.lock (Rust)`, `is a
-poetry.lock (Python, Poetry)` — and points at `references/ecosystems.md`. That
+poetry.lock (Python, Poetry)` — and points at `references/uv-lock.md`. That
 message is the edge of the tool and the first thing a reader arriving with a
 different lockfile sees, so it says what they found rather than blaming itself:
 before 0.10.0 a real `Cargo.lock` produced `unexpected AttributeError ... This is
@@ -140,7 +165,7 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-179 cases, stdlib only, no network — they run offline and free. Every case
+182 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into ten groups:
 

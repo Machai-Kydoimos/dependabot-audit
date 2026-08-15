@@ -21,7 +21,7 @@ body:
         - scripts/audit.py — PyPI / uv.lock checks
         - scripts/gate_diff.py — Phase 4 differential gate runner
         - SKILL.md — the procedure itself (a phase that cannot be followed as written)
-        - references/ — ecosystems.md, traps.md, report-template.md
+        - references/ — uv-lock.md, actions.md, traps.md, report-template.md
         - Packaging, install, or the slash command
         - Not sure
     validations:

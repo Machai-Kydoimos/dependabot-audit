@@ -188,7 +188,7 @@ after nine commits of growth.
   puts the floor at 3.11. That is why CI runs 3.11 through 3.14 and why the local
   hooks cannot be the whole story.
 - **Do not extend a script to an ecosystem you have no repository to test it
-  against.** `references/ecosystems.md` documents those as procedures instead,
+  against.** The per-ecosystem references document what is in scope instead,
   deliberately.
 - **Observations stay specific.** `rpds-py` at 231 artifacts of which a name-keyed
   audit checked 116; ruff formatting 33 more files; the six Markdown files. These

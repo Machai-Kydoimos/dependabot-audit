@@ -244,7 +244,7 @@ collector) will descend into a full second copy of the project and report on it.
 **`$DEFAULT` cannot be the left-hand side of the merge base.** Once a PR has
 landed, its head *is* an ancestor of the default branch, so the merge base of the
 two is the head — and auditing a merged PR is a supported thing to do here: Phase
-6 has a row for it, `references/ecosystems.md` has a paragraph, and every replay
+6 has a row for it, `references/actions.md` has a paragraph, and every replay
 this project's own gate asks for is one. `baseRefOid` is the base commit GitHub
 diffs the PR against, and it is right in both states.
 
@@ -369,7 +369,7 @@ manifest and the lockfile — or, for an actions bump, **only `uses:` lines**, i
 however many workflow files pin that action. The count of files is not the
 invariant and never was: an action is pinned in every workflow that uses it, and
 a grouped bump moves several actions at once, so ordinary merged bumps touch
-two, three or four files. `references/ecosystems.md` has the measurements, and
+two, three or four files. `references/actions.md` has the measurements, and
 the rule for reading the versions out of that diff rather than off the title.
 Anything else is a finding: report it, and **stop before Phase 4**. The same
 applies if provenance comes back with a discrepancy. Phases 4 and 5 execute the
@@ -380,63 +380,32 @@ nothing.
 Stopping here is not a failed audit. It is a complete one that reached a verdict
 early — write the report with the phases that ran and say which did not.
 
-Verify every artifact the lockfile pins for the changed packages against the live
-registry: sha256/integrity, size, URL, and yanked status.
+**The method is per-ecosystem; the gate above is not.** Each reference is
+sectioned by phase, so read the section for this one:
 
-**Read both lockfiles out of git**, using the ref and merge base pinned in Phase
-0 — never a bare `uv.lock` path, which resolves against the user's checkout:
+| Ecosystem | Method |
+|---|---|
+| `uv.lock` | `references/uv-lock.md` § Phase 1 — `scripts/audit.py` verifies every pinned artifact's hash, size, URL and yank status against the live registry, plus PEP 740 build provenance |
+| GitHub Actions | `references/actions.md` § Phase 1 — no lockfile and no artifact hash, so the question becomes whether the pin is **immutable**: a 40-hex SHA, or a tag someone else can revoke. The scope gate keys on `uses:` lines, never on a count of files |
 
-```bash
-S="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py"
+**This plugin covers `uv.lock` and GitHub Actions, and nothing else.** For any
+other ecosystem, say so and stop. Do not improvise a procedure from the shape of
+the ones that are here: an unverified verifier reports green rather than erroring,
+which is why npm, Cargo and Go were removed rather than left as sketches.
 
-git show "pr-<N>:uv.lock"    > "$SCRATCH/pr.uv.lock"
-git show "$BASE_SHA:uv.lock" > "$SCRATCH/base.uv.lock"
+That is not hypothetical. Followed faithfully against a real Cargo bump, an
+improvised recipe returned matching checksums, a current latest version and a
+clean OSV batch — on a PR that raised the project's minimum Rust version past its
+own declared floor. Nothing in the output looked partial. A hand-run recipe also
+lacks every guard the script has earned: batch limits, retries, version ordering,
+and the refusal to report `CLEAN` on an empty selection.
 
-python3 "$S" "$SCRATCH/pr.uv.lock" --changed-vs "$SCRATCH/base.uv.lock"
-```
-
-**Do not read the package names off the PR title** — a grouped bump names none
-of them, and a bot may group everything (check the `groups:` key from Phase 0).
-`--changed-vs` derives the set from the diff against the **merge base**;
-`--changed pkg-a,pkg-b` is the fallback for a diff the script cannot read, not
-the default.
-
-**Exit 2 means it could not run; exit 1 means it ran and found something.** Never
-read one as the other. Quote its `RESULT` counts — and whatever it names as
-unreachable — in the report, rather than writing "verified" unqualified.
-
-The script says why each package was selected. **`ARTIFACTS CHANGED at unchanged
-version` is not a routine bump** — the lockfile re-points an artifact while the
-version stands still. There are innocent explanations (a wheel added for a new
-platform, a re-resolution against a different index); confirm which, rather than
-assuming one.
-
-For PyPI that one invocation covers this phase **plus the mechanical half of
-Phases 2 and 3** — it also reports the registry's true latest version with
-publish timestamps, PEP 740 build provenance where PyPI has it, and the OSV batch
-across the whole lockfile. Read its output there rather than repeating those
-queries by hand.
-
-**`PUBLISHER CHANGED` outranks everything else in the output.** It means the
-release being adopted was built somewhere the previous one was not. Absence of an
-attestation is *not* a finding — it is normal for anything predating Trusted
-Publishing — and the script distinguishes the two.
-
-**This plugin covers `uv.lock` and GitHub Actions, and nothing else.** For an
-actions bump the script does not apply — there is no lockfile and no artifact
-hash — so follow the recipe in `references/ecosystems.md` for this phase. The
-later phases still apply: every one of them has an actions method, and its
-section says so.
-
-For any **other** ecosystem, say so and stop. Do not improvise a procedure from
-the shape of the ones that are here: an unverified verifier reports green rather
-than erroring, which is why npm, Cargo and Go were removed rather than left as
-sketches. `references/ecosystems.md` has the case that settled it.
-
-This phase leads with the script, so reaching for it on an unfamiliar repo is
-the ordinary path rather than a careless one. It now refuses by name — `is a
-Cargo.lock (Rust)`, `is a poetry.lock` — at exit 2. Report that as the boundary
-it is, not as a failed audit: the ecosystem-independent phases still ran.
+`audit.py` enforces its half rather than leaving it to prose. Handed a
+`Cargo.lock`, `poetry.lock`, `package-lock.json`, `Pipfile.lock`, `go.sum`,
+`go.mod`, `yarn.lock`, `pnpm-lock.yaml` or a `pyproject.toml`, it exits **2**
+naming the format. Report that as the boundary it is, not as a failed audit: the
+ecosystem-independent phases still ran, so say what Phase 0's classification and
+Phase 6's CI state established, and name plainly what was not checked.
 
 ## Phase 2 — Currency
 
@@ -450,11 +419,11 @@ default, with no `cooldown:` block required and nothing in the PR to show it. So
 read the *age* of the gap and not only its existence — inside that window the bot
 is waiting, outside it the bot is behind.
 
-**For GitHub Actions, "current" is a question about the tag line, not the pin.**
-A moving major tag picks up new releases on its own, so a newer patch is not a
-gap. What matters is whether the *major* being adopted is still the newest one,
-and whether the tag still points where the PR proposed — `references/ecosystems.md`
-has the `compare` that separates *ahead* from **behind**.
+**For GitHub Actions "current" is a question about the tag line, not the pin** —
+a moving major tag picks up new releases on its own, so a newer patch is not a
+gap. `references/actions.md` § Phase 2 has the `compare` that separates a tag
+that merely moved *ahead* from one that rolled **behind**, which is the case a
+bot cannot fix because it cannot propose a downgrade.
 
 Rule out the innocent explanations before reporting a gap: a yanked release; a
 **cooldown** (`cooldown:` in `dependabot.yml`, `minimumReleaseAge` in
@@ -500,37 +469,17 @@ adopted. Look for two things, in this order:
 to agree with Phase 2 only sometimes — that divergence is the point, not a
 contradiction. The method differs by ecosystem; the question does not.
 
-**uv.lock.** Batch-query OSV across the whole locked set, then corroborate with
-the ecosystem's own auditor. The OSV half is already done — the Phase 1 script
-ran it — so read that result instead of issuing a second query, and what remains
-here is the auditor. See `references/ecosystems.md` for its invocation and traps;
-`pip-audit` in particular audits the wrong interpreter if invoked casually.
-
-**GitHub Actions.** Actions *do* have an advisory database, and an audit that
-skips this phase for them is skipping a real check:
-
-```bash
-gh api "/advisories?ecosystem=actions&affects=<owner>/<name>" \
-  --jq '.[] | "\(.ghsa_id)\t\(.severity)\t\(.summary)"'
-```
-
-Also read the action repository's own status — `archived`, `disabled`, or a
-transfer to a new owner are all supply-chain facts that no advisory records.
-
-**Do not query OSV by version for this ecosystem.** OSV carries the same
-advisories, but its GitHub Actions entries have no usable version ranges, so a
-version-qualified query returns empty and reads as clean. Measured against
-`tj-actions/changed-files`, the 2025 compromise:
-
-| Query | Result |
+| Ecosystem | Method |
 |---|---|
-| package only | **2 vulns** |
-| `+ version 45.0.7` (the compromised release) | 0 |
-| `+ version 0.0.0` | 0 — a range check would match everything |
-| PyPI control: `requests` 2.19.0, version-qualified | 10, so the pattern itself is sound |
+| `uv.lock` | `references/uv-lock.md` § Phase 3 — the OSV batch is **already done** by the Phase 1 script, so read that result rather than re-querying; what remains is the ecosystem's own auditor, and `pip-audit` audits the wrong interpreter if invoked casually |
+| GitHub Actions | `references/actions.md` § Phase 3 — GHSA carries an `actions` ecosystem, and the obvious port of the `uv.lock` query reports **clean on a known-compromised action** |
 
-Copying the `uv.lock` shape here — batch by `(package, version)` — therefore
-reports **clean on a known-compromised action**. Query by name, or use GHSA.
+That second row is why this phase has a guard in the test suite. *"Not
+applicable" is an assertion too*, and it shipped false: three places in this repo
+once stated that GitHub Actions has no vulnerability database. A phase that
+believed it skipped a real check — measured against `tj-actions/changed-files`,
+where a package-only query returns two advisories and every version-qualified
+form returns zero.
 
 ## Phase 4 — Behavior change (the highest-yield phase)
 
@@ -545,106 +494,25 @@ predicting it from the changelog is what this phase exists to replace. For
 GitHub Actions you cannot run the thing at all, so the method is different and
 the section for it is below.
 
-### uv.lock — measure it
+| Ecosystem | Method |
+|---|---|
+| `uv.lock` | `references/uv-lock.md` § Phase 4 — **measure it.** `scripts/gate_diff.py` runs each gate at the locked, proposed and latest versions in `$SCRATCH/base-<N>` and compares what each run *did to the files* |
+| GitHub Actions | `references/actions.md` § Phase 4 — an action cannot be run locally at two versions, so the method is reading the release notes **and then establishing whether this repo's workflows are in the change's scope at all** |
 
 **Measure on the merge base, not on the PR's tree.** This is the difference
-between finding the change and missing it, and the wrong choice fails silently:
+between finding the change and missing it, and the wrong choice fails silently: a
+PR that already contains the fixup — someone reformatted to make CI pass — has a
+tree the new version is already happy with, so measuring there reports no
+difference. And that is exactly the case where the change was real enough that a
+human had to deal with it. Observed on a real `ruff 0.15.22 -> 0.16.0` bump: six
+Markdown files on the base, nothing on the PR's tree.
 
-```bash
-G="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/gate_diff.py"
+**Do not read the exit codes as the answer.** Both versions can exit 0 while the
+scope moves underneath them — that is the founding observation of this phase, and
+`references/traps.md` has it.
 
-python3 "$G" --tree "$SCRATCH/base-<N>" \
-  --run locked   "uv run --no-project --with ruff==<locked> ruff format ." \
-  --run proposed "uv run --no-project --with ruff==<proposed> ruff format ." \
-  --run latest   "uv run --no-project --with ruff==<latest> ruff format ."
-```
-
-The question is what the new version does to *the code you have*, which is the
-base. A PR that already contains the fixup — because someone reformatted to make
-CI pass — has a tree the new version is already happy with, so measuring there
-reports no difference. And that is precisely the case where the behaviour change
-was real enough that a human had to deal with it. Observed: on a real
-`ruff 0.15.22 -> 0.16.0` bump, the base tree reports six Markdown files and the
-PR's tree reports nothing.
-
-**Then optionally re-run on `$SCRATCH/pr-<N>`.** The two trees answer different
-questions, and together they say something neither says alone:
-
-| base | PR | Reading |
-|---|---|---|
-| differs | agrees | a real behaviour change, and this PR already absorbs it — check *how* |
-| differs | differs | a real behaviour change the PR does **not** handle — it will land on you |
-| agrees | agrees | no behaviour change on this repo's code |
-
-**Give the tool's write mode, not `--check`** — the measurement is what each
-version does to the files, and `--check` does nothing to them. Run it once per
-gate from Phase 0, at *each* scope: a hook scoped to `types_or: [python, pyi]`
-and a CI step running the same tool over `.` are different gates, and this is
-the phase that turns on the difference. Add the `latest` run whenever Phase 2
-found a newer version, because that is the one you would be recommending.
-
-Read the result as three distinct findings:
-
-| Result | Meaning |
-|---|---|
-| only in the newer run | widened scope, or a rule that now fires |
-| only in the older run | narrowed scope |
-| both, different result | the fix itself behaves differently |
-
-The last is the one no security feed reports: a formatter that used to delete
-something and no longer does, in a write mode many repos run on every commit.
-
-**Do not read the exit codes as the answer** — see `references/traps.md`; both
-versions can exit 0 while the scope moves underneath them.
-
-`allow-list vs disable-list` is no longer something to work out in advance; the
-run settles it. Keep it for the *report*, to explain why a difference fired:
-under a config that disables specific rules a newly added rule is live the moment
-it lands, and under one that enables specific rules it is inert.
-
-A gate with no write mode — a type checker, a test suite — leaves the tree
-untouched and `gate_diff` says so. But **"no run changed any file" has three
-causes**, and the tool deliberately does not choose between them: you gave a
-read-only invocation, or the tree already satisfies every version, or the gate has
-nothing to write. Only the first is a mistake; the second is a real agreement.
-Decide which, and say so — do not report the weaker reading by default.
-
-### GitHub Actions — establish whether the change reaches this repo
-
-You cannot run an action locally at two versions, so measurement is unavailable
-and reading the release notes is the method rather than the shortcut. That makes
-the second step load-bearing: **a change is only a finding here if this repo's
-workflows are in its scope.**
-
-Read the notes for every version in the gap, looking for changes to a *default*,
-a *trigger*, an *input*, or a *runner requirement* — then find the line in this
-repo's workflows that decides whether it applies:
-
-| Change | What to grep for here |
-|---|---|
-| a trigger is newly restricted | `pull_request_target:`, `workflow_run:` in this repo's workflows |
-| a default input flips | that input's name — an explicit setting pins the old behaviour |
-| a minimum runner or Node version | `runs-on:` — GitHub-hosted is fine, a self-hosted label is not |
-| credential or token handling | `permissions:`, `persist-credentials`, and what later steps do with the token |
-
-**Report "inert here" as a result, not as silence.** Reaching it deliberately is
-this phase working; reaching it by not looking is the failure. Observed:
-`actions/checkout@v7` blocks fork-PR checkout under `pull_request_target` and
-`workflow_run` — a security change shipped as a plain bullet with no heading and
-no ⚠️ — and it was genuinely inert on a repo that uses neither trigger. The report
-should say so and name the greps that settled it.
-
-**Two signals that the notes alone will not give you.** Both were observed:
-
-- **A coordinated release across every supported major is a security backport.**
-  `actions/checkout` published v7.0.1, v6.1.0, v5.1.0, v4.4.0, v3.7.0 and v2.8.0
-  within 35 minutes of each other; the backports carry `[BREAKING]` and a
-  changelog link that the original major's notes do not. Check the sibling majors'
-  release dates, not just the line you are on.
-- **Version-coupled actions must move together.** `upload-artifact` and
-  `download-artifact` ship majors in lockstep — the v7/v8 pair went out eight
-  seconds apart. If the bump moves one half, check the sibling's pin in the same
-  workflow and say whether the repo is now split across generations.
+**"Inert here" is a result, not silence.** Reaching it deliberately is this phase
+working; reaching it by not looking is the failure.
 
 ## Phase 5 — Independent reproduction
 
@@ -657,105 +525,28 @@ For `uv.lock` you answer it by building and running the thing. For GitHub Action
 no local reproduction exists at all, so the answer has to come from somewhere
 else — and "no reproduction available" is a result to report, not a phase to skip.
 
-### uv.lock — install frozen and run the suite
+| Ecosystem | Method |
+|---|---|
+| `uv.lock` | `references/uv-lock.md` § Phase 5 — install **frozen** and run the repo's own gates and suite in `$SCRATCH/pr-<N>` |
+| GitHub Actions | `references/actions.md` § Phase 5 — nothing to install and no way to run an action off GitHub's runners, so the substitute is **evidence that this pin has already run**: the history of the workflow the bump changed |
 
 Phase 0 built the worktree and proved it points at `$HEAD_SHA`, so the user's
-working tree is untouched throughout and this phase inherits a tree it can trust.
-That isolation protects the *working tree*, not the machine — see the execution
-section at the top, and `references/ecosystems.md` for the per-registry flags that
-narrow what an install is allowed to run.
+working tree is untouched throughout. That isolation protects the *working tree*,
+not the machine — see the execution section at the top.
 
-Install **frozen** — that proves the lockfile is self-consistent and resolves
-nothing. For Python this is two commands, and they prove different things:
+**"No reproduction available" is a result to report, not a phase to skip.** For an
+actions bump on an open PR whose workflow is not PR-triggered, reproduction is
+impossible before merge; that is a property of the change and belongs in the
+report.
 
-```bash
-uv sync --locked --no-build --no-install-project   # every dep resolved to a wheel
-uv sync --locked                                   # then add the project itself
-```
-
-`--no-build` alone **fails** on any project with a `[project]` table, because
-installing itself editable is a build; `references/ecosystems.md` has the error
-and the reasoning.
-
-Then run the repo's own gates from Phase 0, and its full test suite.
-
-**`--locked` checks the whole lockfile; the install materialises one resolution
-out of it.** Those are different claims and the row must not merge them. A
-`uv.lock` can carry several `[[package]]` blocks for the same name under
-different `resolution-markers` — typically the last release supporting an older
-Python alongside the current one. Phase 1 verifies **every** fork's artifacts
-against the registry. `uv sync` then installs only the resolution matching the
-interpreter and platform in front of it, which need not be the highest pin.
-
-So a green row here on 3.14 says nothing about whether the 3.11 fork's artifacts
-still fetch or its older release still installs. **Ask the environment which one
-it built**, rather than the auditor's own `python3`, which may not be the
-interpreter uv chose:
-
-```bash
-uv run python -V                  # inside the synced environment
-uv pip list --format=freeze       # the versions actually materialised
-```
-
-The Phase 1 script prints the fork list — `forked packages: every pin verified,
-one of them installed` — so the names and versions to reconcile against are
-already in the output. Name the interpreter and the fork in the reproduction
-row; do not report the install as though it covered every pin.
-
-**When the bumped package is itself forked, a second sync is the thorough
-version** and it is a deliberate escalation, not the default:
-
-```bash
-uv sync --locked --python <floor>   # the floor from requires-python
-```
-
-It costs an interpreter download and can fail for reasons that have nothing to
-do with the bump. The cheap version — installing once and disclosing which fork
-that was — is honest and is what this phase requires. The second sync is worth
-it when the fork you did *not* install is one of the packages under audit, and
-the report should say which of the two you did.
-
-### GitHub Actions — substitute run history
-
-There is nothing to install and no way to execute an action outside GitHub's
-runners, so local reproduction is unavailable. The substitute is **evidence that
-this pin has already run**: ask the workflow the bump changed.
-
-```bash
-gh run list --workflow <changed>.yml --limit 10 \
-  --json conclusion,headBranch,createdAt,displayTitle \
-  --jq '.[] | "\(.conclusion)\t\(.createdAt)\t\(.displayTitle)"'
-```
-
-Read it against the merge date, and be strict about what it proves. Runs *after*
-the bump landed exercised the new pin; runs before it did not, and a green history
-that predates the merge says nothing at all about the version being adopted.
-
-| Situation | What you can honestly report |
-|---|---|
-| the workflow ran green on this pin since the bump landed | reproduced — the strongest evidence available for an actions bump |
-| the workflow has not run since | **not reproduced.** State it; do not let Phase 6's green stand in for it |
-| the workflow is not PR-triggered and the PR is open | reproduction is impossible before merge. That is a property of the change, and it belongs in the report |
-
-Observed: a bump to `actions/upload-artifact` in a release-only workflow, merged
-alongside a `download-artifact` pin two majors behind. Nothing in the PR could
-show whether the pair still interoperated — seven green release runs over the
-following month did.
-
-**Three things qualify this phase's row, and "reproduced" alone asserts past all
-of them.** Each has a green result that is true of *one* configuration and reads
-as true of every one:
-
-| Qualifier | Why the bare row overstates it |
-|---|---|
-| **which install** | the script-suppressing flags are the documented default and they weaken the proof: a package that genuinely needs its install script is not exercised. Re-running without them is a legitimate choice — say which produced the row |
-| **which interpreter** | the install materialised one fork of a forked lockfile. `uv run python -V`, not the auditor's `python3` |
-| **which forks were only verified** | Phase 1 checked all of them and Phase 5 installed one. Name the others rather than letting the install stand for them |
-
-None of the three is a failure to disclose. "Frozen install passed under
-`--no-build --no-install-project` on CPython 3.14; the 3.11 fork of `rpds-py` was
-verified but not installed" is a stronger row than "frozen install passed",
-because it is one a reader can falsify.
+**Say what the row actually covered.** A green reproduction is true of *one*
+configuration and reads as true of every one, so name which install ran, which
+interpreter produced it, and anything verified but not installed. "Frozen install
+passed under `--no-build --no-install-project` on CPython 3.14; the 3.11 fork of
+`rpds-py` was verified but not installed" is a stronger row than "frozen install
+passed", because it is one a reader can falsify. `uv run python -V` from inside
+the synced environment is where the interpreter comes from — not the auditor's
+own `python3` — and `resolution-markers` is why the two can differ.
 
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.

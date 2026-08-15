@@ -446,7 +446,7 @@ def _boundary(path: str, what: str) -> str:
         "       npm, Cargo and Go recipes were removed rather than left as sketches:\n"
         "       an unverified verifier reports green instead of erroring. Report what\n"
         "       the ecosystem-independent phases established and say what was not\n"
-        "       checked — see references/ecosystems.md."
+        "       checked — see references/uv-lock.md."
     )
 
 

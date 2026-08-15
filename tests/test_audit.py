@@ -732,7 +732,7 @@ class TestAttestations(unittest.TestCase):
     def test_no_attestation_is_not_a_finding(self):
         """Normal for anything predating Trusted Publishing. Collapsing it into a
         warning would make the row noise on most lockfiles and train the reader
-        to skip it — which is the failure ecosystems.md warns about."""
+        to skip it — which is the failure the ecosystem references warn about."""
         result = self._check(*self._project())
         self.assertEqual(result["attested"], 0)
         self.assertEqual(result["unattested"], 1)
@@ -1124,7 +1124,7 @@ class TestEcosystemBoundary(_MainHarness):
                     "reserved for genuinely unexpected exceptions; spending it here is "
                     "what makes it worthless when it does appear",
                 )
-                self.assertIn("references/ecosystems.md", err, "no route out of the boundary")
+                self.assertIn("references/uv-lock.md", err, "no route out of the boundary")
                 self.assertNotIn("CLEAN", out)
 
     def test_a_cargo_lock_no_longer_reaches_the_code_that_crashed_on_it(self):

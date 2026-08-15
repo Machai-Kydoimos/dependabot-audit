@@ -11,6 +11,92 @@ patch.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-15
+
+Every run paid for both ecosystems. A `uv.lock` bump loaded the whole GitHub
+Actions recipe and an actions bump loaded the whole PyPI one, and roughly a third
+of the documentation a run carried was guaranteed irrelevant before it started.
+
+**No rule was removed. Only its location changed.** Verified mechanically rather
+than asserted: extracting every non-comment command line from `SKILL.md` and
+`ecosystems.md` at v0.14.0 and from all four documents now gives **0 commands
+gained and 0 genuinely lost** — the two the diff flags are the same `uv sync`
+pair, which `ecosystems.md` and `SKILL.md` each carried with different trailing
+comments.
+
+### Changed
+
+- **`references/ecosystems.md` is retired, split into `references/uv-lock.md`
+  and `references/actions.md`**, each sectioned by phase. `SKILL.md`'s Phases 1
+  through 5 now carry the phase's *question* and its gate, and hand off to the
+  section for the ecosystem in front of them.
+
+  Sectioning by phase is a constraint, not tidiness. The prose suite attributes a
+  command to the phase whose heading it sits under, and that attribution is the
+  check which has caught three shipped forward-reference defects. A section
+  retitled out of that shape takes its guard with it.
+
+- **What stays in `SKILL.md` is anything that must fire without a reference being
+  fetched**: the read-only contract, the execution warning, Phase 1's gate, the
+  Phase 0 outputs table and the three-state rule, and Phase 7's verdict
+  derivation. A rule in `SKILL.md` is *guaranteed* loaded; a rule in a reference
+  loads only if the pointer is followed. That is acceptable for a recipe and not
+  for a gate.
+
+- **The cross-ecosystem "installing is executing" table moved to `traps.md`**,
+  where it belongs: it is a warning for a reader who arrived with an out-of-scope
+  repository, not a rule on this plugin's own path.
+
+### Added
+
+- **A guard that every handoff lands.** Two halves, because they fail
+  independently: each split phase must name both ecosystem references, and each
+  named reference must actually have the `## Phase N` section it is pointed at.
+
+  This is the risk the split creates and the reason it is worth gating. Moving a
+  method converts it from *text the model already has* into *text the model must
+  go and fetch*, and a pointer into a section that does not exist leaves a
+  question, a promise, and nothing to answer it with — where the likeliest
+  recovery is improvising a method, which is exactly what the ecosystem boundary
+  exists to prevent.
+
+- **`material(n)` beside `reachable(n)` in the prose suite.** Guards about what a
+  phase *says* read the first; guards about what it *calls* read the second.
+  Keeping them apart is what stops a negative assertion firing on a paragraph
+  that warns against the very thing it forbids — which is how the first version
+  of `reachable` failed the `/protection` guard on the prose explaining why never
+  to call it.
+
+### Measured
+
+Per-run documentation cost, `SKILL.md` + one ecosystem + the report template:
+
+| | v0.14.0 | 0.15.0 |
+|---|---|---|
+| a `uv.lock` bump | ~20,700 tok | **~17,500 tok** (−15%) |
+| an actions bump | ~20,700 tok | **~16,800 tok** (−19%) |
+
+Less than the ~25% projected, and the reason is worth recording rather than
+rounding away: the two largest blocks left in `SKILL.md` are Phase 0 (284 lines)
+and Phase 6 (179), both **ecosystem-independent**, so an ecosystem split cannot
+reach either. The remaining saving is in relocating motivating narrative and in
+mechanising Phase 0 — both still ahead, and both carrying more risk than this one
+did.
+
+### Not done, deliberately
+
+The **evidence split** — moving motivating case narratives out of `SKILL.md` —
+is held. The ecosystem split extends a pattern with a track record: the plugin
+has depended on the model following pointers into `ecosystems.md` for many
+releases. Moving *justification* away from *rules* is a different bet, and a
+narrative that turns out to be discriminating rather than merely motivating goes
+missing silently. With `claude plugin eval` still unavailable (#32) there is
+nothing that would detect it.
+
+### Tests
+
+179 → 182.
+
 ## [0.14.0] — 2026-08-15
 
 Phase 6 was 188 lines of prose carrying **three of the seven** defects that have
@@ -1402,7 +1488,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.11.0...v0.12.0
