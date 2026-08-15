@@ -1011,6 +1011,61 @@ Verdicts are one of:
   managing the PR.
 - **Hold** — a discrepancy, a regression, or a behavior change that breaks a gate.
 
+### Which evidence produces which verdict
+
+Every row above is a finding; the verdict is a function of them, and leaving that
+function implicit is how two audits with the same evidence reach different
+recommendations. Read the table top-down and take the **first** row that matches:
+
+| Evidence | Verdict |
+|---|---|
+| Phase 1's gate fired — scope, a provenance discrepancy, or `PUBLISHER CHANGED` | **Hold** |
+| OSV or GHSA reports a vulnerability in a version being **adopted** | **Hold** |
+| A `Security` entry in the gap, and the gap is outside the cooldown | **Hold** — or merge-then-follow-up when the fix is already in the adopted version |
+| Actions: the tag rolled **behind** the proposed SHA | **Hold.** Close the bot's PR and replace it by hand; a bot cannot express a downgrade |
+| Phase 4: base differs, PR differs — the change is real and unabsorbed | **Hold** |
+| Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
+| A red required check labelled **attributable** | **Hold** |
+| A red required check labelled **pre-existing** | **Not a Hold on this bump.** Report it as its own finding, take the verdict from the remaining evidence, and say the PR is unmergeable until someone fixes it |
+| Phase 4: base differs, PR agrees — real and already absorbed | **Merge as-is**, naming what the PR absorbed and how |
+| `mergeStateStatus: BLOCKED` with every check green | **Merge as-is** on the bump's merits; name what blocks it, usually `reviewDecision` |
+| Actions: the workflow file is generated (`DO NOT EDIT`) | **Merge as-is, then follow up** on the generator — this bump is transient without it |
+| A gap exists, outside the cooldown, nothing security-shaped in it | **Merge as-is, then follow up** |
+| A gap exists **inside** the cooldown window | **Merge as-is.** Do *not* offer a follow-up: it hand-lands the release the control exists to delay |
+| Everything derived, nothing above matched | **Merge as-is** |
+
+**When phases disagree, this is the precedence** — and they are *expected* to
+disagree, which is why more than one of them exists:
+
+1. Phase 1's gate
+2. Changelog `Security` entries across the gap
+3. OSV / GHSA
+4. Phase 4's measured difference
+5. Phase 5's reproduction
+6. Phase 6's CI state
+
+A changelog `Security` entry outranking a clean OSV batch is not a contradiction
+to explain away — a privately disclosed fix ships with no CVE, so *clean scanner,
+dirty changelog* is the expected reading and the whole reason Phase 2 reads
+changelogs at all.
+
+### Confidence
+
+Not a feel. It is a function of how much of the evidence was actually derived,
+which the three-state rule has already recorded per row:
+
+| Condition | Confidence |
+|---|---|
+| Every verdict-bearing input derived, and the executing phases ran | **high** |
+| One or more verdict-bearing inputs **underivable**, none of them decisive | **medium** |
+| `--no-execute`, with a Phase 4-shaped question still open | **medium** — say what running Phase 4 would add |
+| A **decisive** input underivable — one whose value would change the verdict | **low**, and name which one |
+
+"Verdict-bearing" is the test, not "present in the table": an underivable row that
+no verdict rule reads does not lower confidence, and saying it does trains the
+reader to discount the field. Conversely a single underivable input that would
+flip the recommendation caps it at **low** however green everything else is.
+
 If the user asked for `--comment`, print the report and offer to post it; posting
 is a separate, explicitly requested action.
 

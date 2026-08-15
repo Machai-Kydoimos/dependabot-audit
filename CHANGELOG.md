@@ -11,6 +11,73 @@ patch.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-15
+
+Every phase was rigorous about establishing evidence, and then the step that
+turns evidence into a recommendation was left entirely implicit. Two audits with
+identical findings could reach different verdicts and neither report would show
+where they diverged.
+
+### Added
+
+- **Phase 7 derives the verdict from a table rather than from judgment.** The
+  three verdicts had one-line definitions — "Hold — a discrepancy, a regression,
+  or a behavior change that breaks a gate" — which do not decide the cases the
+  procedure works hardest to establish:
+
+  | Case the old wording did not cover | What it now produces |
+  |---|---|
+  | a red required check labelled **pre-existing** | not a Hold *on this bump*; a separate finding, and the PR is unmergeable until someone fixes it |
+  | Phase 4: base differs, PR agrees — real and absorbed | **Merge as-is**, naming what the PR absorbed |
+  | `mergeStateStatus: BLOCKED` with everything green | **Merge as-is** on the bump's merits; name what blocks |
+  | a gap **inside** the cooldown window | **Merge as-is**, and explicitly *no* follow-up |
+  | an actions tag rolled **behind** | **Hold**, close the bot's PR, replace by hand |
+
+  The pre-existing row is the one that mattered most. Phase 6 has said since
+  0.10.0 that such a check "must not produce a Hold on this bump", and nothing
+  downstream consumed the label — so the rule existed in the phase that derives
+  it and not in the phase that acts on it.
+
+  Replayed against `BIRSAx2/mdcat` #6, the PR the rule comes from:
+
+      head   65bfd8e  failure test (ubuntu-latest)  success lint  success test (windows-latest)
+      parent b1b0dd4  failure test (ubuntu-latest)  success lint  success test (windows-latest)
+
+  Red at both points, so **pre-existing**, so not a Hold on the bump — while the
+  report still has to say the PR cannot merge. Two things to carry at once, which
+  the report template now spells out, because reporting only the first reads as
+  "merge this" on a PR that will not merge and reporting only the second blames
+  the bump.
+
+- **A precedence order for when phases disagree.** Phase 1's gate, then changelog
+  `Security`, then OSV/GHSA, then Phase 4's measurement, then Phase 5, then Phase
+  6. Disagreement is the designed case rather than a problem: a privately
+  disclosed fix ships with no CVE, so *clean scanner, dirty changelog* is the
+  expected reading and the reason Phase 2 reads changelogs at all. That was
+  stated in one place about one pair and never generalised.
+
+- **Confidence is now a function of what could not be derived.**
+  `report-template.md` had asked for `high | medium | low` since the beginning and
+  nothing anywhere defined it — the report's most visible field was its least
+  falsifiable. It now reads off the three-state discipline the rows already
+  carry: **high** when every verdict-bearing input was derived and the executing
+  phases ran, **medium** when something underivable sits outside the verdict's
+  path or `--no-execute` left a Phase 4-shaped question open, **low** when an
+  input that would *change* the verdict could not be established — and then it
+  has to name which.
+
+  "Verdict-bearing" rather than "present in the table" is load-bearing: an
+  underivable row no verdict rule reads must not lower confidence, or the field
+  becomes noise and the reader learns to discount it.
+
+### Tests
+
+149 → 154. Five guards, mutation-checked against the pre-change prose: that the
+precedence is stated, that a pre-existing red does not carry the verdict, that
+the cooldown distinction reaches the verdict table, that confidence is defined in
+terms of underivable inputs, and that the report template carries the same rule
+rather than letting it drift from `SKILL.md`.
+
 ## [0.12.0] — 2026-08-15
 
 A review pass over the whole plugin rather than a round of replays, so the
@@ -1240,7 +1307,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.0...v0.10.1

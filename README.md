@@ -70,7 +70,7 @@ the verdict, and the merge command **left un-run**.
 | 4 | Behavior change — does this change what runs here. For `uv.lock`, each gate run at the old and new versions **against the merge base**, comparing what they *do to the files*; measuring the PR's own tree reports nothing whenever the PR already contains the fixup, which is exactly when the change was real. For actions, which cannot be run locally, whether this repo's workflows are in the change's scope at all |
 | 5 | Independent reproduction — frozen install and the repo's own gates in an isolated worktree; for actions, where no local reproduction exists, the run history of the workflow the bump changed |
 | 6 | CI verification — the run for the exact head SHA, the required contexts specifically, and whether the changed file is reachable from a pull request at all |
-| 7 | Report |
+| 7 | Report — and the verdict *derived* from the evidence rather than judged: a table mapping findings to one of the three recommendations, a precedence for when phases disagree (they are meant to), and confidence as a function of what could not be derived. Also where the worktrees and branch get cleaned up, because it is the only phase every audit reaches |
 | 8 | Learning loop — hand back anything that could not have been derived |
 
 Phase 0 derives repo specifics **every run and never caches them** — a cached
@@ -135,7 +135,7 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-149 cases, stdlib only, no network — they run offline and free. Every case
+154 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into ten groups:
 
@@ -201,8 +201,12 @@ to detect. They fall into ten groups:
   in a phase every audit reaches rather than one `--no-execute` skips, that the
   rollup query reads `totalCount` so a truncated page cannot pass as a complete
   required-check list, and that the classification asks whether this is a
-  repository you control before letting Phases 4 and 5 run. Each corresponds to a
-  defect that shipped in the prose, where the other groups cannot reach.
+  repository you control before letting Phases 4 and 5 run. Since 0.13.0 it also
+  checks that the verdict is *derived* — that a precedence exists for when phases
+  disagree, that a **pre-existing** red check does not carry a Hold, and that
+  confidence is defined in terms of underivable inputs in both `SKILL.md` and the
+  report template, so the two cannot drift. Each corresponds to a defect that
+  shipped in the prose, where the other groups cannot reach.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target

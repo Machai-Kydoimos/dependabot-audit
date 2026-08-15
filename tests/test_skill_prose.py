@@ -777,6 +777,81 @@ class TestExecutionRequiresARepoYouControl(SkillHarness):
         )
 
 
+class TestTheVerdictIsDerivedRatherThanJudged(SkillHarness):
+    """Phase 7 named three verdicts and never said which evidence produces which.
+
+    Every phase above it is rigorous about the three-state discipline, and then
+    the mapping from findings to recommendation was left entirely implicit — so
+    two audits with identical evidence could reach different verdicts and neither
+    report would show why. The cases the three one-line definitions did not cover
+    are exactly the ones the procedure worked hardest to establish:
+
+      - a red required check labelled **pre-existing**, which Phase 6 says
+        explicitly "must not produce a Hold on this bump" while the PR still
+        cannot merge;
+      - a Phase 4 difference that is real and *absorbed* by the PR, which is a
+        finding and not an obstacle;
+      - `mergeStateStatus: BLOCKED` with every check green;
+      - an underivable input, tracked per row and dropped at the verdict.
+
+    Confidence was worse: `report-template.md` asked for high/medium/low and
+    nothing anywhere defined it, which makes the report's most visible field the
+    one least connected to its evidence.
+    """
+
+    def _phase7(self) -> str:
+        return dict(self.phases)[7]
+
+    def test_the_three_verdicts_have_a_derivation_not_just_definitions(self):
+        phase7 = self._phase7()
+        self.assertIn(
+            "precedence",
+            phase7.lower(),
+            "phases are expected to disagree — Phase 2's changelog against Phase 3's "
+            "scanner is the designed case — so the order they resolve in has to be "
+            "stated rather than improvised per audit",
+        )
+
+    def test_a_pre_existing_red_does_not_carry_the_verdict(self):
+        """Phase 6 establishes the label; Phase 7 has to act on it."""
+        phase7 = self._phase7().lower()
+        self.assertIn("pre-existing", phase7, "the label Phase 6 derives is unused in Phase 7")
+        self.assertRegex(
+            phase7,
+            r"not a hold on this bump",
+            "a pre-existing red is a real finding about the repo and not a verdict "
+            "about the bump; collapsing them produces the false Hold Phase 6 exists "
+            "to prevent, one phase later",
+        )
+
+    def test_a_gap_inside_the_cooldown_earns_no_follow_up(self):
+        """The inversion: recommending one hand-lands the held release."""
+        phase7 = self._phase7().lower()
+        self.assertIn(
+            "cooldown",
+            phase7,
+            "Phase 2 separates a hold from lag; the verdict table has to consume "
+            "that distinction or the separation buys nothing",
+        )
+
+    def test_confidence_is_defined_somewhere_the_writer_will_read(self):
+        phase7 = self._phase7().lower()
+        self.assertIn("confidence", phase7)
+        self.assertIn(
+            "underivable",
+            phase7,
+            "confidence must be a function of what could not be derived, or it is a "
+            "feel — and the report's most visible field is then its least falsifiable",
+        )
+
+    def test_the_report_template_carries_the_same_confidence_rule(self):
+        """The template is what gets copied; a rule only in SKILL.md drifts."""
+        template = (PLUGIN / "references/report-template.md").read_text(encoding="utf-8").lower()
+        self.assertIn("confidence is derived", template)
+        for level in ("high", "medium", "low"):
+            self.assertIn(level, template)
+
+
 class TestFrontmatter(SkillHarness):
     """0.1.9 shipped `tools:`, which is not a field and withheld nothing.
 
