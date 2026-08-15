@@ -27,6 +27,59 @@ reasons that are not this repo's fault. Keep them that way. The value of the
 hermetic suite is that it is cheap and trustworthy on every commit, and anything
 that needs a registry does not belong in it.
 
+## The required checks, and the one that is silent
+
+`main` carries a ruleset requiring `Lint & type-check` and all four
+`Test (Python 3.x)` legs. **CI gates the merge; the hooks are the fast local
+pre-check.** That inverted when the repository went public — rulesets are
+unavailable on a private free-org repo, so until then nothing could be required.
+
+**Renaming a matrix leg without updating the ruleset is loud, not silent** —
+measured here rather than predicted, on PR #37, by adding a required context
+(`Test (Python 3.99)`) that can never report:
+
+| | Baseline | With the unsatisfiable requirement |
+|---|---|---|
+| contexts in the rollup | 5 | **5** — the missing one produces no row |
+| every listed `isRequired` | true | true |
+| `statusCheckRollup.state` | SUCCESS | **SUCCESS** |
+| `mergeable` | MERGEABLE | MERGEABLE |
+| `mergeStateStatus` | CLEAN | **BLOCKED** |
+
+Both halves are true at once and they point opposite ways. **The repository's
+view is loud:** the PR stops being mergeable. **The auditor's view is silent:**
+the unsatisfied requirement is absent from the rollup entirely, so a procedure
+reading `isRequired` and the rollup state sees five of five required checks green
+and reports all-clear.
+
+That is Phase 6's design rationale, and this is the first time it has been
+measured on a repository where the right answer was known in advance rather than
+inferred from someone else's PR. `SKILL.md` already says `mergeStateStatus` is
+what closes the gap; this is the controlled case behind that sentence.
+
+**The genuinely silent failure is the inverse**, and nothing above catches it:
+rename the job *and* update the ruleset, but miss a leg. That leg still runs and
+still reports, is no longer required, and nothing anywhere says so. Check the
+ruleset against `ci.yml`'s matrix by hand whenever either changes.
+
+**The ruleset is also the positive control this repo never had** for the two
+endpoints that look like they answer *what is required here*. Measured at
+`admin`, ruleset active, no classic protection:
+
+```
+GET repos/:o/:r/rules/branches/main       -> deletion, non_fast_forward,
+                                             required_status_checks
+GET repos/:o/:r/branches/main/protection  -> 404 "Branch not protected"
+```
+
+That 404 is the *distinguishable* one from `references/traps.md`'s four-state
+table, not the bare `404 Not Found` that means you lack `admin` — and it is still
+wrong about enforcement, on a branch requiring five checks. It mirrors the case
+`traps.md` records from `mdcat`, where classic protection makes `rules/branches`
+return `[]`. Each endpoint answers about its own mechanism and returns a
+confident "nothing here" about the other. Neither substitutes for asking per-PR,
+which is what Phase 6 does.
+
 ## The gate with no script
 
 **A change to a phase's method is replayed against the PR that motivated it

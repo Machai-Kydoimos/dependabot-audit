@@ -37,9 +37,18 @@ and compares the publisher against the release being replaced.
 /plugin install dependabot-audit
 ```
 
-The repo is **private to the Machai-Kydoimos organization**, so installing it
-requires git credentials with access — org members should have `gh auth login`
-done, or an SSH key on their account, before running the first command.
+No credentials are needed. Verified rather than assumed, with a credential-free
+anonymous clone — `GIT_TERMINAL_PROMPT=0`, no credential helper, and global and
+system git config both discarded:
+
+```
+$ GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_ASKPASS=/bin/false \
+    git -c credential.helper= clone --depth 1 \
+    https://github.com/Machai-Kydoimos/dependabot-audit.git
+Cloning into 'dependabot-audit'...
+$ echo $?
+0
+```
 
 ## Use
 
@@ -253,10 +262,20 @@ pre-commit install          # ruff, mypy and the suite, on every commit
 pre-commit run --all-files  # exactly what CI runs
 ```
 
-**The hooks are the enforcing gate; CI is advisory.** This repo is private on a
-free org, where branch protection and repository rulesets are both unavailable
-(`403 Upgrade to GitHub Pro or make this repository public`), so no check can be
-marked required. CI earns its place on the one thing the hooks cannot do: run the
+**CI is the enforcing gate; the hooks are the fast local pre-check.** A ruleset on
+`main` requires `Lint & type-check` and all four `Test (Python 3.x)` legs, so a
+red check blocks the merge rather than merely reporting it.
+
+That inverted the moment this repository went public, and the old arrangement is
+worth stating because it explains the shape of everything above: rulesets and
+branch protection are free on public repositories and unavailable on a private
+free-org one (`403 Upgrade to GitHub Pro or make this repository public`), so
+until the flip no check could be marked required and the hooks carried the whole
+load alone.
+
+Install them anyway. They are the same tools at the same pins, and a failure
+found locally costs a second where the same failure found in a PR costs a round
+trip. CI still earns its place on the one thing the hooks cannot do: run the
 suite on Python 3.11 through 3.14, because `audit.py` runs under whatever bare
 `python3` the repo under audit happens to have, and `tomllib` puts the floor at
 3.11. The maintainer's machine is the newest of those, so the older legs are the

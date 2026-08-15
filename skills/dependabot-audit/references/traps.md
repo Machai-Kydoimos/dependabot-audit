@@ -288,6 +288,22 @@ repo using classic branch protection returns `[]` and manufactures a false
 "nothing enforced" finding. Ask per-PR instead — `isRequired` is evaluated against
 whatever actually enforces it, and needs only `pull`.
 
+**Both directions are now measured, and each endpoint lies about the other
+mechanism.** On `mdcat`, classic protection enforcing three checks:
+`rules/branches/<b>` returns `[]`. On this plugin's own repo at `admin`, a
+ruleset requiring five checks and no classic protection:
+
+| Call | Answer | True? |
+|---|---|---|
+| `rules/branches/main` | `deletion`, `non_fast_forward`, `required_status_checks` | yes |
+| `branches/main/protection` | `404 Branch not protected` | **about classic protection, yes; about enforcement, no** |
+
+That second 404 is the *distinguishable* one in the table above, not the bare
+`404 Not Found` that means you lack `admin` — so permissions do not explain it,
+and the branch it calls unprotected requires five checks. Neither endpoint
+answers "what gates this branch"; each answers "what does *my* mechanism say",
+and returns a confident nothing for the other.
+
 **Neutral / "skipping" security-scan results are normal** on diffs that do not
 touch the scanned surface. Not a failure, and usually not a required check.
 
