@@ -83,6 +83,38 @@ rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
 file changes what a phase verifies, so it belongs in its own release behind the
 replay gate rather than in this entry.
 
+## [0.16.1] — 2026-08-15
+
+### Fixed
+
+- **Every description now names the covered ecosystems.** `plugin.json`,
+  `marketplace.json`, `SKILL.md`'s frontmatter and the command's all promised to
+  *"audit an automated dependency-bump PR"* and named no ecosystem, while the
+  plugin verifies exactly two. `README.md` has always been scrupulous about this
+  — a table naming both, then a section on why npm, Cargo and Go are out of scope
+  rather than unimplemented — but the descriptions are what a marketplace listing
+  shows, so the first place a user learned otherwise was `audit.py` exiting 2 on
+  their lockfile.
+
+  The added clause is *"verifies uv.lock and GitHub Actions end to end; any other
+  ecosystem gets the ecosystem-independent phases and a stated boundary"*. The
+  second half is deliberate: an out-of-scope PR is meant to load the skill and
+  receive Phase 0's classification, Phase 6's CI state and a named boundary. A
+  refusal with reasons is the product. So the trigger list in `SKILL.md`'s
+  frontmatter is left broad rather than narrowed to the two ecosystems — stating
+  coverage should not suppress the match.
+
+  A patch by this file's own rule: nothing changed about what a phase verifies,
+  only about whether an existing claim was true.
+
+  Considered and rejected: **renaming the repo.** The name is not where the
+  over-promise lives. It under-claims on the bot axis if anything — Renovate is
+  covered too — and encoding coverage in the identifier puts the most volatile
+  fact in the least changeable place, given `CONTRIBUTING.md`'s ecosystem rule is
+  conditional on having a repository to test against rather than a permanent
+  closure. Domain in the name, coverage in the description, evidence in the
+  README.
+
 ## [0.16.0] — 2026-08-15
 
 Phase 0 was the last large block of prose asking a reader to hold a three-state
