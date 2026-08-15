@@ -11,6 +11,16 @@ patch.
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-08-15
+
+One clause, on one row. A patch by this file's own rule: it makes an existing
+claim true rather than changing what a phase verifies or what the report asserts.
+
+The rest of this window was #27's contributor-process work — the live replay is
+now a gate with a checkbox in `.github/PULL_REQUEST_TEMPLATE.md` rather than a
+habit. It changes nothing anyone installs, so it has no entry below; it is in
+`CONTRIBUTING.md` and in the log.
+
 ### Fixed
 
 - **`traps.md`'s `403 Upgrade to GitHub Pro…` row read as a permission symptom.**
@@ -930,7 +940,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.7.0...v0.8.0
