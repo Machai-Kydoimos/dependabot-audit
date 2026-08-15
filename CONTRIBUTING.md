@@ -44,6 +44,8 @@ No round of this has yet come back empty:
 | `mdcat` #15, #14, #6 | two releases' worth, #19 and #20 among them; 0.8.0 narrowed the supported surface rather than patching what it found |
 | `mdcat` #6, replayed against the fix written for it | Phase 6's new attribution query read `$BASE_SHA`, wrong in exactly the direction the fix existed to prevent (#25) |
 | this repo's #26, against the corrected rule | `pr-<N>^` can have no runs to compare against, and the rule as committed discarded an answer sitting on the merge base |
+| `cli/cli` #13996, #13981, #14124 | Dependabot's 2026-07-14 default cooldown, which Phase 2 read as ingestion lag; and two actions facts the PR does not state — the versions adopted, and whether the file it edits is generated |
+| `cli/cli`, eleven bumps, against the *corrected* Phase 1 gate | `$BASE_SHA` collapses onto `$HEAD_SHA` on any PR that has landed, so Phase 1's diff is empty and Phase 4 measures the PR against itself |
 
 **The fourth row is why this is a gate and not a habit.** Three prose guards went
 with it, taking Phase 6's total to six, each mutation-checked against the previous
@@ -61,6 +63,12 @@ survives this gate. Choose the target for what it *exercises* rather than for
 recency, and prefer one whose consequences the repository's history already
 records: #334 was decisive because the right answer was known before the phase
 ran.
+
+**The seventh row is what breadth buys.** Ten of those eleven bumps agreed with
+the corrected gate and the eleventh did not, and the one that did not was a
+merge commit sitting where a bot commit was assumed — a defect in a *different*
+phase from the one being replayed. One PR would have passed. The cost of the
+other ten was a loop.
 
 **This is a checklist item, and checklists are visibly skippable.** The box lives
 in `.github/PULL_REQUEST_TEMPLATE.md`, and it asks for what the replay showed

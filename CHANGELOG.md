@@ -11,6 +11,175 @@ patch.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-15
+
+Findings from running the procedure against `cli/cli`. Go is out of scope and
+stayed out — the Go PRs were used to test the boundary, not to audit them — but
+`cli/cli`'s Dependabot queue is half GitHub Actions, which **is** in scope, and
+its bot config turned out to be running against a rule this plugin had not
+noticed changing.
+
+Most of them are the same shape as the `mdcat` round: a rule that was true when
+it was written and returns a confident wrong answer now. The first was found by
+replaying the *fixed* Phase 1 gate across eleven bumps, which is the gate in
+CONTRIBUTING doing exactly what it is for — the finding is not in the phase the
+replay was checking.
+
+### Fixed
+
+- **`$BASE_SHA` collapsed onto `$HEAD_SHA` on any PR that had already landed.**
+  Phase 0 derived it as `git merge-base "$DEFAULT" pr-<N>`, and a merged PR's head
+  *is* an ancestor of the default branch — so the merge base of the two is the
+  head itself. Nothing raises, and three phases downstream quietly answer a
+  different question than the one they were asked:
+
+  | Phase | What it did with `$BASE_SHA == $HEAD_SHA` |
+  |---|---|
+  | 1 | scope diff against the head: **empty**, so the gate passes on a diff it never saw |
+  | 4 | `base-<N>` checked out at the head, so the differential measures the PR's tree against itself — reinstating the defect 0.6.0 exists to prevent |
+  | 6 | the cross-check compares the head with itself, so every red check reads **pre-existing** |
+
+  Phase 0's own branch-point proof does not catch it either: `git log
+  "$BASE_SHA..pr-<N>"` over an empty range finds no non-bot commit above the base,
+  so the check passes.
+
+  Measured on `cli/cli`'s merged bumps #14147, #14091, #13981 and #14049:
+  `git merge-base trunk pr-<N>` returns the head for all four, and the scope diff
+  is **0 files** where GitHub reports 4, 2, 3 and 2. Taken from `baseRefOid` — the
+  base commit GitHub itself diffs against — it is those four numbers exactly, and
+  on open PR #14148 both forms return the same commit, so the correction is a
+  no-op wherever the old form already worked.
+
+  This is not an edge case dressed up as one. Auditing a merged PR is supported —
+  Phase 6 has a row for `mergeStateStatus: UNKNOWN`, `ecosystems.md` has a
+  paragraph on comparing against the repo's current pin — and CONTRIBUTING's
+  replay gate asks for a merged PR before every method change, so the defect sat
+  directly on the path this project uses to verify itself.
+
+  It is a separate failure from the rewritten base (#19) and does not replace its
+  checks: there, `baseRefOid` is the current tip of a branch that moved out from
+  under the PR, and `merge-base` still walks back too far.
+
+  Found while replaying the corrected Phase 1 gate across eleven `cli/cli` bumps:
+  ten showed a clean `uses:`-only diff and #14049 showed 20 files and 1,101
+  changed lines, because its head is a human merge commit — *"Merge branch 'trunk'
+  into dependabot/…"* — so the `pr-<N>^` fallback spans everything trunk brought
+  in. Chasing that one row is what exposed the merge base underneath it.
+
+- **A merge of the base branch into the bot's branch read as a rewritten base.**
+  Fixing the merge base made this reachable, so it ships in the same release: with
+  `$BASE_SHA` correct, Phase 0's author scan now *sees* the commits above it, and
+  its rule was that any non-bot commit there means the base moved (#19). On
+  `cli/cli` #14049 that commit is a maintainer's merge **of** trunk **into** the
+  bot's branch — the branch point has not moved at all. Zero
+  `base_ref_force_pushed` events; a correct two-file scope diff from `$BASE_SHA`;
+  and the substitution the rule would trigger produces the 20-file diff above and
+  halts the audit on a bump that changes four workflow lines.
+
+  The force-push event is now the authority and the author scan is corroboration,
+  split by parent count: one parent is a human commit on the branch, two is a
+  merge and the substitutions must not fire. `git log` in Phase 0 prints `%p` so
+  the distinction is visible rather than inferred. Trading a silent false negative
+  for a loud false positive would not have been a fix.
+
+- **Phase 2 read a configured hold as ingestion lag.** Its test was the publish
+  timestamp — *if a newer version existed before the PR was opened, that is
+  ingestion lag, not a deliberate hold* — and on **2026-07-14** that inference
+  became wrong by default. Dependabot now withholds a version update until the
+  release is **three days old**, across every ecosystem it supports, with no
+  `cooldown:` block required in `dependabot.yml` and nothing in the PR body to
+  say so.
+
+  Measured on `cli/cli` #13996, opened 2026-07-28T14:06Z proposing
+  `github/gh-aw-actions/setup-cli` 0.83.2 → 0.83.3 under an explicit
+  `cooldown: default-days: 3`: upstream 0.83.4 had been published
+  2026-07-27T09:07Z, 29 hours earlier. The bot proposed 0.83.4 itself two days
+  later, in #14018. Four PR bodies were grepped for the word; it appears in none
+  of them.
+
+  The consequence was not a cosmetic mislabel. A gap read as lag earns **Merge
+  as-is, then follow up** — take the newer version on a separate branch — so the
+  procedure would have recommended hand-landing the release the cooldown exists
+  to delay, at the exact moment the delay is doing its work. An audit whose
+  thesis is *verify before you trust* proposing the bypass of a supply-chain
+  control, on the strength of a rule that predates it.
+
+  Phase 2 now reads the **age** of the gap rather than only its existence, and
+  ranks a cooldown beside the yanked release and the `ignore` rule. Two clauses
+  came with it. The `ignore` rule can be written `dependency-name: "*"` and
+  scoped by `update-types` — `cli/cli`'s gomod block holds every major of every
+  package that way — so a search for the dependency's own name finds nothing
+  while a rule covers it. And the cooldown's exemption is for Dependabot's
+  *security updates*, the advisory-driven kind: a version update whose changelog
+  carries a **privately disclosed** fix is held like any other, which puts this
+  procedure's highest-value finding squarely inside the three-day window where
+  no timestamp will point at it.
+
+- **Phase 1's scope gate refused the ordinary actions bump.** It read *only the
+  manifest and the lockfile (or a single workflow file for an actions bump)*, and
+  an action is pinned in every workflow that uses it. Measured on `cli/cli`, all
+  three merged and all three ordinary: #14091 two files, #13981 three, #14147
+  four — every changed line across them a `uses:` line or its trailing version
+  comment.
+
+  The gate is a **stop**, so the failure is not a warning: it halts the audit
+  before Phase 4 and reports a bump reaching past the manifest, which is the same
+  false finding the rewritten-base case (#19) produced and reads identically in
+  the report. The invariant is the kind of line the diff touches, which holds at
+  any file count, so that is what the gate now says.
+
+- **`audit.py` blamed a valid `go.mod` for a syntax error.** 0.10.0 gave the
+  ecosystem boundary a message that names the file; `go.sum` was on the list and
+  `go.mod` was not, though it is the other half of every Go bump's two-file diff
+  and the half whose name reads like the file Phase 1 asks for. Handed `cli/cli`'s,
+  the TOML parser reached line 1 column 8 of `module github.com/cli/cli/v2` and
+  reported `Expected '=' after a key in a key/value pair`. Exit 2 was already
+  right; the diagnosis pointed at the reader's file instead of at the tool's
+  edge. The signature requires **both** a `module` line and a `go` line, because
+  it runs before the parse and one line of prose inside a TOML string is far
+  likelier than two.
+
+### Added
+
+- **The actions recipe takes the versions under audit from the diff.** Phase 1's
+  rule against reading package *names* off the PR title extends to versions here,
+  where no script derives them and the prose is the whole method. `cli/cli`
+  #13981 — titled *and* summarised "bump actions/checkout from 6 to 7" — moves one
+  bare `@v6` pin to `@v7` **and** nine SHA pins from `v7.0.0` to `v7.0.1`. Two
+  transitions; one of them described. Its embedded release notes stop at v7.0.0
+  and are marked `(truncated)`, and `7.0.1` appears once in 10 KB of body, as a
+  commit subject inside a collapsed `Commits` list. An auditor who takes the range
+  from the PR reads the wrong release notes for nine of the eleven pins — and
+  reads them for the *earlier* version, which is the direction that misses things.
+
+- **A workflow file can be generated, and then the bot's edit does not stick.**
+  Compilers that emit workflows own the `uses:` pins they write, and Dependabot
+  edits the emitted file because that is where the pin lives. Merging is not
+  wrong; it is transient.
+
+  Observed on `cli/cli`, whose `*.lock.yml` workflows are generated by `gh-aw`
+  from a `.md` source and carry a `DO NOT EDIT` header: #14124 merged
+  `github/gh-aw-actions/setup` to v0.86.1 (`8914f47b`) on 2026-08-10, and the
+  regeneration commit `ed5a99f` three days later rewrote it to `2709137e`,
+  v0.85.4. `compare` reports `behind ahead=0 behind=2` — the same shape as the
+  rolled-back tag already in `ecosystems.md`, arrived at from the other
+  direction. The bot's own next PR, #14147, then reads the current pin as
+  **0.85.4**: the version its previous merged PR had already moved past, which is
+  the revert stating itself in the bot's own words.
+
+  Detection is one `grep` for the generator's header over the files the diff
+  touches, and the report should say that the durable fix is a bump of the
+  generator.
+
+Also validated, and unchanged: the default branch is `trunk`, so Phase 0's refusal
+to assume `main` earns itself; `isRequired` returns 3 required contexts out of 41
+at `pull`-only permission; `mergeStateStatus` is `UNKNOWN` on every merged PR, as
+Phase 6 says; the attribution query reads 43 check runs by context name at the
+bot's parent; and all four workflows in #14147 are `schedule`/`issues`/
+`workflow_dispatch`-triggered, so Phase 6's empty-intersection case — CI green for
+reasons unrelated to the diff — is the common case on an actions bump rather than
+the exotic one.
+
 ## [0.10.1] — 2026-08-15
 
 One clause, on one row. A patch by this file's own rule: it makes an existing
@@ -940,7 +1109,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.8.0...v0.9.0

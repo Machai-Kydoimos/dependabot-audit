@@ -11,8 +11,10 @@ Dependabot and Renovate PRs look trivial and usually are. The failure modes that
 actually cost you something are not "is this package malicious":
 
 1. **The proposed version is not the current one.** Registries publish faster than
-   bots ingest, so a bump can land already stale — and the gap can contain the
-   thing you cared about.
+   bots ingest, and since 2026-07-14 Dependabot also *holds* a release for three
+   days by default — so a bump lands stale for one of two reasons, and the gap can
+   contain the thing you cared about. Which reason it is decides whether the gap
+   is worth acting on, and nothing in the PR says.
 2. **The gap contains a fix no vulnerability database knows about.** A privately
    disclosed fix has no CVE and no GHSA, so OSV and `pip-audit` both report clean
    while the changelog says `Security`.
@@ -133,7 +135,7 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-118 cases, stdlib only, no network — they run offline and free. Every case
+139 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into ten groups:
 
@@ -188,7 +190,9 @@ to detect. They fall into ten groups:
   PR's tree, the required contexts must come from the API rather than an authored
   list — and specifically not from the two endpoints that fail into a plausible
   answer — every script and reference path the prose names must exist, the phases
-  that execute PR code must say so, and the frontmatter key that withholds tools
+  that execute PR code must say so, the actions scope gate must key on the kind of
+  line the diff touches rather than a count of files, Phase 2 must rule out a
+  cooldown before calling a gap lag, and the frontmatter key that withholds tools
   must be the one that works. Each corresponds to a defect that shipped in the
   prose, where the other groups cannot reach.
 
