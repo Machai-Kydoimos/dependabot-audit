@@ -62,12 +62,19 @@ recency, and prefer one whose consequences the repository's history already
 records: #334 was decisive because the right answer was known before the phase
 ran.
 
-**This is a checklist item, and checklists are visibly skippable.** By this file's
-own ordering that is the middle lever, and no stronger one is available here: for
-*is this claim true about the world* there is no script, only contact with the
-world. A tool that claimed to be one, and could not itself be verified, would be
-the unverified verifier this repo exists to argue against — so do not build one,
-however productive it would look.
+**This is a checklist item, and checklists are visibly skippable.** The box lives
+in `.github/PULL_REQUEST_TEMPLATE.md`, and it asks for what the replay showed
+rather than for a tick — a tick is an assertion, the pasted output is evidence,
+and that distinction is the whole product. Know how little it reaches: the web UI
+applies the template automatically, `gh pr create` takes it only via `-T`, and a
+supplied `--body` or `--body-file` bypasses it entirely, which is how every PR
+here has been opened so far.
+
+By this file's own ordering that is the middle lever, and no stronger one is
+available here: for *is this claim true about the world* there is no script, only
+contact with the world. A tool that claimed to be one, and could not itself be
+verified, would be the unverified verifier this repo exists to argue against — so
+do not build one, however productive it would look.
 
 ## Tests
 
