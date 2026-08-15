@@ -11,6 +11,96 @@ patch.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-15
+
+Phase 0 was the last large block of prose asking a reader to hold a three-state
+discipline in their head, and both defects that have ever shipped in it were in
+**one output**: `$BASE_SHA`. A rewritten base sent `git merge-base` nineteen
+months too far and presented a two-file bump as fourteen files and 3,682
+deletions; a merged PR collapsed the base onto the head, so Phase 1's diff came
+back empty, Phase 4 measured the PR against itself, and Phase 6 cross-checked the
+head against itself. Neither raises.
+
+### Added
+
+- **`scripts/discover.py`.** Derives every Phase 0 output and tags each
+  **derived / absent / underivable**, proves whether the merge base is the branch
+  point rather than assuming it, and decides whether Phases 4 and 5 are
+  authorised.
+
+  **Read-only** — no fetch, no worktree, no local `git` at all. The merge base
+  comes from GitHub's `compare` endpoint, which is right whether or not the PR
+  has landed, so no phase runs a local merge base any more. The two things Phase
+  0 changes in the user's repository stay visible in `SKILL.md`, where a plugin
+  whose contract is "reports, never merges" should keep them.
+
+- **`--shell`, so the outputs are sourced rather than transcribed.** Four of them
+  are 40-character SHAs and a wrong one is not detectable downstream: a truncated
+  `$HEAD_SHA` matches no CI run and reads exactly like *CI never ran*. An
+  **underivable output is emitted commented-out** so the variable stays unset —
+  a later phase then fails loudly on an empty value instead of quietly on a
+  plausible one, which is the distinction the whole phase exists to preserve.
+
+### Fixed
+
+Two defects in the new script, both found by replaying rather than reasoning,
+and the second created by the fix for the first:
+
+- **The corroboration scan fired on every human PR.** "A non-bot commit above the
+  base" is the signal that a bot PR has been tampered with — and on a *human* PR
+  it is the definition of the PR. Replaying this plugin's own #26: five human
+  commits, no force-push, reported `SUSPECT` on a branch nobody had touched.
+  Applied to human PRs it manufactures a finding on every one, which is the
+  fastest way to train a reader to skip the row that matters.
+
+- **Suppressing it left the explanation false.** The `ok` verdict then fell into
+  a branch reading *"every commit above the base is the bot's"* — on a PR with no
+  bot commits at all. A correct verdict carried by a false sentence is the same
+  family as a red check reported without its attribution: every cell true except
+  the one doing the work.
+
+### Changed
+
+- **Phase 0 lost the prose the script now enforces**, 305 → 238 lines. Three of
+  the four cuts were material that had already stopped being true:
+
+  | Cut | Why it was stale |
+  |---|---|
+  | the `git merge-base` collapse worked example | no phase runs a local merge base any more |
+  | `gh pr view --json files` as a cross-check | `files` stopped being fetched in 0.12.0 |
+  | branch protection, ~33 lines | the required checks moved to Phase 6 in 0.14.0; `traps.md` still carries the four states those endpoints return |
+
+- **Two Phase 0 guards re-pointed at `reachable(0)`** and tightened. One asserted
+  on `merge_base_commit|baseRefOid`, which kept passing when the compare call was
+  removed — because `baseRefOid` survived as a *display label* in the script's
+  own output. The label was also simply wrong: the script reads REST `base.sha`,
+  not the GraphQL field. Renamed, and the guard now asserts on the field alone.
+
+### Measured
+
+| | v0.11.0 | v0.15.0 | 0.16.0 |
+|---|---|---|---|
+| a `uv.lock` run | ~18,600 tok | ~17,500 | **~16,700** |
+| an actions run | ~18,600 tok | ~17,500 | **~16,000** |
+| `SKILL.md` alone | ~13,100 tok | ~12,500 | **~11,700** |
+
+−10% and −14% against where this round started, which is less than the file
+shrank: `SKILL.md` went 970 → 828 lines while *gaining* the verdict table, the
+confidence rule, the truncation guidance and two script handoffs. The
+documentation got smaller and said more.
+
+### Note on the mutation harness
+
+Three mutation runs in this release reported "not caught" against a defect the
+tests do catch. The cause was stale `__pycache__` — the mutated module was
+edited, and the test imported the previously compiled one. A verification method
+that silently checks the wrong artifact is the same failure the suite exists to
+find, one level up. Clear `__pycache__` between mutations, or run with `-B`.
+
+### Tests
+
+182 → 201.
+
 ## [0.15.0] — 2026-08-15
 
 Every run paid for both ecosystems. A `uv.lock` bump loaded the whole GitHub
@@ -1488,7 +1578,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.12.0...v0.13.0

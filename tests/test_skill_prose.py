@@ -354,17 +354,25 @@ class TestNoRepoSpecificLiterals(SkillHarness):
         `gh pr view --json files` is not a cross-check — GitHub computes the PR's
         file list from the merge base too, and agrees with the wrong answer.
         """
+        reachable = self.reachable(0)
         self.assertIn(
             "base_ref_force_pushed",
-            self.shell[0],
-            "Phase 0 must check whether the base branch was rewritten; merge-base "
-            "cannot tell you on its own",
+            reachable,
+            "Phase 0 must check whether the base branch was rewritten; a merge "
+            "base cannot tell you on its own",
         )
         self.assertRegex(
-            self.shell[0],
-            r"git log[^\n]*\$BASE_SHA\.\.pr-<N>",
-            "Phase 0 must attribute the commits above the merge base; a genuine "
-            "bot PR is one commit by the bot",
+            reachable,
+            r"pulls/\{number\}/commits|pulls/<N>/commits|\$BASE_SHA\.\.pr-<N>",
+            "Phase 0 must read the commits above the base; a genuine bot PR is "
+            "one commit by the bot, and that is the corroborating signal",
+        )
+        self.assertIn(
+            "parents",
+            reachable,
+            "and it must count parents: a two-parent commit is someone merging "
+            "the base INTO the branch, where the merge base is still correct and "
+            "the substitutions must not fire",
         )
 
     def test_a_rewritten_base_falls_back_to_the_bots_own_commit(self):
@@ -526,16 +534,21 @@ class TestTheMergeBaseSurvivesThePRHavingLanded(SkillHarness):
     """
 
     def test_the_base_commit_comes_from_the_pr_rather_than_the_local_branch(self):
+        reachable = self.reachable(0)
         self.assertIn(
-            "baseRefOid",
-            self.shell[0],
-            "Phase 0 must take the base commit from the PR; a merge base against "
-            "$DEFAULT is the PR's own head once it has landed",
+            "merge_base_commit",
+            reachable,
+            "Phase 0 must take the base commit from GitHub's compare endpoint — "
+            "it is right whether or not the PR has landed, where a merge base "
+            "against $DEFAULT is the PR's own head once it has. Asserted on the "
+            "field, not on a name that also appears as a display label.",
         )
         self.assertNotRegex(
-            self.shell[0],
-            r"git merge-base \"\$DEFAULT\"",
-            "the local default branch as the left-hand side is the collapsing form",
+            reachable,
+            r"git merge-base",
+            "no local merge base at all: the form that collapses is only "
+            "distinguishable from the form that does not by which ref is on the "
+            "left, which is exactly the distinction that shipped wrong",
         )
 
 

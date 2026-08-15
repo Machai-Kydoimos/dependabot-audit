@@ -65,6 +65,6 @@ exclude = ["integration/fixtures"]
 # override then disappears with no warning, not even under
 # --warn-unused-configs (tested: errors went 25 -> 175). Adding a test file
 # means adding it here; forgetting is loud, which is the safer direction.
-module = ["test_audit", "test_ci_state", "test_gate_diff", "test_skill_prose", "test_ruff_replay", "test_live_registry"]
+module = ["test_audit", "test_ci_state", "test_discover", "test_gate_diff", "test_skill_prose", "test_ruff_replay", "test_live_registry"]
 disallow_untyped_defs = false
 disallow_untyped_calls = false

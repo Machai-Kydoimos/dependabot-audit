@@ -63,7 +63,7 @@ the verdict, and the merge command **left un-run**.
 
 | Phase | |
 |---|---|
-| 0 | Discover the repo — required checks, bot config, the repo's own CI gates and their scopes; classify the PR; pin the head SHA, fetch it once, and build the worktree every later phase works in |
+| 0 | Discover the repo — `scripts/discover.py` derives every answer and tags each **derived / absent / underivable**: the SHAs, the merge base *from GitHub's compare endpoint*, whether that merge base is the branch point, and whether Phases 4 and 5 are authorised at all. Read-only, so the fetch and the worktrees stay visible in `SKILL.md`. Reading the bot config and the repo's own gates stays prose — no script can do it |
 | 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status and PEP 740 build provenance vs. the live registry, read out of git at the pinned ref. A **gate**: if anything here fails, the audit stops before the phases that execute code |
 | 2 | Currency — the registry's true latest, publish times vs. PR open time, and changelogs across the gap |
 | 3 | Known vulnerabilities — what is already known to be wrong with this. OSV batch plus the ecosystem's own auditor for `uv.lock`; GHSA's `actions` ecosystem for a workflow bump |
@@ -147,10 +147,11 @@ before 0.10.0 a real `Cargo.lock` produced `unexpected AttributeError ... This i
 a bug`, and a real `poetry.lock` produced a confident *"either this lockfile did
 not change, or it is being compared against itself"*.
 
-`scripts/ci_state.py` (Phase 6) is ecosystem-independent for a different
-reason: CI state is a property of the PR, not of the lockfile. It exists because
-three of the seven defects that have shipped in the prose were in that phase, and
-a hand-run query cannot be regression-tested.
+`scripts/discover.py` (Phase 0) and `scripts/ci_state.py` (Phase 6) are
+ecosystem-independent for a different
+reason: the PR's own shape is not a property of the lockfile. Between them those two
+phases carried **five of the seven** defects that have shipped in the prose, and
+a hand-run query cannot be regression-tested. Both are read-only.
 
 `scripts/gate_diff.py` (Phase 4) is the exception: it is
 **ecosystem-independent**, because it parses nothing. It runs a gate once per
@@ -165,7 +166,7 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-182 cases, stdlib only, no network — they run offline and free. Every case
+201 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into ten groups:
 

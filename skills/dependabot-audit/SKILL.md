@@ -75,50 +75,70 @@ Never persist the answers to these. Required checks get added, CI jobs get
 renamed, and a cached profile silently audits a repo that no longer exists.
 Deriving costs one call each.
 
+**Derive with the script; mutate by hand.** `scripts/discover.py` answers every
+derivable question and tags each answer **derived / absent / underivable**. It is
+read-only — no fetch, no worktree, no local `git` at all — so the two things Phase
+0 changes in the user's repository stay visible in this file, where a plugin whose
+contract is "reports, never merges" should keep them.
+
 ```bash
-# Both SHAs out of ONE call. Fetched separately they can straddle a bot rebase,
-# pinning a head and a base that never coexisted — and nothing downstream can
-# tell, because each is individually a real commit.
-PR_PIN=$(gh pr view <N> --json headRefOid,baseRefOid \
-  --jq '"\(.headRefOid) \(.baseRefOid)"')
-HEAD_SHA=${PR_PIN% *}                     # full 40 chars
-BASE_REF=${PR_PIN#* }                     # GitHub's own base
-
-# then what classifies the PR. Two fields are deliberately absent: `files`,
-# because GitHub computes it from the merge base and so agrees with a rewritten
-# one rather than correcting it, and `mergeStateStatus`, because GitHub computes
-# it lazily and Phase 6 is where it is read fresh. Carrying either here invites
-# a later phase to trust a value this one had no way to check.
-gh pr view <N> --json number,title,author,createdAt,isCrossRepository
-
-# derive the default branch — never assume "main"
-DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
-
-cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
-
-# pin the commit under audit, fetch it once, and build the tree every later
-# phase works in
+D="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/discover.py"
 SCRATCH=${SCRATCH:-$(mktemp -d)}          # any directory OUTSIDE the repo
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+
+python3 "$D" --repo "$REPO" --number <N>                              # the report
+python3 "$D" --repo "$REPO" --number <N> --shell > "$SCRATCH/phase0.env"
+. "$SCRATCH/phase0.env"
+```
+
+Source the outputs rather than transcribing them. Four of them are
+40-character SHAs, and a wrong one is not detectable downstream: a truncated
+`$HEAD_SHA` matches no CI run and reads exactly like *CI never ran*, and a wrong
+`$BASE_SHA` gives a scope diff that is wrong rather than empty. What the file
+defines:
+
+```bash
+#   DEFAULT=<branch>       the repo's default branch, derived
+#   HEAD_SHA=<40 hex>      the commit under audit
+#   BASE_REF=<40 hex>      GitHub's own base for the PR
+#   BASE_SHA=<40 hex>      the merge base, from GitHub's compare endpoint
+#   OWNER=<owner>          for Phase 6's GraphQL variables
+#   NAME=<name>
+#   BRANCH_POINT=<ok|rewritten|suspect|underivable>
+#   MAY_EXECUTE=<yes|no>   whether Phases 4 and 5 are authorised
+```
+
+**An underivable output is emitted commented-out, so it stays unset.** That is
+deliberate: a later phase then fails loudly on an empty value instead of quietly
+on a plausible one, which is the distinction this whole phase exists to preserve.
+
+**Exit 2 means it could not run; exit 1 means it ran and found something.** Never
+read one as the other. Exit 1 here does not stop the audit — it means the shape of
+the audit changes, and the report has to say how.
+
+Read out of its output: `$DEFAULT`, `$HEAD_SHA`, `$BASE_SHA`, `$PERMS`, whether
+the merge base is the **branch point**, and whether Phases 4 and 5 may run at all.
+Take `$BASE_SHA` from it rather than from `git merge-base`, and the reason is the
+next section.
+
+Then the part that changes state, which is yours:
+
+```bash
 git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
-BASE_SHA=$(git merge-base "$BASE_REF" "pr-<N>")
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
-
-# what sits above the base: a genuine bot PR is one commit by the bot. `%p` is
-# there because two parents means a merge, which reads very differently
-git log --format='%h [%p] %an %s' "$BASE_SHA..pr-<N>"
-gh api "repos/:owner/:repo/issues/<N>/events" \
-  --jq '.[] | select(.event=="base_ref_force_pushed") | "\(.actor.login) \(.created_at)"'
-
-# owner and name, for the GraphQL query Phase 6 issues — `:owner/:repo` is a
-# REST-path convenience and does not expand in a GraphQL variable
-OWNER=$(gh repo view --json owner --jq .owner.login)
-NAME=$(gh repo view --json name  --jq .name)
-
-# what this account may do here: it decides the verdict's shape, and it is how
-# a failed permission-gated call is told apart from a real absence
-PERMS=$(gh api "repos/:owner/:repo" --jq '.permissions')
 ```
+
+And the part no script can read for you — the bot's configuration, which decides
+whether a currency gap in Phase 2 is lag or a deliberate hold:
+
+```bash
+cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
+```
+
+Then read the CI workflow and the pre-commit config to learn the repo's **own**
+verification commands. That stays here for the same reason: `pytest` may be
+`uv run pytest`, `tox`, `nox`, or a `make` target, and only the workflow says so.
 
 If `git worktree add` refuses because the path already exists, a previous run
 left it there. **Prove it still points at this PR's head before reusing it** — a
@@ -139,7 +159,7 @@ If either check fails, `git worktree remove` it and re-add.
 | `$DEFAULT` | the repo's default branch, derived |
 | `$SCRATCH` | scratch directory, outside the repo |
 | `$HEAD_SHA` | the full 40-character commit under audit |
-| `$BASE_SHA` | merge base of the PR's `baseRefOid` and `pr-<N>`, never of `$DEFAULT` — **and whether it is the bot's branch point**, which is a separate answer |
+| `$BASE_SHA` | the merge base, from GitHub's own `compare` endpoint — never a local `git merge-base` against `$DEFAULT`, which collapses onto the head once the PR lands. **And whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
 | `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it |
 | `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below |
@@ -152,28 +172,18 @@ and that has now shipped twice — `tests/test_skill_prose.py` is what stops the
 third.
 
 **An output that could not be derived is not an output.** Every row above has
-*three* states, not two: derived; genuinely absent, which is often a finding in
-its own right; and **underivable**, where the call failed or its precondition did
-not hold. Record which one you got, and never let the third collapse into either
-of the others.
+*three* states, not two: **derived**; **absent**, which is often a finding in its
+own right; and **underivable**, where the call failed or its precondition did not
+hold. `discover.py` tags each one and leaves an underivable output *unset* rather
+than emitting a plausible value.
 
-That collapse is not hypothetical, and it is the shape both known defects take.
-These two fail into a *plausible* value rather than an error:
-
-| Output | How it fails quietly | What it then asserts |
-|---|---|---|
-| `$BASE_SHA` | the base branch was rewritten under the PR, so `git merge-base` walks back to a much older shared ancestor | a real commit, which is the wrong one — Phase 1 sees a diff full of files the bump never touched, and Phase 4 measures a tree the PR would never land on |
-| `$BASE_SHA` | the PR has **landed**, so its head is an ancestor of the default branch and a merge base taken against `$DEFAULT` is the head itself | `$BASE_SHA == $HEAD_SHA` — Phase 1's scope diff is empty, Phase 4 measures the PR's own tree, and Phase 6 cross-checks the head against itself. All three report the reassuring answer |
-| `$SCRATCH/required.txt` | the protection call failed and wrote its error body to **stdout** | a well-formed file that reads as "no required checks", which is indistinguishable from a repo that has none |
-
-Neither raises. Both travel downstream as fact, and the report says something
-false with full confidence — which costs more than a crash, because the shape of
-the report invites trust in every row.
-
-So: a phase handed an underivable input says so in its evidence row instead of
-proceeding on the value, and Phase 7 does not print a row whose input was never
-established. "Could not check" is a legitimate thing for this procedure to
-report. "Checked, found nothing" when you could not check is not.
+The third state is the dangerous one because the ways it happens do not raise —
+they produce a real-looking answer that travels downstream as fact, and the
+report then says something false with full confidence. A phase handed an
+underivable input says so in its evidence row instead of proceeding on the value,
+and Phase 7 does not print a row whose input was never established. "Could not
+check" is a legitimate thing for this procedure to report. "Checked, found
+nothing" when you could not check is not.
 
 **Classify the PR before trusting it enough to run it.** Dependabot and Renovate
 push their branches *into* the repository, so a dependency bump arriving from a
@@ -199,30 +209,14 @@ stops holding: CI runs it in a fresh container with a scoped token, and this
 procedure runs it on your workstation with your credentials in the environment.
 `$PERMS` is already derived above, so this costs nothing to check.
 
-**`$PERMS` is itself a row with three states, and this is where that matters.**
-A failed `repos/:owner/:repo` call writes its error body to **stdout**, so the
-capture succeeds and `$PERMS` holds a JSON error rather than a permissions
-object — at which point `push` is not `true` and reads exactly like a pull-only
-account. Measured on a name that does not resolve:
-
-```
-PERMS = {"message":"Not Found","documentation_url":"...","status":"404"}
-```
-
-The **exit code is 1**, which is what separates this from the branch-protection
-trap below, where the same shape arrives at exit 0. So gate on the call, not on
-the value:
-
-```bash
-PERMS=$(gh api "repos/:owner/:repo" --jq '.permissions') || PERMS=underivable
-```
-
-Failing this one closed is right — `--no-execute` is the safe direction, and
-taking it costs the audit only the two phases it was least entitled to run. What
-must not happen is the *report* saying "you lack `push` on this repo" when the
-audit could not establish what you have. That is the underivable state
-masquerading as a finding, which is the failure this whole section is built
-against.
+**`$PERMS` has the same three states, and the script gates on the call rather
+than the value.** A failed `repos/:owner/:repo` writes its error body to
+**stdout**, so a capture succeeds and holds `{"message": "Not Found", ...}` — at
+which point `push` is not `true` and reads exactly like a `pull`-only account.
+The exit code is 1, which is what separates this from the branch-protection trap
+below where the same shape arrives at exit 0. Failing closed is right; the report
+saying "you lack `push` here" when the audit could not tell is not, and
+`discover.py` prints `underivable` rather than a permission set.
 
 **Pin the head SHA here and audit that one commit everywhere.** The lockfile
 Phase 1 reads, the worktree Phase 5 reproduces in, and the CI run Phase 6 checks
@@ -241,114 +235,74 @@ Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwis
 `git status`, and a gate that walks the tree (a linter, a formatter, a test
 collector) will descend into a full second copy of the project and report on it.
 
-**`$DEFAULT` cannot be the left-hand side of the merge base.** Once a PR has
-landed, its head *is* an ancestor of the default branch, so the merge base of the
-two is the head — and auditing a merged PR is a supported thing to do here: Phase
-6 has a row for it, `references/actions.md` has a paragraph, and every replay
-this project's own gate asks for is one. `baseRefOid` is the base commit GitHub
-diffs the PR against, and it is right in both states.
+**Why the base comes from `compare` and not from `git merge-base`.** Once a PR
+has landed its head *is* an ancestor of the default branch, so the merge base of
+the two is the head — and auditing a merged PR is a supported thing to do here:
+Phase 6 has a row for it, `references/actions.md` has a paragraph, and every
+replay this project's own gate asks for is one. Measured on `cli/cli`'s merged
+bumps #14147, #14091, #13981 and #14049: `git merge-base trunk pr-<N>` returns
+the PR's own head for all four, so the scope diff is **0 files** where GitHub
+reports 4, 2, 3 and 2. GitHub's `compare` endpoint returns the real branch point
+in both states, which is why the script uses it and why no phase runs a local
+merge base at all.
 
-Measured on `cli/cli`, four merged bumps — #14147, #14091, #13981, #14049.
-`git merge-base trunk pr-<N>` returns the PR's own head for all four, so the scope
-diff is **0 files** where GitHub reports 4, 2, 3 and 2; via `baseRefOid` it is
-those four numbers exactly. On open PR #14148 both forms return the same commit,
-so this is a no-op wherever the old form worked.
+**Prove the merge base is where the bot branched.** A merge base always exists,
+and when the base branch has been rewritten under an open PR it is far too old —
+silently, with every later phase consuming it as fact. `discover.py` decides this
+and prints which case fired; what matters here is that the three cases are *not*
+interchangeable:
 
-It is not the rewritten-base case and does not stand in for its checks: there,
-`baseRefOid` is the current tip of a branch that moved out from under the PR, and
-`merge-base` still walks back too far.
+| `BRANCH_POINT` | What fired | What you do |
+|---|---|---|
+| `ok` | no force-push, and nothing anomalous above the base | proceed |
+| `rewritten` | a `base_ref_force_pushed` event — GitHub says so, with an actor and a timestamp | **substitute**, and report the rewritten base as its own finding |
+| `suspect` | a non-bot one-parent commit above the base on a **bot** PR, with no force-push event | corroboration without the authority. Read the commits before deciding; do not substitute on it alone |
+| `underivable` | the event list could not be read | say so; do not proceed as though it were `ok` |
 
-**Prove the merge base is where the bot branched.** `git merge-base` always
-returns *a* commit, and when the base branch has been rewritten under an open PR
-it returns one that is far too old — silently, with every later phase consuming it
-as fact. This is the first `$BASE_SHA` row of the underivable table above. The
-block prints two signals for it, and they are not interchangeable:
+The substitutions, when `rewritten` fires:
 
-| Signal | Meaning |
-|---|---|
-| a `base_ref_force_pushed` event on the PR | the base was rewritten. **This is the authority** — GitHub states it, with actor and timestamp |
-| a non-bot commit above `$BASE_SHA` with **one** parent | a human commit on the bot's branch. Corroborates a rewritten base, and is what Phase 6 attributes against |
-| a non-bot commit above `$BASE_SHA` with **two** | someone merged the base branch *into* the bot's branch. `$BASE_SHA` is still the branch point and the substitutions below must **not** fire |
-
-The last row is why the author scan is corroboration rather than the test.
-Measured on `cli/cli` #14049, whose head is exactly that merge — *"Merge branch
-'trunk' into dependabot/…"* by a maintainer, above the bot's own commit: zero
-`base_ref_force_pushed` events, and a correct two-file scope diff from
-`$BASE_SHA`. Read as a moved base it would substitute the `pr-<N>^` diff — 20
-files, 1,101 lines — and halt the audit on a bump that changes four workflow
-lines.
-
-Observed: a two-file `Cargo.toml` / `Cargo.lock` bump whose merge-base diff was 14
-files and 3,682 deletions, appearing to delete the repo's entire vendored
-`supply-chain/` tree. The base branch had been force-pushed eleven minutes after
-the PR opened, and `merge-base` fell back to an ancestor nineteen months earlier.
-
-**Do not reach for `gh pr view --json files` as a cross-check.** GitHub computes
-the PR's file list from the merge base too, and reported the same 14 files. It
-agrees with the wrong answer rather than correcting it.
-
-When `$BASE_SHA` is not the branch point, report that as the finding and
-substitute:
+- **Phase 1** takes its scope diff from `pr-<N>^..pr-<N>` rather than from the
+  merge base.
+- **Phase 4** measures in `$SCRATCH/tip-<N>` rather than `$SCRATCH/base-<N>`,
+  because the tree this PR would land on is the default branch's tip.
 
 ```bash
 git fetch origin "$DEFAULT"
 git worktree add --detach "$SCRATCH/tip-<N>" "origin/$DEFAULT"
 ```
 
-- **Phase 1** takes its scope diff from `pr-<N>^..pr-<N>` — the bot's own commit,
-  which assumes the head *is* that commit. A head with two parents is not: it is
-  a merge someone made into the bot's branch, and `pr-<N>^` is then the branch
-  tip rather than the branch point. Measured on `cli/cli` #14049, whose head is
-  *"Merge branch 'trunk' into dependabot/…"*: that diff is 20 files and 1,101
-  changed lines, none of them the bump.
-- **Phase 4** measures in `$SCRATCH/tip-<N>` rather than `$SCRATCH/base-<N>`,
-  because the tree this PR would land on is the default branch's tip, and the
-  merge base is no longer a tree that exists anywhere.
-
 Say both substitutions in the report. "The base branch was rewritten under this
 PR" is a true and useful finding; "this bump reaches beyond the manifest and
-lockfile" is not, and they are easy to confuse because they produce the same diff.
+lockfile" is not, and they produce the same diff.
+
+**A two-parent head is not a moved base**, and the script will not treat it as
+one. Measured on `cli/cli` #14049, whose head is *"Merge branch 'trunk' into
+dependabot/…"* by a maintainer above the bot's own commit: zero force-push
+events, and a correct two-file scope diff from the merge base. Read as a moved
+base it would substitute the `pr-<N>^` diff — 20 files, 1,101 lines — and halt
+the audit on a bump that changes four workflow lines. There, `pr-<N>^` is the
+branch *tip*, not the branch point.
+
+Observed at the other end: a two-file `Cargo.toml` / `Cargo.lock` bump whose
+merge-base diff was 14 files and 3,682 deletions, appearing to delete the repo's
+entire vendored `supply-chain/` tree. The base had been force-pushed eleven
+minutes after the PR opened, and the merge base fell back nineteen months.
+
+**`gh pr view --json files` is not a cross-check on any of this**, which is why
+Phase 0 does not fetch it. GitHub computes the PR's file list from the merge base
+too, so on the force-pushed bump above it reported the same wrong 14 files. It
+agrees with the wrong answer rather than correcting it.
 
 **`$PERMS` decides two separate things, and conflating them gets both wrong.**
-The tier that can read branch protection is `admin`. The tier that can *merge* is
-`push`. They are different, and the common case — a maintainer with `push` but not
-`admin` — sits between them:
+The tier that can *merge* is `push`; the tier that can read branch protection is
+`admin`. The common case — a maintainer with `push` but not `admin` — sits
+between them, and at `pull` only the verdict becomes a recommendation the reader
+cannot act on, so offer `--comment` text instead.
 
-| `$PERMS` | Consequence |
-|---|---|
-| `admin: true` | branch protection is readable, if the plan offers it at all |
-| `push: true`, `admin: false` | can merge; **cannot** read protection. The ordinary case for a maintainer in an org |
-| `pull` only | cannot merge — so Phase 7's verdict is a recommendation, and the un-run merge command is a command this reader cannot run. Offer `--comment` text instead |
-
-**Do not call `branches/<b>/protection` to find the required checks.** It needs
-`admin`, and GitHub answers a bare `404 Not Found` without it rather than a 403,
-so on any repo you do not administer the call fails in a way that is
-indistinguishable from an unprotected branch — and `gh` writes that error body to
-**stdout**, so redirecting it to a file produces a well-formed artifact that reads
-as "no required checks". Verified: a repo whose `main` carries three required
-checks returns exactly that 404 to a `pull`-only account, while
-`branches/<b>` reports `"protected": true`.
-
-Phase 6 asks a different question that is readable at `pull` and answers this one
-directly. Two states remain worth naming when protection *is* readable, and both
-are findings rather than errors on your part: `404 Branch not protected` (no
-protection configured) and `403 Upgrade to GitHub Pro…` (a private repo on a free
-plan, where protection is unavailable). A `404 Branch not found` is the one that
-is your mistake — the branch name was wrong, so fix it and re-run.
-
-Also do not substitute `repos/:owner/:repo/rules/branches/<b>`. It is readable
-without `admin`, which makes it tempting, and it reports **only rulesets** —
-classic branch protection is invisible to it. The same repo above returns `[]`
-from both it and `/rulesets` while enforcing three required checks, so an empty
-result there would manufacture the exact false finding this section exists to
-prevent.
-
-Then read the CI workflow and the pre-commit config to learn the repo's **own**
-verification commands — do not assume `pytest`; it may be `uv run pytest`, `tox`,
-`nox`, or a `make` target, and the workflow is what says so. Note where each tool
-runs and **at what scope**: a hook scoped to `types_or: [python, pyi]` and a CI
-step running the same tool over `.` are different gates, and Phase 4 turns on
-that difference.
+Do **not** try to read the required checks here at any tier. That question moved
+to Phase 6, which asks it per-PR in a form readable at `pull`; the two endpoints
+that look like they answer it both fail into a plausible value, and
+`references/traps.md` has the four states they return.
 
 Recalled project memory may already name landmines for this repo (Phase 8 writes
 them). Treat those as leads to check, not as facts — verify before repeating.

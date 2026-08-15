@@ -112,6 +112,13 @@ against the buggy implementation it was written for, and the commit message says
 what the old code did when it ran. If you cannot make your new test fail against
 the current code, the fix is not doing what you think.
 
+**Clear `__pycache__` between mutations, or run `python3 -B`.** Three mutation
+runs in 0.16.0 reported "not caught" against defects the tests do catch: the
+module was edited and the test imported the previously compiled one. A
+verification method that silently checks the wrong artifact is this repo's own
+theme one level up — and it fails in the reassuring direction, because an
+uncaught mutation reads as "this test is weak" rather than "this run was a lie".
+
 **Write the check from the evidence, not from the change.** A test or a caveat
 derived from the fix it guards can only ever confirm it, errors included — it is
 the same failure as a test that has only ever passed, one level up, and rereading
