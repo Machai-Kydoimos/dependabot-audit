@@ -1,5 +1,5 @@
 ---
-description: Audit a Dependabot or Renovate PR and report an evidence-backed merge recommendation. Reports; never merges.
+description: Audit a Dependabot or Renovate PR and report an evidence-backed merge recommendation. Covers uv.lock and GitHub Actions. Reports; never merges.
 argument-hint: <PR number> [--no-execute] [--comment]
 ---
 
