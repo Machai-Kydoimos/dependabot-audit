@@ -114,8 +114,8 @@ OSV query written while investigating it re-introduced two defects this repo had
 already fixed once.
 
 What survives the cut is the half that **warns** rather than the half that
-**verifies**. `references/traps.md` keeps what a frozen install executes in
-each ecosystem — including `cargo build --locked` running every crate's
+**verifies**. [`SECURITY.md`](SECURITY.md) keeps what a frozen install executes
+in each ecosystem — including `cargo build --locked` running every crate's
 `build.rs` with no flag that stops it — because that stays true no matter which
 lockfiles this plugin will read.
 
@@ -129,8 +129,14 @@ inside the procedure, so a run loads the recipe it needs and not the other one:
 | `SKILL.md` | always — the phases, their gates, the Phase 0 outputs, the verdict table |
 | `references/uv-lock.md` | when the PR is a `uv.lock` bump |
 | `references/actions.md` | when the PR is an actions bump |
-| `references/traps.md` | when a phase points at it |
 | `references/report-template.md` | always, at Phase 7 |
+
+There is no general "traps" reference. There was until 0.17.0, and measuring it
+is what retired it: across two cold runs it was **never fetched**, because a
+phase that ends *"`traps.md` has the reasoning"* does not make a model go and
+read it, where a method table saying *"`references/actions.md` § Phase 1"* does.
+By then each of its sections had been absorbed anyway — into the scripts, into
+the two ecosystem files, or into `SKILL.md` itself.
 
 The two ecosystem files are **sectioned by phase**, and that is a constraint
 rather than tidiness: the prose suite attributes a command to the phase whose

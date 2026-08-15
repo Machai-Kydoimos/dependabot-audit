@@ -83,6 +83,83 @@ rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
 file changes what a phase verifies, so it belongs in its own release behind the
 replay gate rather than in this entry.
 
+## [0.17.0] — 2026-08-15
+
+`references/traps.md` is retired (#35). It was never fetched — measured, not
+suspected — and by the time that was measured, almost nothing in it was still
+load-bearing.
+
+### The audit that decided it
+
+Every trap in the file, checked against everything else that ships:
+
+| Section | Where its content already lived |
+|---|---|
+| Installing is executing | `SKILL.md`'s execution preamble and `SECURITY.md`; the npm/Cargo/Go rows address a human with an out-of-scope repo, not a run |
+| Currency and changelogs | `SKILL.md` Phase 2, in full; the `cli/cli` #13996 measurement in a test docstring |
+| Behavior change | allow-list vs disable-list, hook-scope ≠ CI-scope and formatter-vs-linter in `uv-lock.md`, reachable through Phase 4's handoff |
+| Lockfile shape | `audit.py` — `(name, version)` keying, artifact-moved-at-unchanged-version, forked packages |
+| Registry and pinning | `audit.py` for PEP 440 epochs and provenance; `actions.md` for tag dereferencing and the two-way `compare` |
+| CI state | `ci_state.py`, except three |
+| Verification hygiene | `SKILL.md` Phase 5 and `uv-lock.md` |
+
+**The file was a fossil of the pre-script era.** 0.14.0's `ci_state.py`, 0.16.0's
+`discover.py`, `audit.py`'s accumulated guards and 0.15.0's ecosystem split each
+absorbed a section, and nobody went back to see what was left. Exactly one rule
+was unique to it and unmechanised — *"nor can you diff the two versions'
+output"* — and it warns against an approach `gate_diff.py` makes impossible.
+
+### Added
+
+- **Three CI-state traps promoted into `SKILL.md` Phase 6**, the only run-relevant
+  content at stake. Each is about whether an answer is *current* rather than how
+  to read it, which is why no script covers them: a merge state reading `CLEAN`
+  on stale checks, taking the **latest** run for a SHA where `cancelled` is not
+  `failure`, and a bot's own rebase not re-triggering CI — so a green may belong
+  to the commit before the rebase.
+
+- **The founding Phase 4 measurement is inline** rather than pointed at: ruff
+  0.15.22 → 0.16.0, identical exit 0, **33 more files** formatted. With the reason
+  diffing the two versions' *output* does not rescue it.
+
+- **Phase 0 states both endpoint failures instead of deferring them** — the bare
+  `404` needing `admin`, and `rules/branches/<b>` reporting rulesets only.
+
+### Changed
+
+- **The cross-ecosystem execution table moved to `SECURITY.md`**, which already
+  had that audience and that section. It is a warning for a human arriving with
+  an out-of-scope repository, not a rule on any run's path.
+- **The four-state branch-protection table moved to `CONTRIBUTING.md`**, beside
+  the ruleset-vs-classic mirror measured in 0.16.2.
+- **Five soft pointers removed** — four in `SKILL.md`, one in `uv-lock.md`.
+
+### Measured
+
+**This costs tokens; it does not save them**, and saying otherwise would invert
+the finding:
+
+| | 0.16.2 | 0.17.0 |
+|---|---|---|
+| `SKILL.md` | ~11,660 tok | **~12,104** |
+| a `uv.lock` run | ~16,743 | **~17,191** |
+| an actions run | ~16,000 | **~16,444** |
+
+A retired file that was never loaded frees nothing at run time. What changes is
+that three traps which *could not fire* now always do, at +448 tokens, and 4,891
+tokens of prose stop being maintained, tested and shipped for no reader.
+
+**No rule was lost, verified mechanically rather than asserted.** All 40
+rule-bearing spans extracted from `traps.md` before the change were located in
+the shipped corpus after it — `SKILL.md`, the two ecosystem references,
+`SECURITY.md`, `CONTRIBUTING.md`, `README.md`, or a script that enforces them.
+
+### Tests
+
+201, unchanged. The prose suite needed no new guard: `TestEverythingTheProseNamesExists`
+already fails on a named path that does not exist, which is what would catch a
+missed pointer.
+
 ## [0.16.2] — 2026-08-15
 
 The repository went public. Four statements that were accurate about a private

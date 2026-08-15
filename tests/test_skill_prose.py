@@ -198,9 +198,10 @@ class SkillHarness(unittest.TestCase):
         whole file would let Phase 1's guard be satisfied by Phase 5's prose,
         which is the kind of slack that stops a guard discriminating.
 
-        `traps.md` and `report-template.md` carry no `## Phase N` headings, so
-        they contribute nothing here — deliberately. They are cross-cutting, and a
-        guard that swept them would match almost anything.
+        `report-template.md` carries no `## Phase N` headings, so it contributes
+        nothing here — deliberately. It is cross-cutting, and a guard that swept it
+        would match almost anything. A general `traps.md` used to sit in the same
+        category; 0.17.0 retired it after measuring that no run ever fetched it.
         """
         found: list[tuple[str, str]] = []
         for name in REFERENCE.findall(dict(self.phases)[number]):
