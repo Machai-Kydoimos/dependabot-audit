@@ -74,14 +74,15 @@ cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
 # phase works in
 SCRATCH=${SCRATCH:-$(mktemp -d)}          # any directory OUTSIDE the repo
 HEAD_SHA=$(gh pr view <N> --json headRefOid --jq .headRefOid)   # full 40 chars
-git fetch origin "pull/<N>/head:pr-<N>"
-BASE_SHA=$(git merge-base "$DEFAULT" "pr-<N>")
+BASE_REF=$(gh pr view <N> --json baseRefOid --jq .baseRefOid)   # GitHub's own base
+git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
+BASE_SHA=$(git merge-base "$BASE_REF" "pr-<N>")
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
 
-# prove the merge base is where the bot branched: a genuine bot PR is one commit
-# by the bot, so any other author above it means the base moved underneath
-git log --format='%h %an' "$BASE_SHA..pr-<N>"
+# what sits above the base: a genuine bot PR is one commit by the bot. `%p` is
+# there because two parents means a merge, which reads very differently
+git log --format='%h [%p] %an %s' "$BASE_SHA..pr-<N>"
 gh api "repos/:owner/:repo/issues/<N>/events" \
   --jq '.[] | select(.event=="base_ref_force_pushed") | "\(.actor.login) \(.created_at)"'
 
@@ -114,7 +115,7 @@ If either check fails, `git worktree remove` it and re-add.
 | `$DEFAULT` | the repo's default branch, derived |
 | `$SCRATCH` | scratch directory, outside the repo |
 | `$HEAD_SHA` | the full 40-character commit under audit |
-| `$BASE_SHA` | merge base of `$DEFAULT` and `pr-<N>` — **and whether it is the bot's branch point**, which is a separate answer |
+| `$BASE_SHA` | merge base of the PR's `baseRefOid` and `pr-<N>`, never of `$DEFAULT` — **and whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
 | `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it |
 | `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below |
@@ -138,6 +139,7 @@ These two fail into a *plausible* value rather than an error:
 | Output | How it fails quietly | What it then asserts |
 |---|---|---|
 | `$BASE_SHA` | the base branch was rewritten under the PR, so `git merge-base` walks back to a much older shared ancestor | a real commit, which is the wrong one — Phase 1 sees a diff full of files the bump never touched, and Phase 4 measures a tree the PR would never land on |
+| `$BASE_SHA` | the PR has **landed**, so its head is an ancestor of the default branch and a merge base taken against `$DEFAULT` is the head itself | `$BASE_SHA == $HEAD_SHA` — Phase 1's scope diff is empty, Phase 4 measures the PR's own tree, and Phase 6 cross-checks the head against itself. All three report the reassuring answer |
 | `$SCRATCH/required.txt` | the protection call failed and wrote its error body to **stdout** | a well-formed file that reads as "no required checks", which is indistinguishable from a repo that has none |
 
 Neither raises. Both travel downstream as fact, and the report says something
@@ -181,16 +183,42 @@ Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwis
 `git status`, and a gate that walks the tree (a linter, a formatter, a test
 collector) will descend into a full second copy of the project and report on it.
 
+**`$DEFAULT` cannot be the left-hand side of the merge base.** Once a PR has
+landed, its head *is* an ancestor of the default branch, so the merge base of the
+two is the head — and auditing a merged PR is a supported thing to do here: Phase
+6 has a row for it, `references/ecosystems.md` has a paragraph, and every replay
+this project's own gate asks for is one. `baseRefOid` is the base commit GitHub
+diffs the PR against, and it is right in both states.
+
+Measured on `cli/cli`, four merged bumps — #14147, #14091, #13981, #14049.
+`git merge-base trunk pr-<N>` returns the PR's own head for all four, so the scope
+diff is **0 files** where GitHub reports 4, 2, 3 and 2; via `baseRefOid` it is
+those four numbers exactly. On open PR #14148 both forms return the same commit,
+so this is a no-op wherever the old form worked.
+
+It is not the rewritten-base case and does not stand in for its checks: there,
+`baseRefOid` is the current tip of a branch that moved out from under the PR, and
+`merge-base` still walks back too far.
+
 **Prove the merge base is where the bot branched.** `git merge-base` always
 returns *a* commit, and when the base branch has been rewritten under an open PR
 it returns one that is far too old — silently, with every later phase consuming it
-as fact. This is the `$BASE_SHA` row of the underivable table above, and either
-signal in the block settles it:
+as fact. This is the first `$BASE_SHA` row of the underivable table above. The
+block prints two signals for it, and they are not interchangeable:
 
 | Signal | Meaning |
 |---|---|
-| any commit above `$BASE_SHA` whose author is not the bot | the base moved; `$BASE_SHA` is not the branch point |
-| a `base_ref_force_pushed` event on the PR | the same fact, stated by GitHub, with actor and timestamp |
+| a `base_ref_force_pushed` event on the PR | the base was rewritten. **This is the authority** — GitHub states it, with actor and timestamp |
+| a non-bot commit above `$BASE_SHA` with **one** parent | a human commit on the bot's branch. Corroborates a rewritten base, and is what Phase 6 attributes against |
+| a non-bot commit above `$BASE_SHA` with **two** | someone merged the base branch *into* the bot's branch. `$BASE_SHA` is still the branch point and the substitutions below must **not** fire |
+
+The last row is why the author scan is corroboration rather than the test.
+Measured on `cli/cli` #14049, whose head is exactly that merge — *"Merge branch
+'trunk' into dependabot/…"* by a maintainer, above the bot's own commit: zero
+`base_ref_force_pushed` events, and a correct two-file scope diff from
+`$BASE_SHA`. Read as a moved base it would substitute the `pr-<N>^` diff — 20
+files, 1,101 lines — and halt the audit on a bump that changes four workflow
+lines.
 
 Observed: a two-file `Cargo.toml` / `Cargo.lock` bump whose merge-base diff was 14
 files and 3,682 deletions, appearing to delete the repo's entire vendored
@@ -209,7 +237,12 @@ git fetch origin "$DEFAULT"
 git worktree add --detach "$SCRATCH/tip-<N>" "origin/$DEFAULT"
 ```
 
-- **Phase 1** takes its scope diff from `pr-<N>^..pr-<N>` — the bot's own commit.
+- **Phase 1** takes its scope diff from `pr-<N>^..pr-<N>` — the bot's own commit,
+  which assumes the head *is* that commit. A head with two parents is not: it is
+  a merge someone made into the bot's branch, and `pr-<N>^` is then the branch
+  tip rather than the branch point. Measured on `cli/cli` #14049, whose head is
+  *"Merge branch 'trunk' into dependabot/…"*: that diff is 20 files and 1,101
+  changed lines, none of them the bump.
 - **Phase 4** measures in `$SCRATCH/tip-<N>` rather than `$SCRATCH/base-<N>`,
   because the tree this PR would land on is the default branch's tip, and the
   merge base is no longer a tree that exists anywhere.
@@ -274,7 +307,12 @@ base is not a safe default: it stops the audit for a reason that is not true, an
 it reads in the report exactly like a bump that reaches into source.
 
 **This phase is a gate, not just a step.** The diff should touch **only** the
-manifest and the lockfile (or a single workflow file for an actions bump).
+manifest and the lockfile — or, for an actions bump, **only `uses:` lines**, in
+however many workflow files pin that action. The count of files is not the
+invariant and never was: an action is pinned in every workflow that uses it, and
+a grouped bump moves several actions at once, so ordinary merged bumps touch
+two, three or four files. `references/ecosystems.md` has the measurements, and
+the rule for reading the versions out of that diff rather than off the title.
 Anything else is a finding: report it, and **stop before Phase 4**. The same
 applies if provenance comes back with a discrepancy. Phases 4 and 5 execute the
 PR's code, and the whole point of running the cheap read-only checks first is that
@@ -348,8 +386,11 @@ it is, not as a failed audit: the ecosystem-independent phases still ran.
 
 **A bot's proposal is not evidence of "current".** Ask the registry what the
 latest version actually is, and compare publish timestamps against the PR's
-`createdAt`. If a newer version existed *before* the PR was opened, that is
-ingestion lag, not a deliberate hold.
+`createdAt`. What that comparison stopped settling on 2026-07-14 is *why*:
+Dependabot now holds a version update until the release is **three days old**, by
+default, with no `cooldown:` block required and nothing in the PR to show it. So
+read the *age* of the gap and not only its existence — inside that window the bot
+is waiting, outside it the bot is behind.
 
 **For GitHub Actions, "current" is a question about the tag line, not the pin.**
 A moving major tag picks up new releases on its own, so a newer patch is not a
@@ -357,8 +398,19 @@ gap. What matters is whether the *major* being adopted is still the newest one,
 and whether the tag still points where the PR proposed — `references/ecosystems.md`
 has the `compare` that separates *ahead* from **behind**.
 
-Rule out the innocent explanations before reporting a gap: a yanked release, or
-an `ignore` rule in `dependabot.yml`/`renovate.json`.
+Rule out the innocent explanations before reporting a gap: a yanked release; a
+**cooldown** (`cooldown:` in `dependabot.yml`, `minimumReleaseAge` in
+`renovate.json`), which now applies even when the file says nothing; or an
+`ignore` rule, which can name `"*"` and be scoped by `update-types`, so "no rule
+names this dependency" is not "no rule covers it".
+
+**A gap inside the cooldown window does not earn a follow-up branch.**
+Recommending one hand-lands the release the bot is deliberately waiting on, which
+inverts the control rather than clearing it. What outranks the hold is what this
+phase reads for next: a `Security` entry or a destructive-fix bug in the gap. The
+cooldown exempts Dependabot's *security updates* — the advisory-driven kind — and
+not a version update whose changelog happens to carry a privately disclosed fix,
+which is exactly the case below.
 
 **A bot's ignore state is not always in a config file.** `@dependabot ignore this
 major version` records the hold in the *PR*, not the repo, so a dependency can be

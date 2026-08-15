@@ -424,10 +424,16 @@ class UnsupportedLockfile(ValueError):
 # diagnosis, and it sent the reader hunting for a defect that does not exist.
 #
 # Listed: the three ecosystems whose recipes were removed in 0.8.0, Python's
-# other lockfiles, and the manifest that sits beside `uv.lock`. Each signature
-# was checked against a real file from a public repository. Anything not on the
-# list keeps the generic message — a wrong name is worse than no name.
+# other lockfiles, and the manifests that sit beside a lockfile — `pyproject.toml`
+# beside `uv.lock`, `go.mod` beside `go.sum`. Each signature was checked against a
+# real file from a public repository. Anything not on the list keeps the generic
+# message — a wrong name is worse than no name.
 GO_SUM = re.compile(r"^\S+ v\S+ h1:[A-Za-z0-9+/=]+$", re.MULTILINE)
+# Both lines are required. This runs before the parse, so a signature that a
+# uv.lock could carry would refuse a lockfile the plugin does support — and one
+# line of prose inside a TOML string is a great deal likelier than two.
+GO_MOD_MODULE = re.compile(r"^module\s+\S+\s*$", re.MULTILINE)
+GO_MOD_GO = re.compile(r"^go\s+\d+\.\d+", re.MULTILINE)
 # Yarn v1 writes a banner; Berry writes a `__metadata:` block instead.
 YARN_LOCK = re.compile(r"^# yarn lockfile v1$|^__metadata:$", re.MULTILINE)
 PNPM_LOCK = re.compile(r"^lockfileVersion: ", re.MULTILINE)
@@ -454,6 +460,8 @@ def _sniff_text(raw: str) -> str | None:
     """
     if GO_SUM.search(raw):
         return "a go.sum (Go)"
+    if GO_MOD_MODULE.search(raw) and GO_MOD_GO.search(raw):
+        return "a go.mod — a manifest, not a lockfile (Go)"
     if YARN_LOCK.search(raw):
         return "a yarn.lock (JavaScript, Yarn)"
     if PNPM_LOCK.search(raw):

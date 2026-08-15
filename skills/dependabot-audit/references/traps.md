@@ -6,19 +6,40 @@ per-registry mechanics live in `ecosystems.md`.
 ## Currency and changelogs
 
 **A bot's proposal is not evidence of "current".** Bots ingest registry metadata
-on their own schedule and can lag the registry by a day or more. Compare the
-newer release's publish time against the PR's `createdAt`: if it was published
-*first*, the bot simply had not seen it. Observed twice on the same package —
-once where the gap contained a security fix, once where it contained two
-destructive `--fix` bugs.
+on their own schedule and can lag the registry by a day or more. Observed twice
+on the same package — once where the gap contained a security fix, once where it
+contained two destructive `--fix` bugs.
 
-**Rule out the innocent explanations before calling it lag:** a yanked release,
-or an `ignore` rule in the bot's config. Both look identical from the outside.
+**"Published before the PR opened" stopped meaning lag on 2026-07-14.** That was
+the obvious test for it, and it is now wrong by default: Dependabot withholds a
+version update until the release is **three days old**, across every ecosystem it
+supports, with no `cooldown:` block in the file and nothing in the PR body to say
+so. A release inside that window is being held on purpose, and the timestamp
+comparison reports the held case and the missed case identically.
+
+Measured on `cli/cli` #13996, opened 2026-07-28T14:06Z proposing
+`gh-aw-actions/setup-cli` 0.83.2 → 0.83.3: upstream 0.83.4 had been published
+2026-07-27T09:07Z, 29 hours earlier, and the bot proposed it itself two days
+later in #14018. Read as lag, that gap earns a follow-up branch that hand-lands
+the release the cooldown exists to delay — an audit recommending the bypass of a
+supply-chain control, on the strength of a rule that predates it.
+
+**Rule out the innocent explanations before calling it lag:** a yanked release, a
+cooldown (`cooldown:` for Dependabot, `minimumReleaseAge` for Renovate), or an
+`ignore` rule — which can name `"*"` and be scoped by `update-types`, so a search
+for the dependency's own name finds nothing while a rule covers it. All of them
+look identical from the outside.
 
 **Changelog `Security` sections outrank every vulnerability database.** A
 privately disclosed fix ships with no CVE and no GHSA, so OSV and `pip-audit`
 both report clean while the changelog says otherwise. Read the
 changelog for the whole gap, not just the adopted version.
+
+The cooldown above sharpens this rather than softening it. Its exemption is for
+Dependabot's *security updates* — the advisory-driven kind — so a release whose
+fix was never disclosed is held like any other, and the three-day window is
+exactly where a finding no database carries sits waiting. Nothing about the
+timestamps will point at it; only the changelog will.
 
 **Destructive-fix bugs never appear in a security feed.** A changelog entry like
 "stop deleting line endings" or "stop deleting a line when trimming a code span"

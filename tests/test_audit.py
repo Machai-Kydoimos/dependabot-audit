@@ -1072,6 +1072,16 @@ class TestEcosystemBoundary(_MainHarness):
             "cloud.google.com/go v0.123.0/go.mod h1:xBoMV08QcqUGuPW65Qfm1o9Y4zKZBpGS+7b=\n",
             "go.sum",
         ),
+        # The other half of the pair a Go bump's diff contains, and the half
+        # whose name reads like the file Phase 1 asks for. `cli/cli`'s: the TOML
+        # parser reached line 1 column 8 of `module github.com/cli/cli/v2` and
+        # reported `Expected '=' after a key in a key/value pair` — a syntax
+        # complaint about a valid file.
+        "go.mod": (
+            "module github.com/cli/cli/v2\n\ngo 1.26.0\n\ntoolchain go1.26.6\n\n"
+            "require (\n\tcharm.land/bubbles/v2 v2.1.1\n)\n",
+            "go.mod",
+        ),
         "Pipfile.lock": (
             '{\n  "_meta": {"pipfile-spec": 6, "hash": {"sha256": "43"}},\n  "default": {}\n}\n',
             "Pipfile.lock",

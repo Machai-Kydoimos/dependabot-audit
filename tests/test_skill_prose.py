@@ -324,6 +324,91 @@ class TestEveryPhaseCarriesBothEcosystems(SkillHarness):
         )
 
 
+class TestTheMergeBaseSurvivesThePRHavingLanded(SkillHarness):
+    """`$BASE_SHA` collapses onto `$HEAD_SHA` the moment the PR merges.
+
+    A merged PR's head is an ancestor of the default branch, so the merge base of
+    the two is the head itself. Nothing raises: Phase 1's scope diff comes back
+    empty, Phase 4's `base-<N>` worktree is the PR's own tree — reinstating the
+    defect 0.6.0 exists to prevent — and Phase 6 cross-checks the head against
+    itself, which labels every red check pre-existing.
+
+    Measured on `cli/cli`'s merged bumps #14147, #14091, #13981 and #14049:
+    `git merge-base trunk pr-<N>` returns the head for all four, and the scope
+    diff is 0 files where GitHub reports 4, 2, 3 and 2. Taken from `baseRefOid`
+    it is those four numbers, and on open PR #14148 both forms return the same
+    commit — so the correction is a no-op wherever the old form worked.
+
+    Auditing a merged PR is supported, not an edge case: Phase 6 has a row for
+    it, `ecosystems.md` has a paragraph, and CONTRIBUTING's replay gate asks for
+    one before every method change.
+    """
+
+    def test_the_base_commit_comes_from_the_pr_rather_than_the_local_branch(self):
+        self.assertIn(
+            "baseRefOid",
+            self.shell[0],
+            "Phase 0 must take the base commit from the PR; a merge base against "
+            "$DEFAULT is the PR's own head once it has landed",
+        )
+        self.assertNotRegex(
+            self.shell[0],
+            r"git merge-base \"\$DEFAULT\"",
+            "the local default branch as the left-hand side is the collapsing form",
+        )
+
+
+class TestTheActionsScopeGateKeysOnTheLine(SkillHarness):
+    """Phase 1's gate said "a single workflow file". Bumps are not.
+
+    An action is pinned in every workflow that uses it, so an ordinary bump
+    rewrites all of them, and a grouped bump rewrites several actions at once.
+    Measured on `cli/cli`, all three merged: #14091 two files, #13981 three,
+    #14147 four — and every changed line across them is a `uses:` line or its
+    trailing version comment.
+
+    A gate phrased as a file count refuses the ordinary case and stops the audit
+    before Phase 4, and its report reads exactly like a bump reaching into
+    source. The invariant is the kind of line, which holds at any file count.
+    """
+
+    def test_the_gate_names_the_kind_of_line_rather_than_a_file_count(self):
+        self.assertIn(
+            "uses:",
+            dict(self.phases)[1],
+            "Phase 1's gate must express the actions scope as the lines the diff "
+            "may touch; a count of files refuses every multi-workflow bump",
+        )
+
+
+class TestCurrencySeparatesLagFromAHold(SkillHarness):
+    """Dependabot now withholds a new release for three days, by default.
+
+    Phase 2's test for lag was the publish timestamp: a version published before
+    the PR opened is one the bot had not seen yet. Since 2026-07-14 that
+    inference is false by default — version updates wait until a release is three
+    days old, no `cooldown:` block required, and nothing in the PR says so.
+    Security *updates* are exempt from the wait; a version update whose changelog
+    carries a privately disclosed fix is not, and that is the case Phase 2 exists
+    for.
+
+    Measured on `cli/cli` #13996, opened 2026-07-28T14:06Z proposing
+    `gh-aw-actions/setup-cli` 0.83.2 -> 0.83.3, under `cooldown: default-days: 3`:
+    upstream 0.83.4 had been published 2026-07-27T09:07Z, 29 hours earlier, and
+    the bot proposed it itself two days later in #14018. Read as lag, that gap
+    buys a follow-up branch that hand-overrides the hold and lands the release
+    the bot is deliberately waiting on.
+    """
+
+    def test_phase_2_knows_a_gap_can_be_a_configured_hold(self):
+        self.assertIn(
+            "cooldown",
+            dict(self.phases)[2].lower(),
+            "Phase 2 must rule out the cooldown before calling a gap lag; the "
+            "publish timestamp stopped separating the two on 2026-07-14",
+        )
+
+
 class TestARedCheckIsAttributedBeforeItCarriesTheVerdict(SkillHarness):
     """Phase 6 reported conclusions and never asked whether the bump caused them.
 
