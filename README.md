@@ -63,14 +63,14 @@ the verdict, and the merge command **left un-run**.
 
 | Phase | |
 |---|---|
-| 0 | Discover the repo — required checks, bot config, the repo's own CI gates and their scopes; classify the PR; pin the head SHA, fetch it once, and build the worktree every later phase works in |
+| 0 | Discover the repo — `scripts/discover.py` derives every answer and tags each **derived / absent / underivable**: the SHAs, the merge base *from GitHub's compare endpoint*, whether that merge base is the branch point, and whether Phases 4 and 5 are authorised at all. Read-only, so the fetch and the worktrees stay visible in `SKILL.md`. Reading the bot config and the repo's own gates stays prose — no script can do it |
 | 1 | Scope and provenance — every locked artifact's hash, size, URL, yank status and PEP 740 build provenance vs. the live registry, read out of git at the pinned ref. A **gate**: if anything here fails, the audit stops before the phases that execute code |
 | 2 | Currency — the registry's true latest, publish times vs. PR open time, and changelogs across the gap |
 | 3 | Known vulnerabilities — what is already known to be wrong with this. OSV batch plus the ecosystem's own auditor for `uv.lock`; GHSA's `actions` ecosystem for a workflow bump |
 | 4 | Behavior change — does this change what runs here. For `uv.lock`, each gate run at the old and new versions **against the merge base**, comparing what they *do to the files*; measuring the PR's own tree reports nothing whenever the PR already contains the fixup, which is exactly when the change was real. For actions, which cannot be run locally, whether this repo's workflows are in the change's scope at all |
 | 5 | Independent reproduction — frozen install and the repo's own gates in an isolated worktree; for actions, where no local reproduction exists, the run history of the workflow the bump changed |
-| 6 | CI verification — the run for the exact head SHA, the required contexts specifically, and whether the changed file is reachable from a pull request at all |
-| 7 | Report |
+| 6 | CI verification — `scripts/ci_state.py`: the rollup paged to exhaustion, which checks GitHub says are *required*, whether anything still blocks, and every red check labelled **attributable / pre-existing / underivable** against the commit the bot branched from. Plus, in prose because no script can answer it, whether the changed file is reachable from a pull request at all |
+| 7 | Report — and the verdict *derived* from the evidence rather than judged: a table mapping findings to one of the three recommendations, a precedence for when phases disagree (they are meant to), and confidence as a function of what could not be derived. Also where the worktrees and branch get cleaned up, because it is the only phase every audit reaches |
 | 8 | Learning loop — hand back anything that could not have been derived |
 
 Phase 0 derives repo specifics **every run and never caches them** — a cached
@@ -105,22 +105,53 @@ OSV query written while investigating it re-introduced two defects this repo had
 already fixed once.
 
 What survives the cut is the half that **warns** rather than the half that
-**verifies**. `references/ecosystems.md` keeps what a frozen install executes in
+**verifies**. `references/traps.md` keeps what a frozen install executes in
 each ecosystem — including `cargo build --locked` running every crate's
 `build.rs` with no flag that stops it — because that stays true no matter which
 lockfiles this plugin will read.
+
+## How it is laid out
+
+Since 0.15.0 the per-ecosystem method lives beside the ecosystem rather than
+inside the procedure, so a run loads the recipe it needs and not the other one:
+
+| File | Loaded |
+|---|---|
+| `SKILL.md` | always — the phases, their gates, the Phase 0 outputs, the verdict table |
+| `references/uv-lock.md` | when the PR is a `uv.lock` bump |
+| `references/actions.md` | when the PR is an actions bump |
+| `references/traps.md` | when a phase points at it |
+| `references/report-template.md` | always, at Phase 7 |
+
+The two ecosystem files are **sectioned by phase**, and that is a constraint
+rather than tidiness: the prose suite attributes a command to the phase whose
+heading it sits under, which is the check that has caught three shipped
+forward-reference defects. It also asserts that every handoff *lands* — a phase
+pointing at a `§ Phase N` that does not exist leaves the model with a question,
+a promise, and nothing to answer it with, and the likeliest recovery is
+improvising a method.
+
+What stays in `SKILL.md` unconditionally is anything that has to fire without a
+reference being fetched: the read-only contract, the execution warning, Phase 1's
+gate, the three-state rule, and the verdict derivation.
 
 Other Python lockfiles are out of scope too. The script reads `uv.lock`
 specifically, not Poetry, pip-tools or PDM.
 
 The boundary is enforced rather than stated. Handed another ecosystem's lockfile
 the script exits 2 naming the format — `is a Cargo.lock (Rust)`, `is a
-poetry.lock (Python, Poetry)` — and points at `references/ecosystems.md`. That
+poetry.lock (Python, Poetry)` — and points at `references/uv-lock.md`. That
 message is the edge of the tool and the first thing a reader arriving with a
 different lockfile sees, so it says what they found rather than blaming itself:
 before 0.10.0 a real `Cargo.lock` produced `unexpected AttributeError ... This is
 a bug`, and a real `poetry.lock` produced a confident *"either this lockfile did
 not change, or it is being compared against itself"*.
+
+`scripts/discover.py` (Phase 0) and `scripts/ci_state.py` (Phase 6) are
+ecosystem-independent for a different
+reason: the PR's own shape is not a property of the lockfile. Between them those two
+phases carried **five of the seven** defects that have shipped in the prose, and
+a hand-run query cannot be regression-tested. Both are read-only.
 
 `scripts/gate_diff.py` (Phase 4) is the exception: it is
 **ecosystem-independent**, because it parses nothing. It runs a gate once per
@@ -135,7 +166,7 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-139 cases, stdlib only, no network — they run offline and free. Every case
+201 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into ten groups:
 
@@ -178,7 +209,11 @@ to detect. They fall into ten groups:
   safety properties: a dirty tree is refused, and the worktree is restored
   between runs — including when the gate *staged* its change, which
   `git checkout -- .` cannot undo. That group matters most: without it run two
-  inherits run one's edits and every comparison after it is fiction.
+  inherits run one's edits and every comparison after it is fiction. It also
+  covers a *staged rename*, which `git status --porcelain -z` emits as two fields
+  rather than one — the parse that assumed one turned `tracked.txt` into
+  `cked.txt`, reporting a path that never existed as deleted while the real
+  deletion went unreported.
 - **Ecosystem coverage** — no phase from 1 to 6 may be written for only one of
   the two supported ecosystems, Phase 3 must name an advisory source for actions,
   and it must keep the measured case behind the OSV version trap. This group
@@ -193,8 +228,16 @@ to detect. They fall into ten groups:
   that execute PR code must say so, the actions scope gate must key on the kind of
   line the diff touches rather than a count of files, Phase 2 must rule out a
   cooldown before calling a gap lag, and the frontmatter key that withholds tools
-  must be the one that works. Each corresponds to a defect that shipped in the
-  prose, where the other groups cannot reach.
+  must be the one that works. Since 0.12.0 it also checks that the cleanup lives
+  in a phase every audit reaches rather than one `--no-execute` skips, that the
+  rollup query reads `totalCount` so a truncated page cannot pass as a complete
+  required-check list, and that the classification asks whether this is a
+  repository you control before letting Phases 4 and 5 run. Since 0.13.0 it also
+  checks that the verdict is *derived* — that a precedence exists for when phases
+  disagree, that a **pre-existing** red check does not carry a Hold, and that
+  confidence is defined in terms of underivable inputs in both `SKILL.md` and the
+  report template, so the two cannot drift. Each corresponds to a defect that
+  shipped in the prose, where the other groups cannot reach.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target
@@ -229,7 +272,23 @@ that the required contexts come from the API rather than an authored list. It
 cannot check
 whether Phase 6 gets run at all, or whether an unexpected file in the diff
 actually stops the audit. That is behavioral and belongs in `claude plugin eval`,
-which is in early access and unavailable on this account.
+which is in early access and **still unavailable on this account**.
+
+The subcommand is present in the CLI and prints a complete `--help` — options for
+graders, ablation arms, cost ceilings, thresholds — which reads exactly like a
+feature you can use. Invoking it does not:
+
+```
+$ claude plugin eval dependabot-audit
+`plugin eval` is currently in early access
+$ echo $?
+0
+```
+
+**It exits 0.** So a CI step added on the strength of the help text would go
+green while running nothing at all — the same shape as every other failure this
+repo collects, arriving in the tool that was supposed to close the gap. Checked
+0.12.0; worth re-checking rather than assuming, in either direction.
 
 That gap is real, and it is where the defects keep turning up. Seven have now
 shipped in the prose and nowhere else:
@@ -306,15 +365,23 @@ Phases 0–3 and 6–8 are network reads and `git` queries, and execute nothing.
 
 Three things follow, all of them in the skill:
 
-- **Phase 1 is a gate.** If the diff reaches past the manifest and lockfile, or
-  provenance fails, the audit stops there rather than continuing into the phases
-  that execute. Running the cheap read-only checks first is only worth something
-  if they are allowed to refuse.
+- **Phase 1 is a gate**, and it is worth knowing what it can see. If the diff
+  reaches past the manifest and lockfile, or provenance fails, the audit stops
+  there rather than continuing into the phases that execute. What that catches is
+  a lockfile edited after it was written honestly. It does **not** catch a
+  malicious *release*: the hash is compared against what the registry serves
+  today, so when the attacker published the artifact the record and the lockfile
+  agree — and agreement is the whole test. PEP 740 `PUBLISHER CHANGED` is the one
+  signal that speaks to that case, and its coverage is partial.
 - **`--no-execute` runs Phases 0–3 and 6–7 only** — provenance, currency,
   changelogs, OSV, CI state. That is most of the value, and it is the right
-  default for a PR you have no reason to trust. Phase 0 flags a cross-repository
-  or non-bot-authored bump and switches to it, because neither Dependabot nor
-  Renovate opens a fork PR.
+  default for a PR you have no reason to trust. Phase 0 switches to it on three
+  observations, any one of which is enough: a cross-repository PR, a non-bot
+  author — neither Dependabot nor Renovate opens a fork PR — or **an account
+  without `push` on the repo**. The last is the asymmetry worth stating: a bot PR
+  on a repo you control proposes code your own CI would run anyway, while a PR
+  you cannot merge proposes code you had no plan to run, and CI would run *that*
+  in a fresh container with a scoped token rather than on your workstation.
 - **The narrowed install is the documented default** — `uv sync --locked
   --no-build --no-install-project`, which succeeds only if every dependency in
   the lockfile resolved to a **wheel**, so no third-party build code runs at all.

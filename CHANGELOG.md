@@ -11,6 +11,475 @@ patch.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-15
+
+Phase 0 was the last large block of prose asking a reader to hold a three-state
+discipline in their head, and both defects that have ever shipped in it were in
+**one output**: `$BASE_SHA`. A rewritten base sent `git merge-base` nineteen
+months too far and presented a two-file bump as fourteen files and 3,682
+deletions; a merged PR collapsed the base onto the head, so Phase 1's diff came
+back empty, Phase 4 measured the PR against itself, and Phase 6 cross-checked the
+head against itself. Neither raises.
+
+### Added
+
+- **`scripts/discover.py`.** Derives every Phase 0 output and tags each
+  **derived / absent / underivable**, proves whether the merge base is the branch
+  point rather than assuming it, and decides whether Phases 4 and 5 are
+  authorised.
+
+  **Read-only** — no fetch, no worktree, no local `git` at all. The merge base
+  comes from GitHub's `compare` endpoint, which is right whether or not the PR
+  has landed, so no phase runs a local merge base any more. The two things Phase
+  0 changes in the user's repository stay visible in `SKILL.md`, where a plugin
+  whose contract is "reports, never merges" should keep them.
+
+- **`--shell`, so the outputs are sourced rather than transcribed.** Four of them
+  are 40-character SHAs and a wrong one is not detectable downstream: a truncated
+  `$HEAD_SHA` matches no CI run and reads exactly like *CI never ran*. An
+  **underivable output is emitted commented-out** so the variable stays unset —
+  a later phase then fails loudly on an empty value instead of quietly on a
+  plausible one, which is the distinction the whole phase exists to preserve.
+
+### Fixed
+
+Two defects in the new script, both found by replaying rather than reasoning,
+and the second created by the fix for the first:
+
+- **The corroboration scan fired on every human PR.** "A non-bot commit above the
+  base" is the signal that a bot PR has been tampered with — and on a *human* PR
+  it is the definition of the PR. Replaying this plugin's own #26: five human
+  commits, no force-push, reported `SUSPECT` on a branch nobody had touched.
+  Applied to human PRs it manufactures a finding on every one, which is the
+  fastest way to train a reader to skip the row that matters.
+
+- **Suppressing it left the explanation false.** The `ok` verdict then fell into
+  a branch reading *"every commit above the base is the bot's"* — on a PR with no
+  bot commits at all. A correct verdict carried by a false sentence is the same
+  family as a red check reported without its attribution: every cell true except
+  the one doing the work.
+
+### Changed
+
+- **Phase 0 lost the prose the script now enforces**, 305 → 238 lines. Three of
+  the four cuts were material that had already stopped being true:
+
+  | Cut | Why it was stale |
+  |---|---|
+  | the `git merge-base` collapse worked example | no phase runs a local merge base any more |
+  | `gh pr view --json files` as a cross-check | `files` stopped being fetched in 0.12.0 |
+  | branch protection, ~33 lines | the required checks moved to Phase 6 in 0.14.0; `traps.md` still carries the four states those endpoints return |
+
+- **Two Phase 0 guards re-pointed at `reachable(0)`** and tightened. One asserted
+  on `merge_base_commit|baseRefOid`, which kept passing when the compare call was
+  removed — because `baseRefOid` survived as a *display label* in the script's
+  own output. The label was also simply wrong: the script reads REST `base.sha`,
+  not the GraphQL field. Renamed, and the guard now asserts on the field alone.
+
+### Measured
+
+| | v0.11.0 | v0.15.0 | 0.16.0 |
+|---|---|---|---|
+| a `uv.lock` run | ~18,600 tok | ~17,500 | **~16,700** |
+| an actions run | ~18,600 tok | ~17,500 | **~16,000** |
+| `SKILL.md` alone | ~13,100 tok | ~12,500 | **~11,700** |
+
+−10% and −14% against where this round started, which is less than the file
+shrank: `SKILL.md` went 970 → 828 lines while *gaining* the verdict table, the
+confidence rule, the truncation guidance and two script handoffs. The
+documentation got smaller and said more.
+
+### Note on the mutation harness
+
+Three mutation runs in this release reported "not caught" against a defect the
+tests do catch. The cause was stale `__pycache__` — the mutated module was
+edited, and the test imported the previously compiled one. A verification method
+that silently checks the wrong artifact is the same failure the suite exists to
+find, one level up. Clear `__pycache__` between mutations, or run with `-B`.
+
+### Tests
+
+182 → 201.
+
+## [0.15.0] — 2026-08-15
+
+Every run paid for both ecosystems. A `uv.lock` bump loaded the whole GitHub
+Actions recipe and an actions bump loaded the whole PyPI one, and roughly a third
+of the documentation a run carried was guaranteed irrelevant before it started.
+
+**No rule was removed. Only its location changed.** Verified mechanically rather
+than asserted: extracting every non-comment command line from `SKILL.md` and
+`ecosystems.md` at v0.14.0 and from all four documents now gives **0 commands
+gained and 0 genuinely lost** — the two the diff flags are the same `uv sync`
+pair, which `ecosystems.md` and `SKILL.md` each carried with different trailing
+comments.
+
+### Changed
+
+- **`references/ecosystems.md` is retired, split into `references/uv-lock.md`
+  and `references/actions.md`**, each sectioned by phase. `SKILL.md`'s Phases 1
+  through 5 now carry the phase's *question* and its gate, and hand off to the
+  section for the ecosystem in front of them.
+
+  Sectioning by phase is a constraint, not tidiness. The prose suite attributes a
+  command to the phase whose heading it sits under, and that attribution is the
+  check which has caught three shipped forward-reference defects. A section
+  retitled out of that shape takes its guard with it.
+
+- **What stays in `SKILL.md` is anything that must fire without a reference being
+  fetched**: the read-only contract, the execution warning, Phase 1's gate, the
+  Phase 0 outputs table and the three-state rule, and Phase 7's verdict
+  derivation. A rule in `SKILL.md` is *guaranteed* loaded; a rule in a reference
+  loads only if the pointer is followed. That is acceptable for a recipe and not
+  for a gate.
+
+- **The cross-ecosystem "installing is executing" table moved to `traps.md`**,
+  where it belongs: it is a warning for a reader who arrived with an out-of-scope
+  repository, not a rule on this plugin's own path.
+
+### Added
+
+- **A guard that every handoff lands.** Two halves, because they fail
+  independently: each split phase must name both ecosystem references, and each
+  named reference must actually have the `## Phase N` section it is pointed at.
+
+  This is the risk the split creates and the reason it is worth gating. Moving a
+  method converts it from *text the model already has* into *text the model must
+  go and fetch*, and a pointer into a section that does not exist leaves a
+  question, a promise, and nothing to answer it with — where the likeliest
+  recovery is improvising a method, which is exactly what the ecosystem boundary
+  exists to prevent.
+
+- **`material(n)` beside `reachable(n)` in the prose suite.** Guards about what a
+  phase *says* read the first; guards about what it *calls* read the second.
+  Keeping them apart is what stops a negative assertion firing on a paragraph
+  that warns against the very thing it forbids — which is how the first version
+  of `reachable` failed the `/protection` guard on the prose explaining why never
+  to call it.
+
+### Measured
+
+Per-run documentation cost, `SKILL.md` + one ecosystem + the report template:
+
+| | v0.14.0 | 0.15.0 |
+|---|---|---|
+| a `uv.lock` bump | ~20,700 tok | **~17,500 tok** (−15%) |
+| an actions bump | ~20,700 tok | **~16,800 tok** (−19%) |
+
+Less than the ~25% projected, and the reason is worth recording rather than
+rounding away: the two largest blocks left in `SKILL.md` are Phase 0 (284 lines)
+and Phase 6 (179), both **ecosystem-independent**, so an ecosystem split cannot
+reach either. The remaining saving is in relocating motivating narrative and in
+mechanising Phase 0 — both still ahead, and both carrying more risk than this one
+did.
+
+### Not done, deliberately
+
+The **evidence split** — moving motivating case narratives out of `SKILL.md` —
+is held. The ecosystem split extends a pattern with a track record: the plugin
+has depended on the model following pointers into `ecosystems.md` for many
+releases. Moving *justification* away from *rules* is a different bet, and a
+narrative that turns out to be discriminating rather than merely motivating goes
+missing silently. With `claude plugin eval` still unavailable (#32) there is
+nothing that would detect it.
+
+### Tests
+
+179 → 182.
+
+## [0.14.0] — 2026-08-15
+
+Phase 6 was 188 lines of prose carrying **three of the seven** defects that have
+shipped in `SKILL.md`, and all three were the same mistake: a real endpoint asked
+the wrong question, answering in a well-formed way. A hand-run query cannot be
+regression-tested. This file's own rule — *"a trap a script refuses cannot be
+skipped, one in prose is silently skipped"* — has been applied to forked-package
+disclosure since 0.9.0 and nowhere else.
+
+### Added
+
+- **`scripts/ci_state.py`**, and Phase 6 now invokes it. It pages the rollup to
+  exhaustion, reads `isRequired` / `mergeStateStatus` / `reviewDecision`, merges
+  the check-run and status lists at the comparison commit — they are separate,
+  and reading one answers correctly about half the possible reds — and labels
+  every red context **attributable | pre-existing | underivable**.
+
+  It stops short of a verdict deliberately. That mapping is Phase 7's table, and
+  putting it in two places is how the two drift.
+
+  Exit codes match the other scripts: `0` clean, `1` found something, `2` could
+  not run, with the `cli()` backstop so an unhandled exception cannot exit 1 and
+  read as a red required check.
+
+- **23 → 24 cases in `tests/test_ci_state.py`**, every one mutation-checked
+  against a broken implementation. The first round caught 8 of 9 mutations; the
+  miss is recorded below because it is more interesting than the hits.
+
+### Fixed
+
+- **The script collapsed three states into two on its own first live run.** With
+  zero required contexts it read `blocked` as a boolean, which is False both when
+  the merge state is genuinely clear *and* when it was never established. So it
+  printed these four lines apart, on this plugin's own #26:
+
+      !! mergeStateStatus is UNKNOWN ... *not established*, not 'nothing blocks'
+      -- zero required contexts, and nothing blocks: this repo enforces nothing
+
+  The second asserts exactly what the first says was never established — the
+  collapse the whole discipline exists to prevent, reproduced inside the script
+  written to enforce it. "This repo enforces nothing" is a strong claim about a
+  repository, and it needs the merge state to have been *read*, not merely to be
+  un-blocking.
+
+  Found by replaying, not by reasoning. The unit suite was green.
+
+### Changed
+
+- **`tests/test_skill_prose.py` follows a phase into its script.** Six guards
+  asserted on `self.shell[6]`; moving the query out would have left every one of
+  them green against an empty string. `reachable(n)` now returns the phase's
+  shell **plus the code of every script it names**, so the property survives
+  relocation while staying the same property.
+
+  Two corrections to that, both caught by mutation-checking rather than review:
+
+  1. The first version concatenated the phase *body* and immediately failed the
+     `/protection` guard — on Phase 0's paragraph explaining why never to call
+     that endpoint. A negative assertion over prose cannot tell a warning from an
+     instruction, so it fires on the document that gets it right. Executable
+     material only.
+  2. Scripts contribute their **code**, never docstrings or comments.
+     `ci_state.py`'s module docstring names `isRequired`, `totalCount` and
+     `check-runs` while explaining them, so deleting all three from the actual
+     query left every guard green. A rule must not be satisfiable by a comment
+     claiming it.
+
+- **The parent-attribution guard asserts what Phase 6 *hands* the comparison**,
+  not that `pr-<N>^` appears somewhere reachable — `ci_state.py` spells it in the
+  basis text it prints, so a phase that derived the parent wrongly and described
+  it correctly passed the looser form. It now also refuses `--parent "$BASE_SHA"`,
+  which is defect #25 exactly.
+
+### Verified
+
+Replayed against both PRs the method comes from, since CONTRIBUTING records that
+one cannot reach what the other does:
+
+    BIRSAx2/mdcat #6          rollup FAILURE, mergeStateStatus DIRTY
+      test (ubuntu-latest)    FAILURE
+        -> PRE-EXISTING — red at b1b0dd4c1 (pr-<N>^) too
+      exit 1
+
+    dependabot-audit #26      rollup SUCCESS, mergeStateStatus UNKNOWN
+      5 of 5 contexts, 0 required
+        -> UNDERIVABLE, not "nothing enforced"
+      exit 0
+
+The first is the false-Hold case the section exists for, answered correctly. The
+second is what surfaced the three-state defect above.
+
+`SKILL.md` is 1083 lines — Phase 6 fell 188 → 179, less than the mechanism
+removed, because what stays is the *reading* guidance the script cannot carry.
+The restructure that shortens the file is separate and still ahead.
+
+## [0.13.0] — 2026-08-15
+
+Every phase was rigorous about establishing evidence, and then the step that
+turns evidence into a recommendation was left entirely implicit. Two audits with
+identical findings could reach different verdicts and neither report would show
+where they diverged.
+
+### Added
+
+- **Phase 7 derives the verdict from a table rather than from judgment.** The
+  three verdicts had one-line definitions — "Hold — a discrepancy, a regression,
+  or a behavior change that breaks a gate" — which do not decide the cases the
+  procedure works hardest to establish:
+
+  | Case the old wording did not cover | What it now produces |
+  |---|---|
+  | a red required check labelled **pre-existing** | not a Hold *on this bump*; a separate finding, and the PR is unmergeable until someone fixes it |
+  | Phase 4: base differs, PR agrees — real and absorbed | **Merge as-is**, naming what the PR absorbed |
+  | `mergeStateStatus: BLOCKED` with everything green | **Merge as-is** on the bump's merits; name what blocks |
+  | a gap **inside** the cooldown window | **Merge as-is**, and explicitly *no* follow-up |
+  | an actions tag rolled **behind** | **Hold**, close the bot's PR, replace by hand |
+
+  The pre-existing row is the one that mattered most. Phase 6 has said since
+  0.10.0 that such a check "must not produce a Hold on this bump", and nothing
+  downstream consumed the label — so the rule existed in the phase that derives
+  it and not in the phase that acts on it.
+
+  Replayed against `BIRSAx2/mdcat` #6, the PR the rule comes from:
+
+      head   65bfd8e  failure test (ubuntu-latest)  success lint  success test (windows-latest)
+      parent b1b0dd4  failure test (ubuntu-latest)  success lint  success test (windows-latest)
+
+  Red at both points, so **pre-existing**, so not a Hold on the bump — while the
+  report still has to say the PR cannot merge. Two things to carry at once, which
+  the report template now spells out, because reporting only the first reads as
+  "merge this" on a PR that will not merge and reporting only the second blames
+  the bump.
+
+- **A precedence order for when phases disagree.** Phase 1's gate, then changelog
+  `Security`, then OSV/GHSA, then Phase 4's measurement, then Phase 5, then Phase
+  6. Disagreement is the designed case rather than a problem: a privately
+  disclosed fix ships with no CVE, so *clean scanner, dirty changelog* is the
+  expected reading and the reason Phase 2 reads changelogs at all. That was
+  stated in one place about one pair and never generalised.
+
+- **Confidence is now a function of what could not be derived.**
+  `report-template.md` had asked for `high | medium | low` since the beginning and
+  nothing anywhere defined it — the report's most visible field was its least
+  falsifiable. It now reads off the three-state discipline the rows already
+  carry: **high** when every verdict-bearing input was derived and the executing
+  phases ran, **medium** when something underivable sits outside the verdict's
+  path or `--no-execute` left a Phase 4-shaped question open, **low** when an
+  input that would *change* the verdict could not be established — and then it
+  has to name which.
+
+  "Verdict-bearing" rather than "present in the table" is load-bearing: an
+  underivable row no verdict rule reads must not lower confidence, or the field
+  becomes noise and the reader learns to discount it.
+
+### Tests
+
+149 → 154. Five guards, mutation-checked against the pre-change prose: that the
+precedence is stated, that a pre-existing red does not carry the verdict, that
+the cooldown distinction reaches the verdict table, that confidence is defined in
+terms of underivable inputs, and that the report template carries the same rule
+rather than letting it drift from `SKILL.md`.
+
+## [0.12.0] — 2026-08-15
+
+A review pass over the whole plugin rather than a round of replays, so the
+findings are structural: two of them are places where a rule was written into a
+phase that the paths most needing it never reach, and one is a claim the preamble
+made that the mechanism underneath it cannot support.
+
+This release **adds** to `SKILL.md` (970 → 1053 lines). That is the wrong
+direction and is deliberate for now: correctness first, relocation second. The
+restructure that halves it is scheduled and gated on the eval suite existing, so
+that "did a rule stop being followed when it moved" is a measurement rather than
+a hope.
+
+### Fixed
+
+- **The cleanup ran only on the path that needed it least.** Phase 0 registers
+  two worktrees and a `pr-<N>` branch in the **user's** repo, and the block that
+  removed them lived in Phase 5. `--no-execute` skips Phase 5, and Phase 1's gate
+  stops before it — so an audit that correctly refused to run an unexpected diff
+  left litter behind, one set per PR audited, while an audit that ran to
+  completion cleaned up after itself. Exactly backwards.
+
+  The prose already said so, two lines above the block that never ran: *"The
+  branch outlives an audit that stopped before Phase 5, too."* It was recorded and
+  not acted on.
+
+  Cleanup now lives in Phase 7, which is the only phase every audit reaches — a
+  Phase 1 stop still writes a report, because stopping there "is not a failed
+  audit… it reached a verdict early".
+
+- **`contexts(first:100)` was read as the answer rather than as a page.** A repo
+  reporting more than a hundred contexts returns the first hundred and says
+  nothing about the rest, so a required check at position 101 is absent from the
+  list — indistinguishable from one that passed. That is the same failure as the
+  hand-written required-list join that `isRequired` was introduced to replace,
+  reproduced one level up.
+
+  The query now selects `totalCount` and `pageInfo`, and the prose gives an
+  unpaged `totalCount > 100` Phase 0's third state: **underivable**, not
+  complete. Verified live against `cli/cli` #14148 — `totalCount=25`,
+  `hasNextPage=false`, 25 returned, 3 required — which confirms the fields exist
+  and are accepted, on a PR small enough that nothing was being truncated.
+
+- **`gate_diff.py` invented a file path and dropped a real one.** `git status
+  --porcelain -z` emits a staged rename as *two* NUL-delimited fields,
+  `R  <new>\0<orig>\0`, and only the first carries the `XY ` status prefix.
+  Slicing three characters off every field turned `tracked.txt` into `cked.txt`:
+
+      field='R  renamed.txt'  -> line[3:]='renamed.txt'
+      field='tracked.txt'     -> line[3:]='cked.txt'
+
+  So a run reported `cked.txt` as deleted — a path that never existed — while the
+  real deletion of the source went unreported. Both halves fail in the reporting
+  direction this repo cares about: a change invented, and a change dropped.
+
+  The old comment claimed "a rename shows as delete + add", which is true of the
+  **unstaged** case only (` D a` + `?? b`, two entries). Git detects renames in
+  the index, and `restore()`'s own docstring already names `pre-commit` as a gate
+  that stages directly. Measured against git 2.55.0; both shapes are now in the
+  docstring.
+
+### Changed
+
+- **Phase 0 switches to `--no-execute` when `$PERMS.push` is false.** The
+  classification already refused to execute a cross-repository or non-bot PR;
+  it never asked whether this was a repository you control. A PR you cannot merge
+  is one whose code you had no plan to run, and the usual defence — "CI would run
+  it anyway" — stops holding there: CI runs it in a fresh container with a scoped
+  token, and this procedure runs it on a workstation with the auditor's
+  credentials in the environment.
+
+  Replayed: `cli/cli` and `BIRSAx2/mdcat` are both `pull`-only for this account,
+  `dependabot-audit` is `push: true`. Which has a consequence for this repo's own
+  process, now recorded in CONTRIBUTING — the documented replay targets no longer
+  execute by default, so a Phase 4 or Phase 5 method change replayed against them
+  exercises everything except the phase being changed.
+
+- **`$PERMS` gets the three-state treatment, found while replaying the above.** A
+  failed `repos/:owner/:repo` call writes its error body to stdout, so the capture
+  succeeds and `$PERMS` holds `{"message":"Not Found",…}` — at which point `push`
+  is not `true` and reads exactly like a pull-only account. The **exit code is 1**,
+  which is what separates this from the branch-protection trap where the same
+  shape arrives at exit 0, so the derivation now gates on the call rather than the
+  value. Failing closed is right; reporting "you lack `push` here" when the audit
+  could not tell is not.
+
+- **The preamble no longer claims the ordering catches a bad dependency.** Phase 1
+  compares the lockfile against what the registry serves *today*, so a maliciously
+  published release passes it clean: the record and the lockfile agree, and
+  agreement is the entire test. `traps.md` has said this for several releases
+  while the preamble asserted otherwise two screens above it. The gate catches a
+  lockfile edited after it was written honestly, and a diff reaching into source.
+  PEP 740 `PUBLISHER CHANGED` is the only signal that speaks to the other case,
+  and its coverage is partial.
+
+- **Phase 0 derives both SHAs from one call.** `headRefOid` and `baseRefOid` were
+  two separate `gh pr view` invocations, which can straddle a bot rebase and pin a
+  head and a base that never coexisted — with nothing downstream able to tell,
+  because each is individually a real commit. Also dropped `files` (GitHub
+  computes it from the merge base, so it agrees with a rewritten one rather than
+  correcting it, and `SKILL.md` already warned against using it) and
+  `mergeStateStatus` (computed lazily; Phase 6 reads it fresh).
+
+- **`claude plugin eval` is still unavailable, and the three places that say so
+  now say how.** The subcommand exists in the CLI and prints a complete `--help`
+  — graders, ablation arms, cost ceilings, thresholds — which reads exactly like
+  a usable feature. Invoking it, on both `init` and the run path, prints
+  ``plugin eval` is currently in early access` and does nothing, **at exit 0**.
+
+  So a CI step added on the strength of the help text goes green while running
+  nothing: the silent-failure shape this whole repo is organised around, arriving
+  in the tool meant to close its largest gap. The first draft of this release
+  asserted the opposite, from reading `--help` rather than running it — which is
+  the same error one level up, and is why CONTRIBUTING now says to verify by
+  invoking.
+
+### Tests
+
+139 → 149. Seven new prose guards (cleanup placement, context truncation, the
+permission switch, and the scoped execution warning) and three for the staged
+rename. All ten mutation-checked against the pre-fix artifact.
+
+One of the seven did not discriminate on the first attempt and the mutation check
+is what caught it: a guard asserting `underivable` appears in Phase 6 passed
+against the defective prose, because that word was already there for
+`mergeStateStatus: UNKNOWN`. It now asserts on the table row that reads
+`totalCount`. This is the second time that exact trap has been recorded — the
+first is in `test_a_base_with_no_run_is_underivable_rather_than_attributable` —
+which is an argument for the mutation check rather than for reading more
+carefully.
+
 ## [0.11.0] — 2026-08-15
 
 Findings from running the procedure against `cli/cli`. Go is out of scope and
@@ -1109,7 +1578,12 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.9.0...v0.10.0

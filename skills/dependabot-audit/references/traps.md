@@ -1,7 +1,40 @@
 # Portable traps
 
 Each of these cost a real wasted cycle somewhere. They are ecosystem-independent;
-per-registry mechanics live in `ecosystems.md`.
+per-registry mechanics live in `uv-lock.md` and `actions.md`.
+
+## Installing is executing
+
+A frozen install runs code the PR controls. This is not a footnote; it is the
+largest thing the audit does that the audit cannot undo:
+
+| Ecosystem | What an install runs | How to narrow it |
+|---|---|---|
+| **PyPI / uv** | any sdist in the resolution builds, running `setup.py` or the PEP 517 backend | `uv sync --locked --no-build --no-install-project` |
+| npm | `preinstall` / `install` / `postinstall` scripts — the standard supply-chain vector | `npm ci --ignore-scripts` |
+| Cargo | every crate's `build.rs` | **nothing** — there is no flag |
+| Go | nothing at install time; `go build` does not run third-party build hooks | not needed |
+
+**Only the first row is an install this plugin performs.** The others are kept
+deliberately: the hazard is true whatever this plugin audits, and someone reading
+this file while looking at an out-of-scope repository should find the warning
+rather than silence. This is the half of a removed recipe that fails *safe* — a
+warning that is ignored costs nothing, where a verification that is wrong reports
+green. Their presence is not an invitation to audit those ecosystems.
+
+**The worktree is not isolation.** It isolates the user's working tree from the
+audit and nothing more; it does not isolate the machine from the PR, and a source
+build runs whatever its backend wants. Mitigation has to come from outside the
+tool — a container, a throwaway VM, or a Landlock confinement. If you have none
+and no reason to trust the PR, `--no-execute` is the honest answer: Phases 0–3
+and 6–7 are all network reads and cover most of the ground.
+
+**And the gate before it does not see the case that matters.** Phase 1 compares
+the lockfile against what the registry serves *today*, so a maliciously published
+release passes clean — record and lockfile agree, and agreement is the entire
+test. What the gate catches is a lockfile edited after it was written honestly.
+Build provenance is the only signal that speaks to the other case, and its
+coverage is partial.
 
 ## Currency and changelogs
 

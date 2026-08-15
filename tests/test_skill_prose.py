@@ -12,7 +12,9 @@ consistent **with itself**. Two gaps stay open around it, and they are different
 gaps — a green run here is evidence of neither.
 
 Whether the model *follows* the phases is behavioral and belongs in
-`claude plugin eval`, which is unavailable on this account.
+`claude plugin eval`, which is unavailable on this account — the subcommand
+prints a full `--help` and then refuses at exit 0, so reading the help is not
+checking availability.
 
 Whether the prose is **true** is not checkable at all. Consistency is not
 correctness: every case below can pass on a phase that names a real endpoint,
@@ -35,6 +37,7 @@ Every one of those corresponds to a defect that shipped.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import unittest
@@ -69,6 +72,14 @@ MADE_BY_WORKTREE = re.compile(
 REF_USED = re.compile(r"(?<![\w/])pr-<N>")
 REF_MADE = re.compile(r"git fetch \S+ \"pull/<N>/head:pr-<N>\"")
 
+# A path under the plugin root, as the prose names it when handing off to a
+# script. Module-level because both the path-existence guard and `reachable()`
+# read it, and two copies would drift.
+PLUGIN_PATH = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)")
+
+# A reference the prose hands off to, e.g. `references/actions.md`.
+REFERENCE = re.compile(r"references/([a-z0-9_-]+\.md)")
+
 
 def phases(text: str) -> list[tuple[int, str]]:
     """(phase number, body) for each `## Phase N`, plus the preamble as -1."""
@@ -82,6 +93,48 @@ def phases(text: str) -> list[tuple[int, str]]:
 
 def bash_blocks(body: str) -> list[str]:
     return [code for lang, code in FENCE.findall(body) if lang == "bash"]
+
+
+def tables(body: str) -> list[list[str]]:
+    """Contiguous runs of markdown table rows, one list per table.
+
+    Phase 0's guidance is carried as much by its tables as by its prose, and a
+    guard that scans the whole phase body cannot tell "this word appears
+    somewhere" from "this word is a row in the table that decides the thing".
+    """
+    found: list[list[str]] = []
+    current: list[str] = []
+    for line in body.splitlines():
+        if line.startswith("|"):
+            current.append(line)
+        elif current:
+            found.append(current)
+            current = []
+    if current:
+        found.append(current)
+    return found
+
+
+def _code_only(source: str) -> str:
+    """A Python module's executable text, with comments and docstrings removed.
+
+    An AST round-trip drops comments for free; docstrings have to be taken off
+    each scope explicitly. Both matter for the same reason: a guard asserting
+    that a phase *asks GitHub which checks are required* must not be satisfied by
+    a docstring that merely says so.
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            node.body = node.body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
 
 
 def first_phase(hits: dict[str, list[int]], name: str) -> int:
@@ -99,6 +152,77 @@ class SkillHarness(unittest.TestCase):
         cls.phases = phases(cls.text)
         # phase number -> the shell in it, concatenated
         cls.shell = {n: "\n".join(bash_blocks(body)) for n, body in cls.phases}
+
+    def reachable(self, number: int) -> str:
+        """What Phase N actually *runs*: its shell, plus every script it invokes.
+
+        A guard that scans only the phase's own bash silently retires itself the
+        moment the mechanism it protects moves into a script — and mechanising a
+        phase is what this repo says to do when a trap keeps recurring, so that
+        is not a hypothetical migration. Phase 6's query became `ci_state.py` and
+        six guards would have gone green on an empty string.
+
+        **Executable material only, never the prose.** The first version of this
+        concatenated the phase body and immediately failed the `/protection`
+        guard — on Phase 0's paragraph explaining why never to call that endpoint.
+        A negative assertion over prose cannot tell a warning from an instruction,
+        so it fires on the document that gets it right. These guards ask what a
+        phase *calls*; the prose-content guards read the body directly and say so.
+
+        One hop, deliberately, and not the whole repo: a guard that matches
+        anything anywhere stops discriminating, which is how the `underivable`
+        assertion once passed against the very prose it was written for.
+
+        Scripts contribute their **code**, never their docstrings or comments —
+        `_code_only` strips both. Mutation-checked and needed: `ci_state.py`'s
+        module docstring names `isRequired`, `totalCount` and `check-runs` while
+        explaining them, so deleting all three from the actual query left every
+        guard green. A rule must not be satisfiable by a comment claiming it.
+        """
+        parts = [self.shell[number]]
+        for name, section in self._handoffs(number):
+            del name
+            parts.extend(bash_blocks(section))
+        for rel in PLUGIN_PATH.findall(dict(self.phases)[number]):
+            path = ROOT / rel
+            if path.suffix == ".py" and path.exists():
+                parts.append(_code_only(path.read_text(encoding="utf-8")))
+        return "\n".join(parts)
+
+    def _handoffs(self, number: int) -> list[tuple[str, str]]:
+        """(filename, that file's `## Phase N` section) for each reference named.
+
+        The ecosystem references are sectioned by phase precisely so this works:
+        a phase hands off to `uv-lock.md` and `actions.md`, and the guard follows
+        it to the matching section rather than to the whole file. Matching the
+        whole file would let Phase 1's guard be satisfied by Phase 5's prose,
+        which is the kind of slack that stops a guard discriminating.
+
+        `traps.md` and `report-template.md` carry no `## Phase N` headings, so
+        they contribute nothing here — deliberately. They are cross-cutting, and a
+        guard that swept them would match almost anything.
+        """
+        found: list[tuple[str, str]] = []
+        for name in REFERENCE.findall(dict(self.phases)[number]):
+            ref = PLUGIN / "references" / name
+            if not ref.exists():
+                continue
+            for n, section in phases(ref.read_text(encoding="utf-8")):
+                if n == number:
+                    found.append((name, section))
+        return found
+
+    def material(self, number: int) -> str:
+        """Everything Phase N *says*: its body plus each reference's Phase N.
+
+        The counterpart to `reachable`. Guards about what a phase asserts read
+        this; guards about what it calls read `reachable`. Keeping them apart is
+        what stops a negative assertion firing on a paragraph that warns against
+        the very thing it forbids.
+        """
+        parts = [dict(self.phases)[number]]
+        parts.extend(section for _, section in self._handoffs(number))
+        return "\n".join(parts)
 
     def _scan(self, pattern):
         """{match -> [phase numbers it appears in]}, in phase order."""
@@ -199,7 +323,7 @@ class TestNoRepoSpecificLiterals(SkillHarness):
         """
         self.assertIn(
             "isRequired",
-            self.shell[6],
+            self.reachable(6),
             "Phase 6 must ask the API which contexts are required, not derive a list",
         )
 
@@ -210,10 +334,10 @@ class TestNoRepoSpecificLiterals(SkillHarness):
         of this call produces a well-formed artifact asserting the opposite of the
         truth. Verified against a repo enforcing three required checks.
         """
-        for number, code in sorted(self.shell.items()):
+        for number, _ in self.phases:
             self.assertNotIn(
                 "/protection",
-                code,
+                self.reachable(number),
                 f"Phase {number} calls branch protection for the required checks; "
                 f"it needs admin and fails into a plausible value without it",
             )
@@ -230,17 +354,25 @@ class TestNoRepoSpecificLiterals(SkillHarness):
         `gh pr view --json files` is not a cross-check — GitHub computes the PR's
         file list from the merge base too, and agrees with the wrong answer.
         """
+        reachable = self.reachable(0)
         self.assertIn(
             "base_ref_force_pushed",
-            self.shell[0],
-            "Phase 0 must check whether the base branch was rewritten; merge-base "
-            "cannot tell you on its own",
+            reachable,
+            "Phase 0 must check whether the base branch was rewritten; a merge "
+            "base cannot tell you on its own",
         )
         self.assertRegex(
-            self.shell[0],
-            r"git log[^\n]*\$BASE_SHA\.\.pr-<N>",
-            "Phase 0 must attribute the commits above the merge base; a genuine "
-            "bot PR is one commit by the bot",
+            reachable,
+            r"pulls/\{number\}/commits|pulls/<N>/commits|\$BASE_SHA\.\.pr-<N>",
+            "Phase 0 must read the commits above the base; a genuine bot PR is "
+            "one commit by the bot, and that is the corroborating signal",
+        )
+        self.assertIn(
+            "parents",
+            reachable,
+            "and it must count parents: a two-parent commit is someone merging "
+            "the base INTO the branch, where the merge base is still correct and "
+            "the substitutions must not fire",
         )
 
     def test_a_rewritten_base_falls_back_to_the_bots_own_commit(self):
@@ -263,10 +395,10 @@ class TestNoRepoSpecificLiterals(SkillHarness):
         invisible to it, so an empty result manufactures a false "nothing
         enforced" finding on a repo that enforces plenty.
         """
-        for number, code in sorted(self.shell.items()):
+        for number, _ in self.phases:
             self.assertNotIn(
                 "/rules/branches",
-                code,
+                self.reachable(number),
                 f"Phase {number} reads the rules endpoint, which cannot see "
                 f"classic branch protection and returns [] on a protected branch",
             )
@@ -303,7 +435,7 @@ class TestEveryPhaseCarriesBothEcosystems(SkillHarness):
         """The claim that there is none was false, and skipped a real check."""
         self.assertIn(
             "ecosystem=actions",
-            dict(self.phases)[3],
+            self.reachable(3),
             "Phase 3 must name the GHSA advisory source for actions",
         )
 
@@ -324,6 +456,63 @@ class TestEveryPhaseCarriesBothEcosystems(SkillHarness):
         )
 
 
+class TestEveryHandoffLands(SkillHarness):
+    """A phase that points at a reference section which does not exist.
+
+    The ecosystem method moved out of `SKILL.md` in 0.15.0, which buys back
+    roughly a third of the tokens a run loads — and converts every one of those
+    methods from *text the model already has* into *text the model must go and
+    fetch*. That trade is only sound while the pointer resolves.
+
+    The failure is quiet in the worst way: a phase reading "see
+    `references/actions.md` § Phase 4" against a file with no Phase 4 section
+    leaves the model with a question, a promise, and nothing to answer it with —
+    and the likeliest recovery is improvising a method, which is the exact
+    failure the ecosystem boundary exists to prevent.
+
+    Both halves are asserted because they fail independently: renaming a section
+    breaks the target, and dropping a mention breaks the pointer.
+    """
+
+    # Phases doing ecosystem-specific work. Phase 2's uv answer comes out of the
+    # Phase 1 script rather than a section of its own, so it is not on this list;
+    # Phase 6 is ecosystem-independent by construction.
+    SPLIT_PHASES = (1, 3, 4, 5)
+    ECOSYSTEMS = ("uv-lock.md", "actions.md")
+
+    def test_every_split_phase_names_both_ecosystem_references(self):
+        for number in self.SPLIT_PHASES:
+            named = set(REFERENCE.findall(dict(self.phases)[number]))
+            for ecosystem in self.ECOSYSTEMS:
+                self.assertIn(
+                    ecosystem,
+                    named,
+                    f"Phase {number} does ecosystem-specific work and never hands "
+                    f"off to {ecosystem}, so that ecosystem's method is unreachable "
+                    f"from the phase that needs it",
+                )
+
+    def test_every_named_reference_has_the_section_it_is_pointed_at(self):
+        for number in self.SPLIT_PHASES:
+            landed = {name for name, _ in self._handoffs(number)}
+            for ecosystem in self.ECOSYSTEMS:
+                self.assertIn(
+                    ecosystem,
+                    landed,
+                    f"Phase {number} points at {ecosystem} but that file has no "
+                    f"`## Phase {number}` section to land in",
+                )
+
+    def test_the_retired_reference_is_named_nowhere(self):
+        """`ecosystems.md` was split, not kept. A stale pointer reads as content."""
+        for doc in [SKILL, *sorted((PLUGIN / "references").glob("*.md"))]:
+            self.assertNotIn(
+                "ecosystems.md",
+                doc.read_text(encoding="utf-8"),
+                f"{doc.name} still points at the retired ecosystems.md",
+            )
+
+
 class TestTheMergeBaseSurvivesThePRHavingLanded(SkillHarness):
     """`$BASE_SHA` collapses onto `$HEAD_SHA` the moment the PR merges.
 
@@ -340,21 +529,26 @@ class TestTheMergeBaseSurvivesThePRHavingLanded(SkillHarness):
     commit — so the correction is a no-op wherever the old form worked.
 
     Auditing a merged PR is supported, not an edge case: Phase 6 has a row for
-    it, `ecosystems.md` has a paragraph, and CONTRIBUTING's replay gate asks for
+    it, the ecosystem references have a paragraph, and CONTRIBUTING's gate asks for
     one before every method change.
     """
 
     def test_the_base_commit_comes_from_the_pr_rather_than_the_local_branch(self):
+        reachable = self.reachable(0)
         self.assertIn(
-            "baseRefOid",
-            self.shell[0],
-            "Phase 0 must take the base commit from the PR; a merge base against "
-            "$DEFAULT is the PR's own head once it has landed",
+            "merge_base_commit",
+            reachable,
+            "Phase 0 must take the base commit from GitHub's compare endpoint — "
+            "it is right whether or not the PR has landed, where a merge base "
+            "against $DEFAULT is the PR's own head once it has. Asserted on the "
+            "field, not on a name that also appears as a display label.",
         )
         self.assertNotRegex(
-            self.shell[0],
-            r"git merge-base \"\$DEFAULT\"",
-            "the local default branch as the left-hand side is the collapsing form",
+            reachable,
+            r"git merge-base",
+            "no local merge base at all: the form that collapses is only "
+            "distinguishable from the form that does not by which ref is on the "
+            "left, which is exactly the distinction that shipped wrong",
         )
 
 
@@ -437,12 +631,26 @@ class TestARedCheckIsAttributedBeforeItCarriesTheVerdict(SkillHarness):
 
         `pr-<N>^` is `$BASE_SHA` for a genuine one-commit bot PR, so this costs
         nothing in the ordinary case and is right in the case that is not.
+
+        Asserted on what Phase 6 *hands* the comparison, not on the string
+        appearing somewhere reachable. Mutation-checked and needed: `ci_state.py`
+        spells `pr-<N>^` in the basis text it prints, so a phase that derived the
+        parent wrongly and described it correctly passed the looser form. The
+        same trap as the `underivable` guard, one artifact along.
         """
+        shell = self.shell[6]
         self.assertRegex(
-            self.shell[6],
+            shell,
             r"pr-<N>\^",
-            "Phase 6 must attribute a red check against the bot's own parent; the "
-            "merge base attributes to the bump whatever happened beneath it",
+            "Phase 6 must derive the bot's own parent; the merge base attributes "
+            "to the bump whatever happened on the branch beneath it",
+        )
+        self.assertNotRegex(
+            shell,
+            r"--parent\s+\"?\$BASE_SHA",
+            "the merge base is the cross-check, never the comparison point — that "
+            "substitution is defect #25, and it produced a false Hold on the one "
+            "PR it had been run against",
         )
 
     def test_the_base_query_reads_check_runs_not_the_workflow_list(self):
@@ -459,11 +667,11 @@ class TestARedCheckIsAttributedBeforeItCarriesTheVerdict(SkillHarness):
         """
         self.assertIn(
             "check-runs",
-            self.shell[6],
+            self.reachable(6),
             "the base conclusions must come from the endpoint keyed by check name",
         )
         self.assertNotRegex(
-            self.shell[6],
+            self.reachable(6),
             r"gh run list[^\n]*\$BASE_SHA",
             "gh run list reports workflow names, so a per-check match against it is "
             "empty for every matrix job",
@@ -507,13 +715,13 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
         """The auditor's own `python3` need not be the one uv chose."""
         self.assertIn(
             "uv run python -V",
-            self.shell[5],
+            self.reachable(5),
             "Phase 5 must record the interpreter that produced the row, from inside "
             "the environment rather than from the shell that ran the audit",
         )
 
     def test_the_forks_that_were_only_verified_are_named(self):
-        phase5 = dict(self.phases)[5].lower()
+        phase5 = self.material(5).lower()
         self.assertIn(
             "resolution-markers",
             phase5,
@@ -535,7 +743,7 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
         reader to look for a line that is no longer there.
         """
         quoted = "forked packages: every pin verified, one of them installed"
-        self.assertIn(quoted.split(":")[0], dict(self.phases)[5])
+        self.assertIn(quoted.split(":")[0], self.material(5))
         self.assertIn(
             quoted,
             (PLUGIN / "scripts/audit.py").read_text(encoding="utf-8"),
@@ -571,16 +779,13 @@ class TestPhase4MeasuresTheRightTree(SkillHarness):
 class TestEverythingTheProseNamesExists(SkillHarness):
     """A renamed script breaks every phase that invokes it, silently."""
 
-    PLUGIN_PATH = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)")
-    REFERENCE = re.compile(r"references/([a-z0-9_-]+\.md)")
-
     def _docs(self):
         yield SKILL
         yield from sorted((PLUGIN / "references").glob("*.md"))
 
     def test_every_plugin_root_path_exists(self):
         for doc in self._docs():
-            for rel in self.PLUGIN_PATH.findall(doc.read_text(encoding="utf-8")):
+            for rel in PLUGIN_PATH.findall(doc.read_text(encoding="utf-8")):
                 self.assertTrue(
                     (ROOT / rel).exists(),
                     f"{doc.name} names ${{CLAUDE_PLUGIN_ROOT}}/{rel}, which does not exist",
@@ -588,7 +793,7 @@ class TestEverythingTheProseNamesExists(SkillHarness):
 
     def test_every_referenced_document_exists(self):
         for doc in self._docs():
-            for name in self.REFERENCE.findall(doc.read_text(encoding="utf-8")):
+            for name in REFERENCE.findall(doc.read_text(encoding="utf-8")):
                 self.assertTrue(
                     (PLUGIN / "references" / name).exists(),
                     f"{doc.name} names references/{name}, which does not exist",
@@ -623,6 +828,211 @@ class TestExecutionIsDisclosed(SkillHarness):
         """Running the cheap read-only checks first is worth something only if
         they are allowed to refuse."""
         self.assertIn("stop before Phase 4", dict(self.phases)[1])
+
+
+class TestCleanupRunsOnEveryPath(SkillHarness):
+    """The cleanup lived in Phase 5, which the correct path never reaches.
+
+    Phase 0 registers two worktrees and a `pr-<N>` branch in the **user's** repo.
+    Phase 1's gate stops the audit before Phase 4 whenever the diff reaches past
+    the lockfile, and `--no-execute` skips Phases 4 and 5 outright — so on both
+    of those paths the tidy-up was documented somewhere the audit had already
+    stopped. One set of litter per PR audited, and the gated path is the one an
+    auditor is *most* likely to take on a PR worth auditing.
+
+    The prose admitted it: "The branch outlives an audit that stopped before
+    Phase 5, too", written directly above the block that never ran.
+
+    Phase 7 is the only phase every audit reaches — a Phase 1 stop still writes
+    a report, because "stopping here is not a failed audit".
+    """
+
+    CLEANUP = re.compile(r"git worktree remove|git branch -D")
+
+    def test_the_cleanup_is_not_in_a_phase_that_can_be_skipped(self):
+        for number in (4, 5):
+            self.assertNotRegex(
+                self.shell[number],
+                self.CLEANUP,
+                f"Phase {number} executes PR code, so --no-execute and Phase 1's gate "
+                f"both skip it; cleanup placed there never runs on the paths that "
+                f"most need it",
+            )
+
+    def test_the_cleanup_is_in_the_phase_every_audit_reaches(self):
+        self.assertRegex(
+            self.shell[7],
+            self.CLEANUP,
+            "Phase 7 is the only phase reached on every path, including the Phase 1 "
+            "gate stop; the cleanup belongs there",
+        )
+
+    def test_both_worktrees_and_the_branch_are_removed(self):
+        """Removing the worktrees and leaving the branch still accumulates."""
+        phase7 = self.shell[7]
+        for artifact in ("$SCRATCH/pr-<N>", "$SCRATCH/base-<N>"):
+            self.assertIn(artifact, phase7, f"{artifact} is created in Phase 0 and never removed")
+        self.assertIn("git branch -D", phase7, "the fetched ref outlives the worktrees")
+
+
+class TestTheRequiredContextListIsNotSilentlyTruncated(SkillHarness):
+    """`contexts(first:100)` returns a page and says nothing about the rest.
+
+    A repo reporting more than a hundred contexts hands back the first hundred,
+    so a required check at position 101 is simply absent — which is
+    indistinguishable from a check that passed, and is the same shape as the
+    hand-joined required list `isRequired` was introduced to replace. The
+    connection carries `totalCount`, so the truncation is detectable rather than
+    inherent; not reading it is what makes it silent.
+
+    Written from the query rather than from a measurement: no repo to hand
+    reports over 100 contexts. What is asserted is therefore the *detectability*
+    — that the field is requested — not a behaviour observed in the wild.
+    """
+
+    def test_the_query_asks_how_many_contexts_there_are(self):
+        self.assertIn(
+            "totalCount",
+            self.reachable(6),
+            "without totalCount a truncated page is indistinguishable from a "
+            "complete list, and the missing contexts read as passing",
+        )
+
+    def test_the_prose_gives_truncation_phase_0s_third_state(self):
+        """Asserted on the table that reads `totalCount`, not on the bare word.
+
+        Mutation-checked and caught: `underivable` was already in Phase 6 for
+        `mergeStateStatus: UNKNOWN`, so a phase-wide search for it passed against
+        the prose that had this defect. The same trap as
+        `test_a_base_with_no_run_is_underivable_rather_than_attributable`, which
+        records it one guard earlier. A word that is already present cannot
+        discriminate; the row that carries the meaning can.
+        """
+        for table in tables(dict(self.phases)[6]):
+            if any("totalCount" in row for row in table):
+                self.assertTrue(
+                    any("underivable" in row.lower() for row in table),
+                    "a context list truncated and not paged is not established, and "
+                    "must not be reported as the complete required set",
+                )
+                return
+        self.fail("Phase 6 has no table reading totalCount")
+
+
+class TestExecutionRequiresARepoYouControl(SkillHarness):
+    """Phase 1's gate does not defend against the case Phase 5 executes.
+
+    The gate catches a lockfile edited after it was written honestly. It cannot
+    catch a malicious *release*: Phase 1 compares the lockfile against what the
+    registry serves today, so when the attacker published the artifact the record
+    and the lockfile agree, and agreement is the entire test.
+
+    So the classification, not the gate, is what has to carry "should this run at
+    all". It already switched on `isCrossRepository` and a non-bot author. The
+    third condition is permission: a repo you cannot merge into is one whose PR
+    you had no plan to run, and the comparison to "CI would run it anyway" stops
+    holding — CI runs it in a fresh container with a scoped token, this runs it on
+    a workstation with the auditor's credentials in the environment.
+    """
+
+    def _classification_table(self) -> list[str]:
+        for table in tables(dict(self.phases)[0]):
+            if any("isCrossRepository" in row for row in table):
+                return table
+        self.fail("Phase 0 has no PR-classification table")
+
+    def test_the_classification_switches_on_permission_too(self):
+        table = self._classification_table()
+        self.assertTrue(
+            any("push" in row for row in table),
+            "the classification decides whether Phases 4 and 5 may run and never "
+            "asked whether this is a repo you control",
+        )
+
+    def test_the_execute_warning_says_the_gate_cannot_see_a_bad_release(self):
+        """The preamble claimed Phases 1-3 "would catch a bad dependency"."""
+        preamble = dict(self.phases)[-1].lower()
+        self.assertIn(
+            "does not catch a malicious release",
+            preamble,
+            "the ordering argument must scope itself, or it reads as a guarantee "
+            "against the case that actually reaches Phase 5",
+        )
+
+
+class TestTheVerdictIsDerivedRatherThanJudged(SkillHarness):
+    """Phase 7 named three verdicts and never said which evidence produces which.
+
+    Every phase above it is rigorous about the three-state discipline, and then
+    the mapping from findings to recommendation was left entirely implicit — so
+    two audits with identical evidence could reach different verdicts and neither
+    report would show why. The cases the three one-line definitions did not cover
+    are exactly the ones the procedure worked hardest to establish:
+
+      - a red required check labelled **pre-existing**, which Phase 6 says
+        explicitly "must not produce a Hold on this bump" while the PR still
+        cannot merge;
+      - a Phase 4 difference that is real and *absorbed* by the PR, which is a
+        finding and not an obstacle;
+      - `mergeStateStatus: BLOCKED` with every check green;
+      - an underivable input, tracked per row and dropped at the verdict.
+
+    Confidence was worse: `report-template.md` asked for high/medium/low and
+    nothing anywhere defined it, which makes the report's most visible field the
+    one least connected to its evidence.
+    """
+
+    def _phase7(self) -> str:
+        return dict(self.phases)[7]
+
+    def test_the_three_verdicts_have_a_derivation_not_just_definitions(self):
+        phase7 = self._phase7()
+        self.assertIn(
+            "precedence",
+            phase7.lower(),
+            "phases are expected to disagree — Phase 2's changelog against Phase 3's "
+            "scanner is the designed case — so the order they resolve in has to be "
+            "stated rather than improvised per audit",
+        )
+
+    def test_a_pre_existing_red_does_not_carry_the_verdict(self):
+        """Phase 6 establishes the label; Phase 7 has to act on it."""
+        phase7 = self._phase7().lower()
+        self.assertIn("pre-existing", phase7, "the label Phase 6 derives is unused in Phase 7")
+        self.assertRegex(
+            phase7,
+            r"not a hold on this bump",
+            "a pre-existing red is a real finding about the repo and not a verdict "
+            "about the bump; collapsing them produces the false Hold Phase 6 exists "
+            "to prevent, one phase later",
+        )
+
+    def test_a_gap_inside_the_cooldown_earns_no_follow_up(self):
+        """The inversion: recommending one hand-lands the held release."""
+        phase7 = self._phase7().lower()
+        self.assertIn(
+            "cooldown",
+            phase7,
+            "Phase 2 separates a hold from lag; the verdict table has to consume "
+            "that distinction or the separation buys nothing",
+        )
+
+    def test_confidence_is_defined_somewhere_the_writer_will_read(self):
+        phase7 = self._phase7().lower()
+        self.assertIn("confidence", phase7)
+        self.assertIn(
+            "underivable",
+            phase7,
+            "confidence must be a function of what could not be derived, or it is a "
+            "feel — and the report's most visible field is then its least falsifiable",
+        )
+
+    def test_the_report_template_carries_the_same_confidence_rule(self):
+        """The template is what gets copied; a rule only in SKILL.md drifts."""
+        template = (PLUGIN / "references/report-template.md").read_text(encoding="utf-8").lower()
+        self.assertIn("confidence is derived", template)
+        for level in ("high", "medium", "low"):
+            self.assertIn(level, template)
 
 
 class TestFrontmatter(SkillHarness):

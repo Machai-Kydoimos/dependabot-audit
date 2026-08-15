@@ -70,6 +70,21 @@ merge commit sitting where a bot commit was assumed — a defect in a *different
 phase from the one being replayed. One PR would have passed. The cost of the
 other ten was a loop.
 
+**Since 0.12.0 the replay targets do not execute by default, and that is a
+constraint on this gate rather than a bug.** Phase 0 now switches to
+`--no-execute` when `$PERMS.push` is false, and measured across the table above
+only `dependabot-audit` itself returns `push: true` — `cli/cli` and
+`BIRSAx2/mdcat` are both `pull`-only. So replaying a **Phase 4 or Phase 5** method
+change against them exercises everything *except* the phase being changed, and
+the replay passes while proving nothing about it.
+
+Two honest ways out, and the first is usually right: replay Phase 4 and Phase 5
+changes against a repository you control — `#334` is already the canonical target
+and is one of those. Where only a foreign PR exercises the path, authorise
+execution deliberately for that run and say so in the commit body, because the
+audit will otherwise report those rows as *not run* and the gate will read as
+satisfied when it was not.
+
 **This is a checklist item, and checklists are visibly skippable.** The box lives
 in `.github/PULL_REQUEST_TEMPLATE.md`, and it asks for what the replay showed
 rather than for a tick — a tick is an assertion, the pasted output is evidence,
@@ -96,6 +111,13 @@ proves nothing about whether it discriminates. Every case here was mutation-chec
 against the buggy implementation it was written for, and the commit message says
 what the old code did when it ran. If you cannot make your new test fail against
 the current code, the fix is not doing what you think.
+
+**Clear `__pycache__` between mutations, or run `python3 -B`.** Three mutation
+runs in 0.16.0 reported "not caught" against defects the tests do catch: the
+module was edited and the test imported the previously compiled one. A
+verification method that silently checks the wrong artifact is this repo's own
+theme one level up — and it fails in the reassuring direction, because an
+uncaught mutation reads as "this test is weak" rather than "this run was a lie".
 
 **Write the check from the evidence, not from the change.** A test or a caveat
 derived from the fix it guards can only ever confirm it, errors included — it is
@@ -137,8 +159,19 @@ It closes that half and no other. **Two gaps stay open, and they are different
 gaps** — treating the suite's green as coverage of either is the mistake:
 
 - **Whether the model follows the phases.** Behavioral, belongs in
-  `claude plugin eval`, unavailable on this account. The README says so and
-  should keep saying so.
+  `claude plugin eval`, still unavailable on this account. The README says so and
+  should keep saying so — and note *how* it is unavailable, because the shape is
+  this repo's own theme: the subcommand exists, prints a full `--help`, and then
+  refuses with ``plugin eval` is currently in early access` **at exit 0**. A CI
+  step written from the help text passes while running nothing. Verify by
+  invoking it, not by reading `--help`; that distinction cost a wrong claim in
+  0.12.0's first draft.
+
+  When it does open up, know in advance what it will and will not discharge. It
+  can replay PRs whose right answer a human already established and grade whether
+  the procedure still reaches it — a regression test on *execution*. It is not an
+  oracle for whether a **new** rule is correct, and it does not replace the
+  replay gate above.
 - **Whether the prose is *true*.** Consistency is not correctness. Every guard
   can pass on a phase that names a real endpoint, consumes a properly-derived
   Phase 0 output, and asks it the wrong question. That shipped in 0.10.0: six
@@ -162,7 +195,7 @@ after nine commits of growth.
   puts the floor at 3.11. That is why CI runs 3.11 through 3.14 and why the local
   hooks cannot be the whole story.
 - **Do not extend a script to an ecosystem you have no repository to test it
-  against.** `references/ecosystems.md` documents those as procedures instead,
+  against.** The per-ecosystem references document what is in scope instead,
   deliberately.
 - **Observations stay specific.** `rpds-py` at 231 artifacts of which a name-keyed
   audit checked 116; ruff formatting 33 more files; the six Markdown files. These

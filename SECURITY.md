@@ -36,7 +36,7 @@ What the plugin does about it:
   value and the right default for a PR you have no reason to trust.
 - **Narrowed installs are the default** — `npm ci --ignore-scripts`,
   `uv sync --locked --no-build`. Cargo offers nothing equivalent for `build.rs`,
-  and `references/ecosystems.md` says so rather than implying parity.
+  and the per-ecosystem references say so rather than implying parity.
 
 What the plugin does **not** do:
 

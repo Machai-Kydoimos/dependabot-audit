@@ -15,6 +15,13 @@ rather than omitting it.
 **Confidence: \<high | medium | low>.** One or two sentences on what the verdict
 turns on.
 
+Confidence is derived, not felt — Phase 7 has the table. **high** only when every
+verdict-bearing input was derived and the executing phases ran; **medium** when
+something underivable sits outside the verdict's path, or `--no-execute` left a
+Phase 4-shaped question open; **low** when an input that would *change* the
+verdict could not be established, and then name it. A `low` whose cause is not
+named is unfalsifiable, which is the thing this whole report shape exists against.
+
 ## Evidence
 
 | Phase | Result | Observed |
@@ -59,6 +66,13 @@ a different finding with a different verdict. A Hold that rests on an
 unattributed red row is correct only by accident, and the report gives the reader
 no way to tell which.
 
+**A pre-existing red gets a row and does not get the verdict.** Phase 7's table
+is explicit that it is not a Hold *on this bump*, so the report has two things to
+carry at once and must not collapse them: the bump's own verdict, taken from the
+remaining evidence, and the separate fact that the PR cannot merge until someone
+fixes a failure it did not cause. Reporting only the first reads as "merge this"
+on a PR that will not merge; reporting only the second blames the bump.
+
 ## Reasoning
 
 Why the verdict follows from the evidence. This is where a finding that no
@@ -76,5 +90,9 @@ verdict is robust and why.
 
 For a follow-up: a separate branch, never a push onto the bot's branch.
 
-If the reproduction worktree was kept rather than removed, name it here with its
-cleanup command — never leave one registered in the user's repo unannounced.
+**Say what was left behind, on every path.** Phase 0 registers two worktrees and
+a `pr-<N>` branch in the user's repo, and it does so before the audit knows
+whether it will reach Phase 5 — so an audit that stopped at Phase 1's gate has
+exactly the same litter as one that ran to the end. Phase 7 removes them. If they
+were kept deliberately, name them here with their cleanup commands; never leave
+one registered in the user's repo unannounced.

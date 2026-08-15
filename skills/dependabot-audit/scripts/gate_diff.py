@@ -58,6 +58,11 @@ from typing import Any, NoReturn
 
 DEFAULT_TIMEOUT = 900
 
+# What a path maps to once the gate has removed it. A sentinel rather than a
+# dropped key, because deleting a file is the fix-mode behaviour most worth
+# catching — and two runs that both delete the same file have to compare equal.
+DELETED = "<deleted>"
+
 
 def fail(what: str) -> NoReturn:
     """Exit 2 — could not run. Never 1, which means the runs disagreed."""
@@ -104,6 +109,18 @@ def require_clean_worktree(tree: Path) -> None:
         )
 
 
+def _content_key(tree: Path, path: str) -> str | None:
+    """sha256 of the path's new content, the deletion sentinel, or None to skip.
+
+    None is for an entry that is neither a file nor an absence — a submodule, or
+    a directory git reports whole — which has no content to compare between runs.
+    """
+    blob = tree / path
+    if not blob.exists():
+        return DELETED
+    return hashlib.sha256(blob.read_bytes()).hexdigest() if blob.is_file() else None
+
+
 def snapshot_changes(tree: Path) -> dict[str, str]:
     """What the tool just did: changed path -> sha256 of its new content.
 
@@ -111,21 +128,45 @@ def snapshot_changes(tree: Path) -> dict[str, str]:
     even when they touch the same file in different ways. A deleted file maps to
     a sentinel rather than being dropped, since deleting a file is exactly the
     kind of fix-mode behaviour worth catching.
+
+    `--porcelain -z` emits one NUL-delimited field per entry *except* for a
+    rename or copy, which emits two: `XY <new>\0<orig>\0`. Only the first
+    carries the `XY ` prefix, so the source has to be consumed here rather than
+    sliced as though it did — taking three characters off `tracked.txt` yields
+    `cked.txt`, which is reported as deleted despite never existing, while the
+    real deletion of the source goes unreported. Both halves fail in the
+    reporting direction: a change invented, and a change dropped.
+
+    Measured, because the old comment ("a rename shows as delete + add") is true
+    of only one of the two cases:
+
+        unstaged  `mv a b`            ->  ` D a\0?? b\0`   two entries, one field each
+        staged    `git mv a b`        ->  `R  b\0a\0`      one entry, two fields
+
+    Git detects renames in the index, so the second shape reaches this function
+    whenever a gate stages its own work — which `restore()` already names
+    `pre-commit` as doing.
     """
+    fields = [field for field in _git(tree, "status", "--porcelain", "-z").split("\0") if field]
     changes: dict[str, str] = {}
-    for line in _git(tree, "status", "--porcelain", "-z").split("\0"):
-        if not line:
-            continue
-        # porcelain -z: XY then a space then the path, no quoting or renames to
-        # unpick for our purposes (a rename shows as delete + add).
-        path = line[3:]
+    index = 0
+    while index < len(fields):
+        status, path = fields[index][:2], fields[index][3:]
+        index += 1
+        # X is the index column, and rename detection lives there. Guarded on
+        # the field being present so a malformed tail cannot over-consume.
+        if status[0] in ("R", "C") and index < len(fields):
+            source = fields[index]
+            index += 1
+            # A rename empties its source; a copy leaves it exactly as it was,
+            # so only the first of the two is a change to report.
+            if status[0] == "R":
+                changes[source] = DELETED
         if not path:
             continue
-        blob = tree / path
-        if not blob.exists():
-            changes[path] = "<deleted>"
-        elif blob.is_file():
-            changes[path] = hashlib.sha256(blob.read_bytes()).hexdigest()
+        key = _content_key(tree, path)
+        if key is not None:
+            changes[path] = key
     return changes
 
 

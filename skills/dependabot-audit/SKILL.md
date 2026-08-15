@@ -35,12 +35,25 @@ isolate the machine from the PR.** Nothing here is a sandbox; if you need one, i
 has to come from outside — a container, a throwaway VM, or a Landlock confinement
 — and this skill cannot verify that you have one.
 
-The ordering is the mitigation available inside the skill. Phases 1–3 are the
-read-only checks that would catch a bad dependency, and **Phase 1 is a gate**: if
-the diff reaches beyond the manifest and lockfile, or provenance fails, stop there.
-Do not continue into the phases that execute. A procedure whose thesis is "verify
-before you trust" must not run the artifact before it has finished deciding
-whether to trust it.
+The ordering is the mitigation available inside the skill, and it is worth being
+exact about what that buys. **Phase 1 is a gate**: if the diff reaches beyond the
+manifest and lockfile, or provenance fails, stop there. Do not continue into the
+phases that execute. A procedure whose thesis is "verify before you trust" must
+not run the artifact before it has finished deciding whether to trust it.
+
+**What the gate catches is a lockfile edited after it was written honestly** — a
+hash, size, URL or yank status that disagrees with the registry — and a diff that
+reaches into source. **It does not catch a malicious release.** Phase 1 compares
+the lockfile against what the registry serves *today*, so when the attacker
+published the artifact, the record and the lockfile agree — and agreement is the
+entire test. A bump to a version whose maintainer account was compromised passes
+Phase 1 clean and arrives at Phase 5's install with the gate's blessing.
+
+The one signal that speaks to it is PEP 740 build provenance: `PUBLISHER CHANGED`
+means the release being adopted was built somewhere the previous one was not.
+Coverage is partial and version-dependent, so where there is no attestation there
+is no signal. Read the ordering as what it is — it removes the cases it can see,
+and `--no-execute` is the answer for the rest.
 
 **`--no-execute`** runs Phases 0–3 and 6–7 only. Every one of those is a network
 read: provenance, currency, changelogs, OSV, CI state. That is most of this
@@ -62,39 +75,70 @@ Never persist the answers to these. Required checks get added, CI jobs get
 renamed, and a cached profile silently audits a repo that no longer exists.
 Deriving costs one call each.
 
+**Derive with the script; mutate by hand.** `scripts/discover.py` answers every
+derivable question and tags each answer **derived / absent / underivable**. It is
+read-only — no fetch, no worktree, no local `git` at all — so the two things Phase
+0 changes in the user's repository stay visible in this file, where a plugin whose
+contract is "reports, never merges" should keep them.
+
 ```bash
-gh pr view <N> --json number,title,headRefOid,mergeStateStatus,files,author,createdAt,isCrossRepository
-
-# derive the default branch — never assume "main"
-DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
-
-cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
-
-# pin the commit under audit, fetch it once, and build the tree every later
-# phase works in
+D="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/discover.py"
 SCRATCH=${SCRATCH:-$(mktemp -d)}          # any directory OUTSIDE the repo
-HEAD_SHA=$(gh pr view <N> --json headRefOid --jq .headRefOid)   # full 40 chars
-BASE_REF=$(gh pr view <N> --json baseRefOid --jq .baseRefOid)   # GitHub's own base
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+
+python3 "$D" --repo "$REPO" --number <N>                              # the report
+python3 "$D" --repo "$REPO" --number <N> --shell > "$SCRATCH/phase0.env"
+. "$SCRATCH/phase0.env"
+```
+
+Source the outputs rather than transcribing them. Four of them are
+40-character SHAs, and a wrong one is not detectable downstream: a truncated
+`$HEAD_SHA` matches no CI run and reads exactly like *CI never ran*, and a wrong
+`$BASE_SHA` gives a scope diff that is wrong rather than empty. What the file
+defines:
+
+```bash
+#   DEFAULT=<branch>       the repo's default branch, derived
+#   HEAD_SHA=<40 hex>      the commit under audit
+#   BASE_REF=<40 hex>      GitHub's own base for the PR
+#   BASE_SHA=<40 hex>      the merge base, from GitHub's compare endpoint
+#   OWNER=<owner>          for Phase 6's GraphQL variables
+#   NAME=<name>
+#   BRANCH_POINT=<ok|rewritten|suspect|underivable>
+#   MAY_EXECUTE=<yes|no>   whether Phases 4 and 5 are authorised
+```
+
+**An underivable output is emitted commented-out, so it stays unset.** That is
+deliberate: a later phase then fails loudly on an empty value instead of quietly
+on a plausible one, which is the distinction this whole phase exists to preserve.
+
+**Exit 2 means it could not run; exit 1 means it ran and found something.** Never
+read one as the other. Exit 1 here does not stop the audit — it means the shape of
+the audit changes, and the report has to say how.
+
+Read out of its output: `$DEFAULT`, `$HEAD_SHA`, `$BASE_SHA`, `$PERMS`, whether
+the merge base is the **branch point**, and whether Phases 4 and 5 may run at all.
+Take `$BASE_SHA` from it rather than from `git merge-base`, and the reason is the
+next section.
+
+Then the part that changes state, which is yours:
+
+```bash
 git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
-BASE_SHA=$(git merge-base "$BASE_REF" "pr-<N>")
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
-
-# what sits above the base: a genuine bot PR is one commit by the bot. `%p` is
-# there because two parents means a merge, which reads very differently
-git log --format='%h [%p] %an %s' "$BASE_SHA..pr-<N>"
-gh api "repos/:owner/:repo/issues/<N>/events" \
-  --jq '.[] | select(.event=="base_ref_force_pushed") | "\(.actor.login) \(.created_at)"'
-
-# owner and name, for the GraphQL query Phase 6 issues — `:owner/:repo` is a
-# REST-path convenience and does not expand in a GraphQL variable
-OWNER=$(gh repo view --json owner --jq .owner.login)
-NAME=$(gh repo view --json name  --jq .name)
-
-# what this account may do here: it decides the verdict's shape, and it is how
-# a failed permission-gated call is told apart from a real absence
-PERMS=$(gh api "repos/:owner/:repo" --jq '.permissions')
 ```
+
+And the part no script can read for you — the bot's configuration, which decides
+whether a currency gap in Phase 2 is lag or a deliberate hold:
+
+```bash
+cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
+```
+
+Then read the CI workflow and the pre-commit config to learn the repo's **own**
+verification commands. That stays here for the same reason: `pytest` may be
+`uv run pytest`, `tox`, `nox`, or a `make` target, and only the workflow says so.
 
 If `git worktree add` refuses because the path already exists, a previous run
 left it there. **Prove it still points at this PR's head before reusing it** — a
@@ -115,7 +159,7 @@ If either check fails, `git worktree remove` it and re-add.
 | `$DEFAULT` | the repo's default branch, derived |
 | `$SCRATCH` | scratch directory, outside the repo |
 | `$HEAD_SHA` | the full 40-character commit under audit |
-| `$BASE_SHA` | merge base of the PR's `baseRefOid` and `pr-<N>`, never of `$DEFAULT` — **and whether it is the bot's branch point**, which is a separate answer |
+| `$BASE_SHA` | the merge base, from GitHub's own `compare` endpoint — never a local `git merge-base` against `$DEFAULT`, which collapses onto the head once the PR lands. **And whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
 | `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it |
 | `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below |
@@ -128,28 +172,18 @@ and that has now shipped twice — `tests/test_skill_prose.py` is what stops the
 third.
 
 **An output that could not be derived is not an output.** Every row above has
-*three* states, not two: derived; genuinely absent, which is often a finding in
-its own right; and **underivable**, where the call failed or its precondition did
-not hold. Record which one you got, and never let the third collapse into either
-of the others.
+*three* states, not two: **derived**; **absent**, which is often a finding in its
+own right; and **underivable**, where the call failed or its precondition did not
+hold. `discover.py` tags each one and leaves an underivable output *unset* rather
+than emitting a plausible value.
 
-That collapse is not hypothetical, and it is the shape both known defects take.
-These two fail into a *plausible* value rather than an error:
-
-| Output | How it fails quietly | What it then asserts |
-|---|---|---|
-| `$BASE_SHA` | the base branch was rewritten under the PR, so `git merge-base` walks back to a much older shared ancestor | a real commit, which is the wrong one — Phase 1 sees a diff full of files the bump never touched, and Phase 4 measures a tree the PR would never land on |
-| `$BASE_SHA` | the PR has **landed**, so its head is an ancestor of the default branch and a merge base taken against `$DEFAULT` is the head itself | `$BASE_SHA == $HEAD_SHA` — Phase 1's scope diff is empty, Phase 4 measures the PR's own tree, and Phase 6 cross-checks the head against itself. All three report the reassuring answer |
-| `$SCRATCH/required.txt` | the protection call failed and wrote its error body to **stdout** | a well-formed file that reads as "no required checks", which is indistinguishable from a repo that has none |
-
-Neither raises. Both travel downstream as fact, and the report says something
-false with full confidence — which costs more than a crash, because the shape of
-the report invites trust in every row.
-
-So: a phase handed an underivable input says so in its evidence row instead of
-proceeding on the value, and Phase 7 does not print a row whose input was never
-established. "Could not check" is a legitimate thing for this procedure to
-report. "Checked, found nothing" when you could not check is not.
+The third state is the dangerous one because the ways it happens do not raise —
+they produce a real-looking answer that travels downstream as fact, and the
+report then says something false with full confidence. A phase handed an
+underivable input says so in its evidence row instead of proceeding on the value,
+and Phase 7 does not print a row whose input was never established. "Could not
+check" is a legitimate thing for this procedure to report. "Checked, found
+nothing" when you could not check is not.
 
 **Classify the PR before trusting it enough to run it.** Dependabot and Renovate
 push their branches *into* the repository, so a dependency bump arriving from a
@@ -157,14 +191,32 @@ fork did not come from the bot:
 
 | Observation | Meaning |
 |---|---|
-| `isCrossRepository: false`, author `dependabot[bot]` or `renovate[bot]` | the ordinary case |
+| `isCrossRepository: false`, author `dependabot[bot]` or `renovate[bot]`, `push: true` | the ordinary case |
 | `isCrossRepository: true` | a fork PR — neither bot opens one |
 | any other author | a human PR shaped like a bump, which it may well be, and may not |
+| **`$PERMS.push` false** | **not a repository you control.** You cannot merge this PR, so nothing is gained by letting it run on your machine |
 
-Either of the last two is a **finding** in its own right, and it changes the
+Any of the last three is a **finding** in its own right, and each changes the
 default: run `--no-execute`, report what the read-only phases found, and let the
 user decide whether to authorise Phases 4 and 5. Say plainly that those phases
 would run the PR's code.
+
+The `push` row is the one easiest to argue away, so name the asymmetry it rests
+on. A bot PR on a repo you control proposes code you were going to run anyway,
+under gates you already trust — your own CI would run it too. A PR on a repo you
+cannot merge into proposes code you had no plan to run, and the comparison to CI
+stops holding: CI runs it in a fresh container with a scoped token, and this
+procedure runs it on your workstation with your credentials in the environment.
+`$PERMS` is already derived above, so this costs nothing to check.
+
+**`$PERMS` has the same three states, and the script gates on the call rather
+than the value.** A failed `repos/:owner/:repo` writes its error body to
+**stdout**, so a capture succeeds and holds `{"message": "Not Found", ...}` — at
+which point `push` is not `true` and reads exactly like a `pull`-only account.
+The exit code is 1, which is what separates this from the branch-protection trap
+below where the same shape arrives at exit 0. Failing closed is right; the report
+saying "you lack `push` here" when the audit could not tell is not, and
+`discover.py` prints `underivable` rather than a permission set.
 
 **Pin the head SHA here and audit that one commit everywhere.** The lockfile
 Phase 1 reads, the worktree Phase 5 reproduces in, and the CI run Phase 6 checks
@@ -183,114 +235,74 @@ Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwis
 `git status`, and a gate that walks the tree (a linter, a formatter, a test
 collector) will descend into a full second copy of the project and report on it.
 
-**`$DEFAULT` cannot be the left-hand side of the merge base.** Once a PR has
-landed, its head *is* an ancestor of the default branch, so the merge base of the
-two is the head — and auditing a merged PR is a supported thing to do here: Phase
-6 has a row for it, `references/ecosystems.md` has a paragraph, and every replay
-this project's own gate asks for is one. `baseRefOid` is the base commit GitHub
-diffs the PR against, and it is right in both states.
+**Why the base comes from `compare` and not from `git merge-base`.** Once a PR
+has landed its head *is* an ancestor of the default branch, so the merge base of
+the two is the head — and auditing a merged PR is a supported thing to do here:
+Phase 6 has a row for it, `references/actions.md` has a paragraph, and every
+replay this project's own gate asks for is one. Measured on `cli/cli`'s merged
+bumps #14147, #14091, #13981 and #14049: `git merge-base trunk pr-<N>` returns
+the PR's own head for all four, so the scope diff is **0 files** where GitHub
+reports 4, 2, 3 and 2. GitHub's `compare` endpoint returns the real branch point
+in both states, which is why the script uses it and why no phase runs a local
+merge base at all.
 
-Measured on `cli/cli`, four merged bumps — #14147, #14091, #13981, #14049.
-`git merge-base trunk pr-<N>` returns the PR's own head for all four, so the scope
-diff is **0 files** where GitHub reports 4, 2, 3 and 2; via `baseRefOid` it is
-those four numbers exactly. On open PR #14148 both forms return the same commit,
-so this is a no-op wherever the old form worked.
+**Prove the merge base is where the bot branched.** A merge base always exists,
+and when the base branch has been rewritten under an open PR it is far too old —
+silently, with every later phase consuming it as fact. `discover.py` decides this
+and prints which case fired; what matters here is that the three cases are *not*
+interchangeable:
 
-It is not the rewritten-base case and does not stand in for its checks: there,
-`baseRefOid` is the current tip of a branch that moved out from under the PR, and
-`merge-base` still walks back too far.
+| `BRANCH_POINT` | What fired | What you do |
+|---|---|---|
+| `ok` | no force-push, and nothing anomalous above the base | proceed |
+| `rewritten` | a `base_ref_force_pushed` event — GitHub says so, with an actor and a timestamp | **substitute**, and report the rewritten base as its own finding |
+| `suspect` | a non-bot one-parent commit above the base on a **bot** PR, with no force-push event | corroboration without the authority. Read the commits before deciding; do not substitute on it alone |
+| `underivable` | the event list could not be read | say so; do not proceed as though it were `ok` |
 
-**Prove the merge base is where the bot branched.** `git merge-base` always
-returns *a* commit, and when the base branch has been rewritten under an open PR
-it returns one that is far too old — silently, with every later phase consuming it
-as fact. This is the first `$BASE_SHA` row of the underivable table above. The
-block prints two signals for it, and they are not interchangeable:
+The substitutions, when `rewritten` fires:
 
-| Signal | Meaning |
-|---|---|
-| a `base_ref_force_pushed` event on the PR | the base was rewritten. **This is the authority** — GitHub states it, with actor and timestamp |
-| a non-bot commit above `$BASE_SHA` with **one** parent | a human commit on the bot's branch. Corroborates a rewritten base, and is what Phase 6 attributes against |
-| a non-bot commit above `$BASE_SHA` with **two** | someone merged the base branch *into* the bot's branch. `$BASE_SHA` is still the branch point and the substitutions below must **not** fire |
-
-The last row is why the author scan is corroboration rather than the test.
-Measured on `cli/cli` #14049, whose head is exactly that merge — *"Merge branch
-'trunk' into dependabot/…"* by a maintainer, above the bot's own commit: zero
-`base_ref_force_pushed` events, and a correct two-file scope diff from
-`$BASE_SHA`. Read as a moved base it would substitute the `pr-<N>^` diff — 20
-files, 1,101 lines — and halt the audit on a bump that changes four workflow
-lines.
-
-Observed: a two-file `Cargo.toml` / `Cargo.lock` bump whose merge-base diff was 14
-files and 3,682 deletions, appearing to delete the repo's entire vendored
-`supply-chain/` tree. The base branch had been force-pushed eleven minutes after
-the PR opened, and `merge-base` fell back to an ancestor nineteen months earlier.
-
-**Do not reach for `gh pr view --json files` as a cross-check.** GitHub computes
-the PR's file list from the merge base too, and reported the same 14 files. It
-agrees with the wrong answer rather than correcting it.
-
-When `$BASE_SHA` is not the branch point, report that as the finding and
-substitute:
+- **Phase 1** takes its scope diff from `pr-<N>^..pr-<N>` rather than from the
+  merge base.
+- **Phase 4** measures in `$SCRATCH/tip-<N>` rather than `$SCRATCH/base-<N>`,
+  because the tree this PR would land on is the default branch's tip.
 
 ```bash
 git fetch origin "$DEFAULT"
 git worktree add --detach "$SCRATCH/tip-<N>" "origin/$DEFAULT"
 ```
 
-- **Phase 1** takes its scope diff from `pr-<N>^..pr-<N>` — the bot's own commit,
-  which assumes the head *is* that commit. A head with two parents is not: it is
-  a merge someone made into the bot's branch, and `pr-<N>^` is then the branch
-  tip rather than the branch point. Measured on `cli/cli` #14049, whose head is
-  *"Merge branch 'trunk' into dependabot/…"*: that diff is 20 files and 1,101
-  changed lines, none of them the bump.
-- **Phase 4** measures in `$SCRATCH/tip-<N>` rather than `$SCRATCH/base-<N>`,
-  because the tree this PR would land on is the default branch's tip, and the
-  merge base is no longer a tree that exists anywhere.
-
 Say both substitutions in the report. "The base branch was rewritten under this
 PR" is a true and useful finding; "this bump reaches beyond the manifest and
-lockfile" is not, and they are easy to confuse because they produce the same diff.
+lockfile" is not, and they produce the same diff.
+
+**A two-parent head is not a moved base**, and the script will not treat it as
+one. Measured on `cli/cli` #14049, whose head is *"Merge branch 'trunk' into
+dependabot/…"* by a maintainer above the bot's own commit: zero force-push
+events, and a correct two-file scope diff from the merge base. Read as a moved
+base it would substitute the `pr-<N>^` diff — 20 files, 1,101 lines — and halt
+the audit on a bump that changes four workflow lines. There, `pr-<N>^` is the
+branch *tip*, not the branch point.
+
+Observed at the other end: a two-file `Cargo.toml` / `Cargo.lock` bump whose
+merge-base diff was 14 files and 3,682 deletions, appearing to delete the repo's
+entire vendored `supply-chain/` tree. The base had been force-pushed eleven
+minutes after the PR opened, and the merge base fell back nineteen months.
+
+**`gh pr view --json files` is not a cross-check on any of this**, which is why
+Phase 0 does not fetch it. GitHub computes the PR's file list from the merge base
+too, so on the force-pushed bump above it reported the same wrong 14 files. It
+agrees with the wrong answer rather than correcting it.
 
 **`$PERMS` decides two separate things, and conflating them gets both wrong.**
-The tier that can read branch protection is `admin`. The tier that can *merge* is
-`push`. They are different, and the common case — a maintainer with `push` but not
-`admin` — sits between them:
+The tier that can *merge* is `push`; the tier that can read branch protection is
+`admin`. The common case — a maintainer with `push` but not `admin` — sits
+between them, and at `pull` only the verdict becomes a recommendation the reader
+cannot act on, so offer `--comment` text instead.
 
-| `$PERMS` | Consequence |
-|---|---|
-| `admin: true` | branch protection is readable, if the plan offers it at all |
-| `push: true`, `admin: false` | can merge; **cannot** read protection. The ordinary case for a maintainer in an org |
-| `pull` only | cannot merge — so Phase 7's verdict is a recommendation, and the un-run merge command is a command this reader cannot run. Offer `--comment` text instead |
-
-**Do not call `branches/<b>/protection` to find the required checks.** It needs
-`admin`, and GitHub answers a bare `404 Not Found` without it rather than a 403,
-so on any repo you do not administer the call fails in a way that is
-indistinguishable from an unprotected branch — and `gh` writes that error body to
-**stdout**, so redirecting it to a file produces a well-formed artifact that reads
-as "no required checks". Verified: a repo whose `main` carries three required
-checks returns exactly that 404 to a `pull`-only account, while
-`branches/<b>` reports `"protected": true`.
-
-Phase 6 asks a different question that is readable at `pull` and answers this one
-directly. Two states remain worth naming when protection *is* readable, and both
-are findings rather than errors on your part: `404 Branch not protected` (no
-protection configured) and `403 Upgrade to GitHub Pro…` (a private repo on a free
-plan, where protection is unavailable). A `404 Branch not found` is the one that
-is your mistake — the branch name was wrong, so fix it and re-run.
-
-Also do not substitute `repos/:owner/:repo/rules/branches/<b>`. It is readable
-without `admin`, which makes it tempting, and it reports **only rulesets** —
-classic branch protection is invisible to it. The same repo above returns `[]`
-from both it and `/rulesets` while enforcing three required checks, so an empty
-result there would manufacture the exact false finding this section exists to
-prevent.
-
-Then read the CI workflow and the pre-commit config to learn the repo's **own**
-verification commands — do not assume `pytest`; it may be `uv run pytest`, `tox`,
-`nox`, or a `make` target, and the workflow is what says so. Note where each tool
-runs and **at what scope**: a hook scoped to `types_or: [python, pyi]` and a CI
-step running the same tool over `.` are different gates, and Phase 4 turns on
-that difference.
+Do **not** try to read the required checks here at any tier. That question moved
+to Phase 6, which asks it per-PR in a form readable at `pull`; the two endpoints
+that look like they answer it both fail into a plausible value, and
+`references/traps.md` has the four states they return.
 
 Recalled project memory may already name landmines for this repo (Phase 8 writes
 them). Treat those as leads to check, not as facts — verify before repeating.
@@ -311,7 +323,7 @@ manifest and the lockfile — or, for an actions bump, **only `uses:` lines**, i
 however many workflow files pin that action. The count of files is not the
 invariant and never was: an action is pinned in every workflow that uses it, and
 a grouped bump moves several actions at once, so ordinary merged bumps touch
-two, three or four files. `references/ecosystems.md` has the measurements, and
+two, three or four files. `references/actions.md` has the measurements, and
 the rule for reading the versions out of that diff rather than off the title.
 Anything else is a finding: report it, and **stop before Phase 4**. The same
 applies if provenance comes back with a discrepancy. Phases 4 and 5 execute the
@@ -322,63 +334,32 @@ nothing.
 Stopping here is not a failed audit. It is a complete one that reached a verdict
 early — write the report with the phases that ran and say which did not.
 
-Verify every artifact the lockfile pins for the changed packages against the live
-registry: sha256/integrity, size, URL, and yanked status.
+**The method is per-ecosystem; the gate above is not.** Each reference is
+sectioned by phase, so read the section for this one:
 
-**Read both lockfiles out of git**, using the ref and merge base pinned in Phase
-0 — never a bare `uv.lock` path, which resolves against the user's checkout:
+| Ecosystem | Method |
+|---|---|
+| `uv.lock` | `references/uv-lock.md` § Phase 1 — `scripts/audit.py` verifies every pinned artifact's hash, size, URL and yank status against the live registry, plus PEP 740 build provenance |
+| GitHub Actions | `references/actions.md` § Phase 1 — no lockfile and no artifact hash, so the question becomes whether the pin is **immutable**: a 40-hex SHA, or a tag someone else can revoke. The scope gate keys on `uses:` lines, never on a count of files |
 
-```bash
-S="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py"
+**This plugin covers `uv.lock` and GitHub Actions, and nothing else.** For any
+other ecosystem, say so and stop. Do not improvise a procedure from the shape of
+the ones that are here: an unverified verifier reports green rather than erroring,
+which is why npm, Cargo and Go were removed rather than left as sketches.
 
-git show "pr-<N>:uv.lock"    > "$SCRATCH/pr.uv.lock"
-git show "$BASE_SHA:uv.lock" > "$SCRATCH/base.uv.lock"
+That is not hypothetical. Followed faithfully against a real Cargo bump, an
+improvised recipe returned matching checksums, a current latest version and a
+clean OSV batch — on a PR that raised the project's minimum Rust version past its
+own declared floor. Nothing in the output looked partial. A hand-run recipe also
+lacks every guard the script has earned: batch limits, retries, version ordering,
+and the refusal to report `CLEAN` on an empty selection.
 
-python3 "$S" "$SCRATCH/pr.uv.lock" --changed-vs "$SCRATCH/base.uv.lock"
-```
-
-**Do not read the package names off the PR title** — a grouped bump names none
-of them, and a bot may group everything (check the `groups:` key from Phase 0).
-`--changed-vs` derives the set from the diff against the **merge base**;
-`--changed pkg-a,pkg-b` is the fallback for a diff the script cannot read, not
-the default.
-
-**Exit 2 means it could not run; exit 1 means it ran and found something.** Never
-read one as the other. Quote its `RESULT` counts — and whatever it names as
-unreachable — in the report, rather than writing "verified" unqualified.
-
-The script says why each package was selected. **`ARTIFACTS CHANGED at unchanged
-version` is not a routine bump** — the lockfile re-points an artifact while the
-version stands still. There are innocent explanations (a wheel added for a new
-platform, a re-resolution against a different index); confirm which, rather than
-assuming one.
-
-For PyPI that one invocation covers this phase **plus the mechanical half of
-Phases 2 and 3** — it also reports the registry's true latest version with
-publish timestamps, PEP 740 build provenance where PyPI has it, and the OSV batch
-across the whole lockfile. Read its output there rather than repeating those
-queries by hand.
-
-**`PUBLISHER CHANGED` outranks everything else in the output.** It means the
-release being adopted was built somewhere the previous one was not. Absence of an
-attestation is *not* a finding — it is normal for anything predating Trusted
-Publishing — and the script distinguishes the two.
-
-**This plugin covers `uv.lock` and GitHub Actions, and nothing else.** For an
-actions bump the script does not apply — there is no lockfile and no artifact
-hash — so follow the recipe in `references/ecosystems.md` for this phase. The
-later phases still apply: every one of them has an actions method, and its
-section says so.
-
-For any **other** ecosystem, say so and stop. Do not improvise a procedure from
-the shape of the ones that are here: an unverified verifier reports green rather
-than erroring, which is why npm, Cargo and Go were removed rather than left as
-sketches. `references/ecosystems.md` has the case that settled it.
-
-This phase leads with the script, so reaching for it on an unfamiliar repo is
-the ordinary path rather than a careless one. It now refuses by name — `is a
-Cargo.lock (Rust)`, `is a poetry.lock` — at exit 2. Report that as the boundary
-it is, not as a failed audit: the ecosystem-independent phases still ran.
+`audit.py` enforces its half rather than leaving it to prose. Handed a
+`Cargo.lock`, `poetry.lock`, `package-lock.json`, `Pipfile.lock`, `go.sum`,
+`go.mod`, `yarn.lock`, `pnpm-lock.yaml` or a `pyproject.toml`, it exits **2**
+naming the format. Report that as the boundary it is, not as a failed audit: the
+ecosystem-independent phases still ran, so say what Phase 0's classification and
+Phase 6's CI state established, and name plainly what was not checked.
 
 ## Phase 2 — Currency
 
@@ -392,11 +373,11 @@ default, with no `cooldown:` block required and nothing in the PR to show it. So
 read the *age* of the gap and not only its existence — inside that window the bot
 is waiting, outside it the bot is behind.
 
-**For GitHub Actions, "current" is a question about the tag line, not the pin.**
-A moving major tag picks up new releases on its own, so a newer patch is not a
-gap. What matters is whether the *major* being adopted is still the newest one,
-and whether the tag still points where the PR proposed — `references/ecosystems.md`
-has the `compare` that separates *ahead* from **behind**.
+**For GitHub Actions "current" is a question about the tag line, not the pin** —
+a moving major tag picks up new releases on its own, so a newer patch is not a
+gap. `references/actions.md` § Phase 2 has the `compare` that separates a tag
+that merely moved *ahead* from one that rolled **behind**, which is the case a
+bot cannot fix because it cannot propose a downgrade.
 
 Rule out the innocent explanations before reporting a gap: a yanked release; a
 **cooldown** (`cooldown:` in `dependabot.yml`, `minimumReleaseAge` in
@@ -442,37 +423,17 @@ adopted. Look for two things, in this order:
 to agree with Phase 2 only sometimes — that divergence is the point, not a
 contradiction. The method differs by ecosystem; the question does not.
 
-**uv.lock.** Batch-query OSV across the whole locked set, then corroborate with
-the ecosystem's own auditor. The OSV half is already done — the Phase 1 script
-ran it — so read that result instead of issuing a second query, and what remains
-here is the auditor. See `references/ecosystems.md` for its invocation and traps;
-`pip-audit` in particular audits the wrong interpreter if invoked casually.
-
-**GitHub Actions.** Actions *do* have an advisory database, and an audit that
-skips this phase for them is skipping a real check:
-
-```bash
-gh api "/advisories?ecosystem=actions&affects=<owner>/<name>" \
-  --jq '.[] | "\(.ghsa_id)\t\(.severity)\t\(.summary)"'
-```
-
-Also read the action repository's own status — `archived`, `disabled`, or a
-transfer to a new owner are all supply-chain facts that no advisory records.
-
-**Do not query OSV by version for this ecosystem.** OSV carries the same
-advisories, but its GitHub Actions entries have no usable version ranges, so a
-version-qualified query returns empty and reads as clean. Measured against
-`tj-actions/changed-files`, the 2025 compromise:
-
-| Query | Result |
+| Ecosystem | Method |
 |---|---|
-| package only | **2 vulns** |
-| `+ version 45.0.7` (the compromised release) | 0 |
-| `+ version 0.0.0` | 0 — a range check would match everything |
-| PyPI control: `requests` 2.19.0, version-qualified | 10, so the pattern itself is sound |
+| `uv.lock` | `references/uv-lock.md` § Phase 3 — the OSV batch is **already done** by the Phase 1 script, so read that result rather than re-querying; what remains is the ecosystem's own auditor, and `pip-audit` audits the wrong interpreter if invoked casually |
+| GitHub Actions | `references/actions.md` § Phase 3 — GHSA carries an `actions` ecosystem, and the obvious port of the `uv.lock` query reports **clean on a known-compromised action** |
 
-Copying the `uv.lock` shape here — batch by `(package, version)` — therefore
-reports **clean on a known-compromised action**. Query by name, or use GHSA.
+That second row is why this phase has a guard in the test suite. *"Not
+applicable" is an assertion too*, and it shipped false: three places in this repo
+once stated that GitHub Actions has no vulnerability database. A phase that
+believed it skipped a real check — measured against `tj-actions/changed-files`,
+where a package-only query returns two advisories and every version-qualified
+form returns zero.
 
 ## Phase 4 — Behavior change (the highest-yield phase)
 
@@ -487,106 +448,25 @@ predicting it from the changelog is what this phase exists to replace. For
 GitHub Actions you cannot run the thing at all, so the method is different and
 the section for it is below.
 
-### uv.lock — measure it
+| Ecosystem | Method |
+|---|---|
+| `uv.lock` | `references/uv-lock.md` § Phase 4 — **measure it.** `scripts/gate_diff.py` runs each gate at the locked, proposed and latest versions in `$SCRATCH/base-<N>` and compares what each run *did to the files* |
+| GitHub Actions | `references/actions.md` § Phase 4 — an action cannot be run locally at two versions, so the method is reading the release notes **and then establishing whether this repo's workflows are in the change's scope at all** |
 
 **Measure on the merge base, not on the PR's tree.** This is the difference
-between finding the change and missing it, and the wrong choice fails silently:
+between finding the change and missing it, and the wrong choice fails silently: a
+PR that already contains the fixup — someone reformatted to make CI pass — has a
+tree the new version is already happy with, so measuring there reports no
+difference. And that is exactly the case where the change was real enough that a
+human had to deal with it. Observed on a real `ruff 0.15.22 -> 0.16.0` bump: six
+Markdown files on the base, nothing on the PR's tree.
 
-```bash
-G="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/gate_diff.py"
+**Do not read the exit codes as the answer.** Both versions can exit 0 while the
+scope moves underneath them — that is the founding observation of this phase, and
+`references/traps.md` has it.
 
-python3 "$G" --tree "$SCRATCH/base-<N>" \
-  --run locked   "uv run --no-project --with ruff==<locked> ruff format ." \
-  --run proposed "uv run --no-project --with ruff==<proposed> ruff format ." \
-  --run latest   "uv run --no-project --with ruff==<latest> ruff format ."
-```
-
-The question is what the new version does to *the code you have*, which is the
-base. A PR that already contains the fixup — because someone reformatted to make
-CI pass — has a tree the new version is already happy with, so measuring there
-reports no difference. And that is precisely the case where the behaviour change
-was real enough that a human had to deal with it. Observed: on a real
-`ruff 0.15.22 -> 0.16.0` bump, the base tree reports six Markdown files and the
-PR's tree reports nothing.
-
-**Then optionally re-run on `$SCRATCH/pr-<N>`.** The two trees answer different
-questions, and together they say something neither says alone:
-
-| base | PR | Reading |
-|---|---|---|
-| differs | agrees | a real behaviour change, and this PR already absorbs it — check *how* |
-| differs | differs | a real behaviour change the PR does **not** handle — it will land on you |
-| agrees | agrees | no behaviour change on this repo's code |
-
-**Give the tool's write mode, not `--check`** — the measurement is what each
-version does to the files, and `--check` does nothing to them. Run it once per
-gate from Phase 0, at *each* scope: a hook scoped to `types_or: [python, pyi]`
-and a CI step running the same tool over `.` are different gates, and this is
-the phase that turns on the difference. Add the `latest` run whenever Phase 2
-found a newer version, because that is the one you would be recommending.
-
-Read the result as three distinct findings:
-
-| Result | Meaning |
-|---|---|
-| only in the newer run | widened scope, or a rule that now fires |
-| only in the older run | narrowed scope |
-| both, different result | the fix itself behaves differently |
-
-The last is the one no security feed reports: a formatter that used to delete
-something and no longer does, in a write mode many repos run on every commit.
-
-**Do not read the exit codes as the answer** — see `references/traps.md`; both
-versions can exit 0 while the scope moves underneath them.
-
-`allow-list vs disable-list` is no longer something to work out in advance; the
-run settles it. Keep it for the *report*, to explain why a difference fired:
-under a config that disables specific rules a newly added rule is live the moment
-it lands, and under one that enables specific rules it is inert.
-
-A gate with no write mode — a type checker, a test suite — leaves the tree
-untouched and `gate_diff` says so. But **"no run changed any file" has three
-causes**, and the tool deliberately does not choose between them: you gave a
-read-only invocation, or the tree already satisfies every version, or the gate has
-nothing to write. Only the first is a mistake; the second is a real agreement.
-Decide which, and say so — do not report the weaker reading by default.
-
-### GitHub Actions — establish whether the change reaches this repo
-
-You cannot run an action locally at two versions, so measurement is unavailable
-and reading the release notes is the method rather than the shortcut. That makes
-the second step load-bearing: **a change is only a finding here if this repo's
-workflows are in its scope.**
-
-Read the notes for every version in the gap, looking for changes to a *default*,
-a *trigger*, an *input*, or a *runner requirement* — then find the line in this
-repo's workflows that decides whether it applies:
-
-| Change | What to grep for here |
-|---|---|
-| a trigger is newly restricted | `pull_request_target:`, `workflow_run:` in this repo's workflows |
-| a default input flips | that input's name — an explicit setting pins the old behaviour |
-| a minimum runner or Node version | `runs-on:` — GitHub-hosted is fine, a self-hosted label is not |
-| credential or token handling | `permissions:`, `persist-credentials`, and what later steps do with the token |
-
-**Report "inert here" as a result, not as silence.** Reaching it deliberately is
-this phase working; reaching it by not looking is the failure. Observed:
-`actions/checkout@v7` blocks fork-PR checkout under `pull_request_target` and
-`workflow_run` — a security change shipped as a plain bullet with no heading and
-no ⚠️ — and it was genuinely inert on a repo that uses neither trigger. The report
-should say so and name the greps that settled it.
-
-**Two signals that the notes alone will not give you.** Both were observed:
-
-- **A coordinated release across every supported major is a security backport.**
-  `actions/checkout` published v7.0.1, v6.1.0, v5.1.0, v4.4.0, v3.7.0 and v2.8.0
-  within 35 minutes of each other; the backports carry `[BREAKING]` and a
-  changelog link that the original major's notes do not. Check the sibling majors'
-  release dates, not just the line you are on.
-- **Version-coupled actions must move together.** `upload-artifact` and
-  `download-artifact` ship majors in lockstep — the v7/v8 pair went out eight
-  seconds apart. If the bump moves one half, check the sibling's pin in the same
-  workflow and say whether the repo is now split across generations.
+**"Inert here" is a result, not silence.** Reaching it deliberately is this phase
+working; reaching it by not looking is the failure.
 
 ## Phase 5 — Independent reproduction
 
@@ -599,123 +479,35 @@ For `uv.lock` you answer it by building and running the thing. For GitHub Action
 no local reproduction exists at all, so the answer has to come from somewhere
 else — and "no reproduction available" is a result to report, not a phase to skip.
 
-### uv.lock — install frozen and run the suite
+| Ecosystem | Method |
+|---|---|
+| `uv.lock` | `references/uv-lock.md` § Phase 5 — install **frozen** and run the repo's own gates and suite in `$SCRATCH/pr-<N>` |
+| GitHub Actions | `references/actions.md` § Phase 5 — nothing to install and no way to run an action off GitHub's runners, so the substitute is **evidence that this pin has already run**: the history of the workflow the bump changed |
 
 Phase 0 built the worktree and proved it points at `$HEAD_SHA`, so the user's
-working tree is untouched throughout and this phase inherits a tree it can trust.
-That isolation protects the *working tree*, not the machine — see the execution
-section at the top, and `references/ecosystems.md` for the per-registry flags that
-narrow what an install is allowed to run.
+working tree is untouched throughout. That isolation protects the *working tree*,
+not the machine — see the execution section at the top.
 
-Install **frozen** — that proves the lockfile is self-consistent and resolves
-nothing. For Python this is two commands, and they prove different things:
+**"No reproduction available" is a result to report, not a phase to skip.** For an
+actions bump on an open PR whose workflow is not PR-triggered, reproduction is
+impossible before merge; that is a property of the change and belongs in the
+report.
 
-```bash
-uv sync --locked --no-build --no-install-project   # every dep resolved to a wheel
-uv sync --locked                                   # then add the project itself
-```
-
-`--no-build` alone **fails** on any project with a `[project]` table, because
-installing itself editable is a build; `references/ecosystems.md` has the error
-and the reasoning.
-
-Then run the repo's own gates from Phase 0, and its full test suite.
-
-**`--locked` checks the whole lockfile; the install materialises one resolution
-out of it.** Those are different claims and the row must not merge them. A
-`uv.lock` can carry several `[[package]]` blocks for the same name under
-different `resolution-markers` — typically the last release supporting an older
-Python alongside the current one. Phase 1 verifies **every** fork's artifacts
-against the registry. `uv sync` then installs only the resolution matching the
-interpreter and platform in front of it, which need not be the highest pin.
-
-So a green row here on 3.14 says nothing about whether the 3.11 fork's artifacts
-still fetch or its older release still installs. **Ask the environment which one
-it built**, rather than the auditor's own `python3`, which may not be the
-interpreter uv chose:
-
-```bash
-uv run python -V                  # inside the synced environment
-uv pip list --format=freeze       # the versions actually materialised
-```
-
-The Phase 1 script prints the fork list — `forked packages: every pin verified,
-one of them installed` — so the names and versions to reconcile against are
-already in the output. Name the interpreter and the fork in the reproduction
-row; do not report the install as though it covered every pin.
-
-**When the bumped package is itself forked, a second sync is the thorough
-version** and it is a deliberate escalation, not the default:
-
-```bash
-uv sync --locked --python <floor>   # the floor from requires-python
-```
-
-It costs an interpreter download and can fail for reasons that have nothing to
-do with the bump. The cheap version — installing once and disclosing which fork
-that was — is honest and is what this phase requires. The second sync is worth
-it when the fork you did *not* install is one of the packages under audit, and
-the report should say which of the two you did.
-
-### GitHub Actions — substitute run history
-
-There is nothing to install and no way to execute an action outside GitHub's
-runners, so local reproduction is unavailable. The substitute is **evidence that
-this pin has already run**: ask the workflow the bump changed.
-
-```bash
-gh run list --workflow <changed>.yml --limit 10 \
-  --json conclusion,headBranch,createdAt,displayTitle \
-  --jq '.[] | "\(.conclusion)\t\(.createdAt)\t\(.displayTitle)"'
-```
-
-Read it against the merge date, and be strict about what it proves. Runs *after*
-the bump landed exercised the new pin; runs before it did not, and a green history
-that predates the merge says nothing at all about the version being adopted.
-
-| Situation | What you can honestly report |
-|---|---|
-| the workflow ran green on this pin since the bump landed | reproduced — the strongest evidence available for an actions bump |
-| the workflow has not run since | **not reproduced.** State it; do not let Phase 6's green stand in for it |
-| the workflow is not PR-triggered and the PR is open | reproduction is impossible before merge. That is a property of the change, and it belongs in the report |
-
-Observed: a bump to `actions/upload-artifact` in a release-only workflow, merged
-alongside a `download-artifact` pin two majors behind. Nothing in the PR could
-show whether the pair still interoperated — seven green release runs over the
-following month did.
-
-**Three things qualify this phase's row, and "reproduced" alone asserts past all
-of them.** Each has a green result that is true of *one* configuration and reads
-as true of every one:
-
-| Qualifier | Why the bare row overstates it |
-|---|---|
-| **which install** | the script-suppressing flags are the documented default and they weaken the proof: a package that genuinely needs its install script is not exercised. Re-running without them is a legitimate choice — say which produced the row |
-| **which interpreter** | the install materialised one fork of a forked lockfile. `uv run python -V`, not the auditor's `python3` |
-| **which forks were only verified** | Phase 1 checked all of them and Phase 5 installed one. Name the others rather than letting the install stand for them |
-
-None of the three is a failure to disclose. "Frozen install passed under
-`--no-build --no-install-project` on CPython 3.14; the 3.11 fork of `rpds-py` was
-verified but not installed" is a stronger row than "frozen install passed",
-because it is one a reader can falsify.
+**Say what the row actually covered.** A green reproduction is true of *one*
+configuration and reads as true of every one, so name which install ran, which
+interpreter produced it, and anything verified but not installed. "Frozen install
+passed under `--no-build --no-install-project` on CPython 3.14; the 3.11 fork of
+`rpds-py` was verified but not installed" is a stronger row than "frozen install
+passed", because it is one a reader can falsify. `uv run python -V` from inside
+the synced environment is where the interpreter comes from — not the auditor's
+own `python3` — and `resolution-markers` is why the two can differ.
 
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.
 
-**Close the loop.** The worktree *and* the `pr-<N>` branch Phase 0 created are
-both registered in the **user's** repo, so an audit that walks away leaves litter
-behind — and it accumulates, one per PR audited. The branch outlives an audit that
-stopped before Phase 5, too. Either remove them when finished, or keep them
-deliberately and say so in the report so the user knows they are there:
-
-```bash
-git worktree remove "$SCRATCH/pr-<N>"
-git worktree remove "$SCRATCH/base-<N>"
-git branch -D "pr-<N>"
-```
-
-Keeping them is reasonable when a follow-up run is likely; silently keeping them
-is not.
+The worktrees and the `pr-<N>` branch are cleaned up in Phase 7, not here — an
+audit that stops at Phase 1's gate never reaches this phase and still has to
+tidy up after itself.
 
 ## Phase 6 — CI verification
 
@@ -742,36 +534,32 @@ substitute. Observed: a PR changing only `release.yml`, which triggers on
 `push: tags: [<prefix>-*]`, carried three green checks — all of them from the
 repo's separate test workflow.
 
-Use the full 40-character `$HEAD_SHA` pinned in Phase 0 — a short one matches
-nothing and reads exactly like "CI never ran":
+**Run the script; it is this phase's three questions in one call.** Every query
+below used to be issued by hand, and three of the seven defects that have shipped
+in this file were here — each of them a real endpoint asked the wrong question,
+answering in a well-formed way. A hand-run query cannot be regression-tested.
 
 ```bash
-gh run list --commit "$HEAD_SHA" --workflow <ci>.yml
+C="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/ci_state.py"
+PARENT=$(git rev-parse "pr-<N>^")
+
+python3 "$C" --owner "$OWNER" --name "$NAME" --number <N> \
+  --head-sha "$HEAD_SHA" --parent "$PARENT" --base-sha "$BASE_SHA"
 ```
 
-Then ask GitHub **which checks are required**, rather than deriving a list and
-joining it by hand. `isRequired` is a field on the rollup contexts, it is
-evaluated for this PR against whatever enforces it — classic protection, a
-ruleset, a path-scoped rule — and it is readable at `pull`:
+**Exit 2 means it could not run; exit 1 means it ran and found something.** Never
+read one as the other.
 
-```bash
-gh api graphql -f query='
-query($owner:String!, $name:String!, $number:Int!) {
-  repository(owner:$owner, name:$name) {
-    pullRequest(number:$number) {
-      mergeable mergeStateStatus reviewDecision
-      commits(last:1) { nodes { commit { statusCheckRollup { state
-        contexts(first:100) { nodes {
-          ... on CheckRun      { name    conclusion isRequired(pullRequestNumber:$number) }
-          ... on StatusContext { context state      isRequired(pullRequestNumber:$number) }
-        } } } } } }
-    }
-  }
-}' -F owner="$OWNER" -F name="$NAME" -F number=<N> > "$SCRATCH/checks.json"
-```
+It asks GitHub **which checks are required** rather than deriving a list and
+joining it by hand — `isRequired` is a field on the rollup contexts, evaluated for
+this PR against whatever enforces it (classic protection, a ruleset, a path-scoped
+rule) and readable at `pull`. The join happens server-side, so there is no list to
+retype and no `awk` matching to get wrong. It pages `contexts` to exhaustion, reads
+`mergeStateStatus` alongside the rollup, compares against `pr-<N>^`, and labels
+every red context. What it will not do is decide the verdict; that is Phase 7's
+table, and putting it in both places is how the two drift.
 
-The join happens server-side, so there is no list to retype and no `awk` matching
-to get wrong. Read **three** fields, and never substitute one for another:
+Read **three** fields out of its output, and never substitute one for another:
 
 | Field | What it settles |
 |---|---|
@@ -790,10 +578,11 @@ is absent from the list entirely — the failure the hand-written join existed t
 catch. `mergeStateStatus` covers it, because an unsatisfied required check yields
 `BLOCKED` and never `CLEAN`. Two traps travel with it: it is `UNKNOWN` on a merged
 PR, and GitHub computes it lazily, so an open PR may need the query re-issued
-before it settles. `UNKNOWN` is underivable, not "nothing blocks".
+before it settles. `UNKNOWN` is underivable, not "nothing blocks" — the script
+says so rather than leaving it to be remembered.
 
-**Zero required contexts is a finding only when `mergeStateStatus` agrees.** Read
-them together:
+**Zero required contexts is a finding only when `mergeStateStatus` agrees**, and
+the script reads them together:
 
 | Required contexts | `mergeStateStatus` | Reading |
 |---|---|---|
@@ -801,24 +590,38 @@ them together:
 | none | `BLOCKED` | something gates this PR that you cannot see. **Underivable**, per Phase 0 — do not report it as "no enforced checks" |
 | some | `BLOCKED` | read `reviewDecision` and the unsettled contexts; the checks alone do not explain it |
 
+**The context list can be truncated, and the script refuses to hide it.**
+`contexts(first:100)` is a page: a repo reporting more returns the first hundred
+and says nothing about the rest, so a required check at position 101 is absent —
+indistinguishable from one that passed, and the same failure as the hand-written
+join one level up. It pages on `pageInfo`, and where it cannot it reports the
+required set as **underivable** rather than complete:
+
+| `totalCount` vs. what was held | What the required set is |
+|---|---|
+| equal | complete |
+| greater, paged to exhaustion | complete |
+| greater, could not be paged | **underivable**, per Phase 0 — not "these are all of them" |
+
 **A red check is not evidence that the bump caused it.** Phase 6 reports check
 conclusions, and a failing required context is the row most likely to carry the
 verdict — so it is the one that must not assert more than it established. "This
 check is red" is established. "This bump broke it" is a *causal* claim, and
 nothing above tests it.
 
-Ask whether it was already red **on the commit the bot branched from** — which is
-the parent of the bot's own commit, not the merge base:
+The script asks whether it was already red **on the commit the bot branched
+from** — the parent of the bot's own commit, not the merge base — and labels the
+row in three states, never two:
 
-```bash
-PARENT=$(git rev-parse "pr-<N>^")
-gh api "repos/$OWNER/$NAME/commits/$PARENT/check-runs" --paginate \
-  --jq '.check_runs[] | "\(.name)\t\(.conclusion)"'
-```
+| At `pr-<N>^` | Label | What it means for the verdict |
+|---|---|---|
+| the same check is green | **attributable** | the bump is implicated; this row can carry a Hold |
+| the same check is red | **pre-existing** | the tree the bump landed on was already red. A real finding, a *different* one, and it must not produce a Hold on this bump |
+| **no run at the base**, or no check by that name | **underivable**, per Phase 0 | say so rather than defaulting to attributable |
 
 **`pr-<N>^` and `$BASE_SHA` are the same commit for a genuine one-commit bot PR**,
-which is the ordinary case — so this costs nothing there and is the right answer
-when they differ. When they differ, `$BASE_SHA` attributes to the bump
+which is the ordinary case — so preferring the parent costs nothing there and is
+right when they differ. When they differ, `$BASE_SHA` attributes to the bump
 everything that happened on the branch beneath it, which is the same mistake as
 diffing scope against a rewritten base and gets the same substitution (#19).
 
@@ -834,35 +637,13 @@ points disagree:
 | the base branch's tip | `success` — which would have said **attributable** |
 
 Two of those four produce the false Hold this section exists to prevent, and one
-of them is the merge base. Read `$BASE_SHA` as a cross-check, not as the input:
-if it disagrees with `pr-<N>^`, the branch has commits the bot did not write, and
-that is worth reporting on its own.
+of them is the merge base.
 
-**Use the check-runs endpoint, not `gh run list`.** `gh run list --json name`
-returns the *workflow* name — one row reading `CI` — while the contexts in the
-rollup above are **job** names like `test (ubuntu-latest)`. Matching a job name
-against a workflow name yields nothing, for every matrix job, and an empty result
-here is indistinguishable from no run at the base — which lands in the third
-state below and marks every matrix failure underivable. Verified: on a repo whose
-five contexts are `Test (Python 3.11)` … `Lint & type-check`, `gh run list --json
-name` returns a single `CI`, and `check-runs` returns all five by their context
-names. Add `commits/$PARENT/status` if the red context is a `StatusContext`
-rather than a `CheckRun` — the two live in separate lists, and Phase 6's GraphQL
-reads both.
-
-Then label the row, in three states and never two:
-
-| At `pr-<N>^` | Label | What it means for the verdict |
-|---|---|---|
-| the same check is green | **attributable** | the bump is implicated; this row can carry a Hold |
-| the same check is red | **pre-existing** | the tree the bump landed on was already red. A real finding, a *different* one, and it must not produce a Hold on this bump |
-| **no run at the base**, or no check by that name | **underivable**, per Phase 0 | say so rather than defaulting to attributable |
-
-**When `pr-<N>^` has no runs at all, fall back to `$BASE_SHA` and weaken the
-claim out loud.** An intermediate commit of a multi-commit branch is often never
-built — CI ran on the head and nowhere else — so the parent has nothing to
-compare against while the merge base, being on the default branch, does. That
-fallback answers a *different* question and the label has to say so:
+**When `pr-<N>^` has no runs at all the script falls back to `$BASE_SHA` and marks
+the claim weaker.** An intermediate commit of a multi-commit branch is often never
+built — CI ran on the head and nowhere else — so the parent has nothing to compare
+against while the merge base, being on the default branch, does. That fallback
+answers a *different* question:
 
 | Compared against | What a red result establishes |
 |---|---|
@@ -870,15 +651,17 @@ fallback answers a *different* question and the label has to say so:
 | `$BASE_SHA` | it was red **before this branch** — everything below the bump is inside the claim |
 
 Reaching for the second is legitimate and better than reporting nothing; passing
-it off as the first is the failure. Observed on this plugin's own PR #26:
-`pr-26^` is an intermediate commit of the branch and carries zero check runs.
+it off as the first is the failure, so carry the weakened wording into the report
+rather than dropping it. Observed on this plugin's own PR #26: `pr-26^` is an
+intermediate commit of the branch and carries zero check runs.
 
-**The third row has two more causes and they look identical.** The commit may
-predate the workflow or its run may have aged out — or the check may simply be
-*named* something else there. Names drift: `mdcat`'s `main` now reports `test`
-and `test-windows` where the PR reports `test (ubuntu-latest)`, so a name match
-against a distant commit finds nothing and reads as "never ran". Compare the
-whole name list, not just the one you are chasing.
+**The underivable row has two more causes and they look identical.** The commit
+may predate the workflow or its run may have aged out — or the check may simply be
+*named* something else there. Names drift: `mdcat`'s `main` now reports `test` and
+`test-windows` where the PR reports `test (ubuntu-latest)`, so a name match
+against a distant commit finds nothing and reads as "never ran". The script prints
+the whole name list at the comparison point for exactly this reason; read it
+rather than the one name you are chasing.
 
 **A red check on a workflow the diff never touched is a strong prior for
 pre-existing**, and Phase 6 already derives which workflows the diff touched for
@@ -948,8 +731,83 @@ Verdicts are one of:
   managing the PR.
 - **Hold** — a discrepancy, a regression, or a behavior change that breaks a gate.
 
+### Which evidence produces which verdict
+
+Every row above is a finding; the verdict is a function of them, and leaving that
+function implicit is how two audits with the same evidence reach different
+recommendations. Read the table top-down and take the **first** row that matches:
+
+| Evidence | Verdict |
+|---|---|
+| Phase 1's gate fired — scope, a provenance discrepancy, or `PUBLISHER CHANGED` | **Hold** |
+| OSV or GHSA reports a vulnerability in a version being **adopted** | **Hold** |
+| A `Security` entry in the gap, and the gap is outside the cooldown | **Hold** — or merge-then-follow-up when the fix is already in the adopted version |
+| Actions: the tag rolled **behind** the proposed SHA | **Hold.** Close the bot's PR and replace it by hand; a bot cannot express a downgrade |
+| Phase 4: base differs, PR differs — the change is real and unabsorbed | **Hold** |
+| Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
+| A red required check labelled **attributable** | **Hold** |
+| A red required check labelled **pre-existing** | **Not a Hold on this bump.** Report it as its own finding, take the verdict from the remaining evidence, and say the PR is unmergeable until someone fixes it |
+| Phase 4: base differs, PR agrees — real and already absorbed | **Merge as-is**, naming what the PR absorbed and how |
+| `mergeStateStatus: BLOCKED` with every check green | **Merge as-is** on the bump's merits; name what blocks it, usually `reviewDecision` |
+| Actions: the workflow file is generated (`DO NOT EDIT`) | **Merge as-is, then follow up** on the generator — this bump is transient without it |
+| A gap exists, outside the cooldown, nothing security-shaped in it | **Merge as-is, then follow up** |
+| A gap exists **inside** the cooldown window | **Merge as-is.** Do *not* offer a follow-up: it hand-lands the release the control exists to delay |
+| Everything derived, nothing above matched | **Merge as-is** |
+
+**When phases disagree, this is the precedence** — and they are *expected* to
+disagree, which is why more than one of them exists:
+
+1. Phase 1's gate
+2. Changelog `Security` entries across the gap
+3. OSV / GHSA
+4. Phase 4's measured difference
+5. Phase 5's reproduction
+6. Phase 6's CI state
+
+A changelog `Security` entry outranking a clean OSV batch is not a contradiction
+to explain away — a privately disclosed fix ships with no CVE, so *clean scanner,
+dirty changelog* is the expected reading and the whole reason Phase 2 reads
+changelogs at all.
+
+### Confidence
+
+Not a feel. It is a function of how much of the evidence was actually derived,
+which the three-state rule has already recorded per row:
+
+| Condition | Confidence |
+|---|---|
+| Every verdict-bearing input derived, and the executing phases ran | **high** |
+| One or more verdict-bearing inputs **underivable**, none of them decisive | **medium** |
+| `--no-execute`, with a Phase 4-shaped question still open | **medium** — say what running Phase 4 would add |
+| A **decisive** input underivable — one whose value would change the verdict | **low**, and name which one |
+
+"Verdict-bearing" is the test, not "present in the table": an underivable row that
+no verdict rule reads does not lower confidence, and saying it does trains the
+reader to discount the field. Conversely a single underivable input that would
+flip the recommendation caps it at **low** however green everything else is.
+
 If the user asked for `--comment`, print the report and offer to post it; posting
 is a separate, explicitly requested action.
+
+**Close the loop, whatever phase the audit reached.** The two worktrees *and* the
+`pr-<N>` branch Phase 0 created are registered in the **user's** repo, and they
+accumulate one set per PR audited. This step lives here rather than in Phase 5
+because Phase 5 is skippable and this is not: `--no-execute` skips it, and Phase
+1's gate stops before it — which is the path where the audit was *most* right to
+stop, and the one that used to litter every time. Phase 7 is the only phase every
+audit reaches, including the one that ends at the gate.
+
+```bash
+git worktree remove "$SCRATCH/pr-<N>"
+git worktree remove "$SCRATCH/base-<N>"
+git branch -D "pr-<N>"
+```
+
+Add `$SCRATCH/tip-<N>` if Phase 0 found the base rewritten and created it.
+
+Keeping them is reasonable when a follow-up run is likely — say so in the report,
+with the commands above, so the user knows what is there. Silently keeping them
+is what this step exists to prevent.
 
 ## Phase 8 — Learning loop (the only thing worth persisting)
 

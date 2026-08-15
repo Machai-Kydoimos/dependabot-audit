@@ -244,5 +244,51 @@ class TestNothingTouched(GateDiffHarness):
         self.assertIn("decide which", note, "the note must hand the choice over, not make it")
 
 
+class TestTheSnapshotReadsEveryPorcelainField(GateDiffHarness):
+    """`--porcelain -z` emits a staged rename as *two* fields, not one.
+
+    The format is `R  <new>\0<old>\0`, and only the first field carries the `XY `
+    status prefix. A slice that strips three characters from every field turns
+    `tracked.txt` into `cked.txt` — a path that does not exist, reported as
+    deleted, while the real deletion of the source goes unreported. Measured
+    against git's own output:
+
+        field='R  renamed.txt'  -> line[3:]='renamed.txt'
+        field='tracked.txt'     -> line[3:]='cked.txt'
+
+    Both halves fail in the reporting direction this repo cares about: the run
+    invents a change it did not observe, and drops one it did.
+
+    Not exotic. `git status --porcelain` reports a rename only from the *index*,
+    and `pre-commit` stages directly — `restore()`'s own docstring already names
+    it as among the likeliest gate commands Phase 4 is handed.
+    """
+
+    def _changed(self, tree: pathlib.Path, command: str) -> dict[str, str]:
+        _, out, _ = self._run(tree, [("locked", "true"), ("proposed", command)], as_json=True)
+        changed: dict[str, str] = json.loads(out)["runs"][1]["changed"]
+        return changed
+
+    def test_a_staged_rename_does_not_manufacture_a_truncated_path(self):
+        changed = self._changed(git_repo(self), "git mv tracked.txt renamed.txt")
+        self.assertNotIn(
+            "cked.txt",
+            changed,
+            "the old path was sliced as though it carried a status prefix",
+        )
+
+    def test_a_staged_rename_reports_both_of_its_real_paths(self):
+        changed = self._changed(git_repo(self), "git mv tracked.txt renamed.txt")
+        self.assertIn("renamed.txt", changed, "the destination is a real addition")
+        self.assertIn("tracked.txt", changed, "the source is a real deletion")
+        self.assertEqual(changed["tracked.txt"], "<deleted>")
+
+    def test_an_unstaged_delete_and_add_is_unaffected(self):
+        """The path the old slice handled correctly must keep working."""
+        changed = self._changed(git_repo(self), "rm tracked.txt && printf x > fresh.txt")
+        self.assertEqual(changed["tracked.txt"], "<deleted>")
+        self.assertIn("fresh.txt", changed)
+
+
 if __name__ == "__main__":
     unittest.main()
