@@ -11,6 +11,101 @@ patch.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-15
+
+Phase 6 was 188 lines of prose carrying **three of the seven** defects that have
+shipped in `SKILL.md`, and all three were the same mistake: a real endpoint asked
+the wrong question, answering in a well-formed way. A hand-run query cannot be
+regression-tested. This file's own rule — *"a trap a script refuses cannot be
+skipped, one in prose is silently skipped"* — has been applied to forked-package
+disclosure since 0.9.0 and nowhere else.
+
+### Added
+
+- **`scripts/ci_state.py`**, and Phase 6 now invokes it. It pages the rollup to
+  exhaustion, reads `isRequired` / `mergeStateStatus` / `reviewDecision`, merges
+  the check-run and status lists at the comparison commit — they are separate,
+  and reading one answers correctly about half the possible reds — and labels
+  every red context **attributable | pre-existing | underivable**.
+
+  It stops short of a verdict deliberately. That mapping is Phase 7's table, and
+  putting it in two places is how the two drift.
+
+  Exit codes match the other scripts: `0` clean, `1` found something, `2` could
+  not run, with the `cli()` backstop so an unhandled exception cannot exit 1 and
+  read as a red required check.
+
+- **23 → 24 cases in `tests/test_ci_state.py`**, every one mutation-checked
+  against a broken implementation. The first round caught 8 of 9 mutations; the
+  miss is recorded below because it is more interesting than the hits.
+
+### Fixed
+
+- **The script collapsed three states into two on its own first live run.** With
+  zero required contexts it read `blocked` as a boolean, which is False both when
+  the merge state is genuinely clear *and* when it was never established. So it
+  printed these four lines apart, on this plugin's own #26:
+
+      !! mergeStateStatus is UNKNOWN ... *not established*, not 'nothing blocks'
+      -- zero required contexts, and nothing blocks: this repo enforces nothing
+
+  The second asserts exactly what the first says was never established — the
+  collapse the whole discipline exists to prevent, reproduced inside the script
+  written to enforce it. "This repo enforces nothing" is a strong claim about a
+  repository, and it needs the merge state to have been *read*, not merely to be
+  un-blocking.
+
+  Found by replaying, not by reasoning. The unit suite was green.
+
+### Changed
+
+- **`tests/test_skill_prose.py` follows a phase into its script.** Six guards
+  asserted on `self.shell[6]`; moving the query out would have left every one of
+  them green against an empty string. `reachable(n)` now returns the phase's
+  shell **plus the code of every script it names**, so the property survives
+  relocation while staying the same property.
+
+  Two corrections to that, both caught by mutation-checking rather than review:
+
+  1. The first version concatenated the phase *body* and immediately failed the
+     `/protection` guard — on Phase 0's paragraph explaining why never to call
+     that endpoint. A negative assertion over prose cannot tell a warning from an
+     instruction, so it fires on the document that gets it right. Executable
+     material only.
+  2. Scripts contribute their **code**, never docstrings or comments.
+     `ci_state.py`'s module docstring names `isRequired`, `totalCount` and
+     `check-runs` while explaining them, so deleting all three from the actual
+     query left every guard green. A rule must not be satisfiable by a comment
+     claiming it.
+
+- **The parent-attribution guard asserts what Phase 6 *hands* the comparison**,
+  not that `pr-<N>^` appears somewhere reachable — `ci_state.py` spells it in the
+  basis text it prints, so a phase that derived the parent wrongly and described
+  it correctly passed the looser form. It now also refuses `--parent "$BASE_SHA"`,
+  which is defect #25 exactly.
+
+### Verified
+
+Replayed against both PRs the method comes from, since CONTRIBUTING records that
+one cannot reach what the other does:
+
+    BIRSAx2/mdcat #6          rollup FAILURE, mergeStateStatus DIRTY
+      test (ubuntu-latest)    FAILURE
+        -> PRE-EXISTING — red at b1b0dd4c1 (pr-<N>^) too
+      exit 1
+
+    dependabot-audit #26      rollup SUCCESS, mergeStateStatus UNKNOWN
+      5 of 5 contexts, 0 required
+        -> UNDERIVABLE, not "nothing enforced"
+      exit 0
+
+The first is the false-Hold case the section exists for, answered correctly. The
+second is what surfaced the three-state defect above.
+
+`SKILL.md` is 1083 lines — Phase 6 fell 188 → 179, less than the mechanism
+removed, because what stays is the *reading* guidance the script cannot carry.
+The restructure that shortens the file is separate and still ahead.
+
 ## [0.13.0] — 2026-08-15
 
 Every phase was rigorous about establishing evidence, and then the step that
@@ -1307,7 +1402,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.1...v0.11.0

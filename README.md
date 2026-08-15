@@ -69,7 +69,7 @@ the verdict, and the merge command **left un-run**.
 | 3 | Known vulnerabilities — what is already known to be wrong with this. OSV batch plus the ecosystem's own auditor for `uv.lock`; GHSA's `actions` ecosystem for a workflow bump |
 | 4 | Behavior change — does this change what runs here. For `uv.lock`, each gate run at the old and new versions **against the merge base**, comparing what they *do to the files*; measuring the PR's own tree reports nothing whenever the PR already contains the fixup, which is exactly when the change was real. For actions, which cannot be run locally, whether this repo's workflows are in the change's scope at all |
 | 5 | Independent reproduction — frozen install and the repo's own gates in an isolated worktree; for actions, where no local reproduction exists, the run history of the workflow the bump changed |
-| 6 | CI verification — the run for the exact head SHA, the required contexts specifically, and whether the changed file is reachable from a pull request at all |
+| 6 | CI verification — `scripts/ci_state.py`: the rollup paged to exhaustion, which checks GitHub says are *required*, whether anything still blocks, and every red check labelled **attributable / pre-existing / underivable** against the commit the bot branched from. Plus, in prose because no script can answer it, whether the changed file is reachable from a pull request at all |
 | 7 | Report — and the verdict *derived* from the evidence rather than judged: a table mapping findings to one of the three recommendations, a precedence for when phases disagree (they are meant to), and confidence as a function of what could not be derived. Also where the worktrees and branch get cleaned up, because it is the only phase every audit reaches |
 | 8 | Learning loop — hand back anything that could not have been derived |
 
@@ -122,6 +122,11 @@ before 0.10.0 a real `Cargo.lock` produced `unexpected AttributeError ... This i
 a bug`, and a real `poetry.lock` produced a confident *"either this lockfile did
 not change, or it is being compared against itself"*.
 
+`scripts/ci_state.py` (Phase 6) is ecosystem-independent for a different
+reason: CI state is a property of the PR, not of the lockfile. It exists because
+three of the seven defects that have shipped in the prose were in that phase, and
+a hand-run query cannot be regression-tested.
+
 `scripts/gate_diff.py` (Phase 4) is the exception: it is
 **ecosystem-independent**, because it parses nothing. It runs a gate once per
 version in a disposable worktree and compares which files each run changed, and
@@ -135,7 +140,7 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-154 cases, stdlib only, no network — they run offline and free. Every case
+179 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into ten groups:
 

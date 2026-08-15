@@ -37,6 +37,7 @@ Every one of those corresponds to a defect that shipped.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import unittest
@@ -70,6 +71,11 @@ MADE_BY_WORKTREE = re.compile(
 # `$SCRATCH/pr-<N>` does not also read as a use of the ref.
 REF_USED = re.compile(r"(?<![\w/])pr-<N>")
 REF_MADE = re.compile(r"git fetch \S+ \"pull/<N>/head:pr-<N>\"")
+
+# A path under the plugin root, as the prose names it when handing off to a
+# script. Module-level because both the path-existence guard and `reachable()`
+# read it, and two copies would drift.
+PLUGIN_PATH = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)")
 
 
 def phases(text: str) -> list[tuple[int, str]]:
@@ -106,6 +112,28 @@ def tables(body: str) -> list[list[str]]:
     return found
 
 
+def _code_only(source: str) -> str:
+    """A Python module's executable text, with comments and docstrings removed.
+
+    An AST round-trip drops comments for free; docstrings have to be taken off
+    each scope explicitly. Both matter for the same reason: a guard asserting
+    that a phase *asks GitHub which checks are required* must not be satisfied by
+    a docstring that merely says so.
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            node.body = node.body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
+
+
 def first_phase(hits: dict[str, list[int]], name: str) -> int:
     return min(hits[name])
 
@@ -121,6 +149,39 @@ class SkillHarness(unittest.TestCase):
         cls.phases = phases(cls.text)
         # phase number -> the shell in it, concatenated
         cls.shell = {n: "\n".join(bash_blocks(body)) for n, body in cls.phases}
+
+    def reachable(self, number: int) -> str:
+        """What Phase N actually *runs*: its shell, plus every script it invokes.
+
+        A guard that scans only the phase's own bash silently retires itself the
+        moment the mechanism it protects moves into a script — and mechanising a
+        phase is what this repo says to do when a trap keeps recurring, so that
+        is not a hypothetical migration. Phase 6's query became `ci_state.py` and
+        six guards would have gone green on an empty string.
+
+        **Executable material only, never the prose.** The first version of this
+        concatenated the phase body and immediately failed the `/protection`
+        guard — on Phase 0's paragraph explaining why never to call that endpoint.
+        A negative assertion over prose cannot tell a warning from an instruction,
+        so it fires on the document that gets it right. These guards ask what a
+        phase *calls*; the prose-content guards read the body directly and say so.
+
+        One hop, deliberately, and not the whole repo: a guard that matches
+        anything anywhere stops discriminating, which is how the `underivable`
+        assertion once passed against the very prose it was written for.
+
+        Scripts contribute their **code**, never their docstrings or comments —
+        `_code_only` strips both. Mutation-checked and needed: `ci_state.py`'s
+        module docstring names `isRequired`, `totalCount` and `check-runs` while
+        explaining them, so deleting all three from the actual query left every
+        guard green. A rule must not be satisfiable by a comment claiming it.
+        """
+        parts = [self.shell[number]]
+        for rel in PLUGIN_PATH.findall(dict(self.phases)[number]):
+            path = ROOT / rel
+            if path.suffix == ".py" and path.exists():
+                parts.append(_code_only(path.read_text(encoding="utf-8")))
+        return "\n".join(parts)
 
     def _scan(self, pattern):
         """{match -> [phase numbers it appears in]}, in phase order."""
@@ -221,7 +282,7 @@ class TestNoRepoSpecificLiterals(SkillHarness):
         """
         self.assertIn(
             "isRequired",
-            self.shell[6],
+            self.reachable(6),
             "Phase 6 must ask the API which contexts are required, not derive a list",
         )
 
@@ -232,10 +293,10 @@ class TestNoRepoSpecificLiterals(SkillHarness):
         of this call produces a well-formed artifact asserting the opposite of the
         truth. Verified against a repo enforcing three required checks.
         """
-        for number, code in sorted(self.shell.items()):
+        for number, _ in self.phases:
             self.assertNotIn(
                 "/protection",
-                code,
+                self.reachable(number),
                 f"Phase {number} calls branch protection for the required checks; "
                 f"it needs admin and fails into a plausible value without it",
             )
@@ -285,10 +346,10 @@ class TestNoRepoSpecificLiterals(SkillHarness):
         invisible to it, so an empty result manufactures a false "nothing
         enforced" finding on a repo that enforces plenty.
         """
-        for number, code in sorted(self.shell.items()):
+        for number, _ in self.phases:
             self.assertNotIn(
                 "/rules/branches",
-                code,
+                self.reachable(number),
                 f"Phase {number} reads the rules endpoint, which cannot see "
                 f"classic branch protection and returns [] on a protected branch",
             )
@@ -459,12 +520,26 @@ class TestARedCheckIsAttributedBeforeItCarriesTheVerdict(SkillHarness):
 
         `pr-<N>^` is `$BASE_SHA` for a genuine one-commit bot PR, so this costs
         nothing in the ordinary case and is right in the case that is not.
+
+        Asserted on what Phase 6 *hands* the comparison, not on the string
+        appearing somewhere reachable. Mutation-checked and needed: `ci_state.py`
+        spells `pr-<N>^` in the basis text it prints, so a phase that derived the
+        parent wrongly and described it correctly passed the looser form. The
+        same trap as the `underivable` guard, one artifact along.
         """
+        shell = self.shell[6]
         self.assertRegex(
-            self.shell[6],
+            shell,
             r"pr-<N>\^",
-            "Phase 6 must attribute a red check against the bot's own parent; the "
-            "merge base attributes to the bump whatever happened beneath it",
+            "Phase 6 must derive the bot's own parent; the merge base attributes "
+            "to the bump whatever happened on the branch beneath it",
+        )
+        self.assertNotRegex(
+            shell,
+            r"--parent\s+\"?\$BASE_SHA",
+            "the merge base is the cross-check, never the comparison point — that "
+            "substitution is defect #25, and it produced a false Hold on the one "
+            "PR it had been run against",
         )
 
     def test_the_base_query_reads_check_runs_not_the_workflow_list(self):
@@ -481,11 +556,11 @@ class TestARedCheckIsAttributedBeforeItCarriesTheVerdict(SkillHarness):
         """
         self.assertIn(
             "check-runs",
-            self.shell[6],
+            self.reachable(6),
             "the base conclusions must come from the endpoint keyed by check name",
         )
         self.assertNotRegex(
-            self.shell[6],
+            self.reachable(6),
             r"gh run list[^\n]*\$BASE_SHA",
             "gh run list reports workflow names, so a per-check match against it is "
             "empty for every matrix job",
@@ -593,7 +668,6 @@ class TestPhase4MeasuresTheRightTree(SkillHarness):
 class TestEverythingTheProseNamesExists(SkillHarness):
     """A renamed script breaks every phase that invokes it, silently."""
 
-    PLUGIN_PATH = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)")
     REFERENCE = re.compile(r"references/([a-z0-9_-]+\.md)")
 
     def _docs(self):
@@ -602,7 +676,7 @@ class TestEverythingTheProseNamesExists(SkillHarness):
 
     def test_every_plugin_root_path_exists(self):
         for doc in self._docs():
-            for rel in self.PLUGIN_PATH.findall(doc.read_text(encoding="utf-8")):
+            for rel in PLUGIN_PATH.findall(doc.read_text(encoding="utf-8")):
                 self.assertTrue(
                     (ROOT / rel).exists(),
                     f"{doc.name} names ${{CLAUDE_PLUGIN_ROOT}}/{rel}, which does not exist",
@@ -710,7 +784,7 @@ class TestTheRequiredContextListIsNotSilentlyTruncated(SkillHarness):
     def test_the_query_asks_how_many_contexts_there_are(self):
         self.assertIn(
             "totalCount",
-            self.shell[6],
+            self.reachable(6),
             "without totalCount a truncated page is indistinguishable from a "
             "complete list, and the missing contexts read as passing",
         )

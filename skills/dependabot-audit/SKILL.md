@@ -789,58 +789,38 @@ substitute. Observed: a PR changing only `release.yml`, which triggers on
 `push: tags: [<prefix>-*]`, carried three green checks — all of them from the
 repo's separate test workflow.
 
-Use the full 40-character `$HEAD_SHA` pinned in Phase 0 — a short one matches
-nothing and reads exactly like "CI never ran":
+**Run the script; it is this phase's three questions in one call.** Every query
+below used to be issued by hand, and three of the seven defects that have shipped
+in this file were here — each of them a real endpoint asked the wrong question,
+answering in a well-formed way. A hand-run query cannot be regression-tested.
 
 ```bash
-gh run list --commit "$HEAD_SHA" --workflow <ci>.yml
+C="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/ci_state.py"
+PARENT=$(git rev-parse "pr-<N>^")
+
+python3 "$C" --owner "$OWNER" --name "$NAME" --number <N> \
+  --head-sha "$HEAD_SHA" --parent "$PARENT" --base-sha "$BASE_SHA"
 ```
 
-Then ask GitHub **which checks are required**, rather than deriving a list and
-joining it by hand. `isRequired` is a field on the rollup contexts, it is
-evaluated for this PR against whatever enforces it — classic protection, a
-ruleset, a path-scoped rule — and it is readable at `pull`:
+**Exit 2 means it could not run; exit 1 means it ran and found something.** Never
+read one as the other.
 
-```bash
-gh api graphql -f query='
-query($owner:String!, $name:String!, $number:Int!) {
-  repository(owner:$owner, name:$name) {
-    pullRequest(number:$number) {
-      mergeable mergeStateStatus reviewDecision
-      commits(last:1) { nodes { commit { statusCheckRollup { state
-        contexts(first:100) { totalCount pageInfo { hasNextPage endCursor } nodes {
-          ... on CheckRun      { name    conclusion isRequired(pullRequestNumber:$number) }
-          ... on StatusContext { context state      isRequired(pullRequestNumber:$number) }
-        } } } } } }
-    }
-  }
-}' -F owner="$OWNER" -F name="$NAME" -F number=<N> > "$SCRATCH/checks.json"
-```
+It asks GitHub **which checks are required** rather than deriving a list and
+joining it by hand — `isRequired` is a field on the rollup contexts, evaluated for
+this PR against whatever enforces it (classic protection, a ruleset, a path-scoped
+rule) and readable at `pull`. The join happens server-side, so there is no list to
+retype and no `awk` matching to get wrong. It pages `contexts` to exhaustion, reads
+`mergeStateStatus` alongside the rollup, compares against `pr-<N>^`, and labels
+every red context. What it will not do is decide the verdict; that is Phase 7's
+table, and putting it in both places is how the two drift.
 
-The join happens server-side, so there is no list to retype and no `awk` matching
-to get wrong. Read **three** fields, and never substitute one for another:
+Read **three** fields out of its output, and never substitute one for another:
 
 | Field | What it settles |
 |---|---|
 | `isRequired`, per context | which checks gate merge — a repo can report far more than it requires |
 | `statusCheckRollup.state` | whether the checks that *reported* passed |
 | `mergeStateStatus` | whether anything still blocks, **including what never reported** |
-
-**`first:100` is a page, not the answer.** A repo with more contexts than that
-returns the first hundred and says nothing about the rest, so a required check
-sitting at position 101 is absent from the list — which is indistinguishable from
-a check that passed, and is the same failure as the hand-written join one level
-up. `totalCount` is what tells you, so read it before reading the nodes:
-
-| `totalCount` | What the context list is |
-|---|---|
-| ≤ 100 | complete — every context reported is in the nodes |
-| > 100 | **a page.** Follow `pageInfo.hasNextPage` / `endCursor` until it is exhausted |
-| > 100, not paginated | **underivable**, per Phase 0. Say the required set could not be established; do not report the visible contexts as though they were all of them |
-
-`mergeStateStatus` still covers you for the *merge* question — an unsatisfied
-required check yields `BLOCKED` whether or not you paged to it. What truncation
-costs is the ability to name *which* check, which is what the report's row asserts.
 
 **A green rollup is not a mergeable PR.** Verified on a real PR: 39 contexts, 3
 required, every one `SUCCESS`, rollup `SUCCESS` — and `mergeStateStatus: BLOCKED`
@@ -853,10 +833,11 @@ is absent from the list entirely — the failure the hand-written join existed t
 catch. `mergeStateStatus` covers it, because an unsatisfied required check yields
 `BLOCKED` and never `CLEAN`. Two traps travel with it: it is `UNKNOWN` on a merged
 PR, and GitHub computes it lazily, so an open PR may need the query re-issued
-before it settles. `UNKNOWN` is underivable, not "nothing blocks".
+before it settles. `UNKNOWN` is underivable, not "nothing blocks" — the script
+says so rather than leaving it to be remembered.
 
-**Zero required contexts is a finding only when `mergeStateStatus` agrees.** Read
-them together:
+**Zero required contexts is a finding only when `mergeStateStatus` agrees**, and
+the script reads them together:
 
 | Required contexts | `mergeStateStatus` | Reading |
 |---|---|---|
@@ -864,24 +845,38 @@ them together:
 | none | `BLOCKED` | something gates this PR that you cannot see. **Underivable**, per Phase 0 — do not report it as "no enforced checks" |
 | some | `BLOCKED` | read `reviewDecision` and the unsettled contexts; the checks alone do not explain it |
 
+**The context list can be truncated, and the script refuses to hide it.**
+`contexts(first:100)` is a page: a repo reporting more returns the first hundred
+and says nothing about the rest, so a required check at position 101 is absent —
+indistinguishable from one that passed, and the same failure as the hand-written
+join one level up. It pages on `pageInfo`, and where it cannot it reports the
+required set as **underivable** rather than complete:
+
+| `totalCount` vs. what was held | What the required set is |
+|---|---|
+| equal | complete |
+| greater, paged to exhaustion | complete |
+| greater, could not be paged | **underivable**, per Phase 0 — not "these are all of them" |
+
 **A red check is not evidence that the bump caused it.** Phase 6 reports check
 conclusions, and a failing required context is the row most likely to carry the
 verdict — so it is the one that must not assert more than it established. "This
 check is red" is established. "This bump broke it" is a *causal* claim, and
 nothing above tests it.
 
-Ask whether it was already red **on the commit the bot branched from** — which is
-the parent of the bot's own commit, not the merge base:
+The script asks whether it was already red **on the commit the bot branched
+from** — the parent of the bot's own commit, not the merge base — and labels the
+row in three states, never two:
 
-```bash
-PARENT=$(git rev-parse "pr-<N>^")
-gh api "repos/$OWNER/$NAME/commits/$PARENT/check-runs" --paginate \
-  --jq '.check_runs[] | "\(.name)\t\(.conclusion)"'
-```
+| At `pr-<N>^` | Label | What it means for the verdict |
+|---|---|---|
+| the same check is green | **attributable** | the bump is implicated; this row can carry a Hold |
+| the same check is red | **pre-existing** | the tree the bump landed on was already red. A real finding, a *different* one, and it must not produce a Hold on this bump |
+| **no run at the base**, or no check by that name | **underivable**, per Phase 0 | say so rather than defaulting to attributable |
 
 **`pr-<N>^` and `$BASE_SHA` are the same commit for a genuine one-commit bot PR**,
-which is the ordinary case — so this costs nothing there and is the right answer
-when they differ. When they differ, `$BASE_SHA` attributes to the bump
+which is the ordinary case — so preferring the parent costs nothing there and is
+right when they differ. When they differ, `$BASE_SHA` attributes to the bump
 everything that happened on the branch beneath it, which is the same mistake as
 diffing scope against a rewritten base and gets the same substitution (#19).
 
@@ -897,35 +892,13 @@ points disagree:
 | the base branch's tip | `success` — which would have said **attributable** |
 
 Two of those four produce the false Hold this section exists to prevent, and one
-of them is the merge base. Read `$BASE_SHA` as a cross-check, not as the input:
-if it disagrees with `pr-<N>^`, the branch has commits the bot did not write, and
-that is worth reporting on its own.
+of them is the merge base.
 
-**Use the check-runs endpoint, not `gh run list`.** `gh run list --json name`
-returns the *workflow* name — one row reading `CI` — while the contexts in the
-rollup above are **job** names like `test (ubuntu-latest)`. Matching a job name
-against a workflow name yields nothing, for every matrix job, and an empty result
-here is indistinguishable from no run at the base — which lands in the third
-state below and marks every matrix failure underivable. Verified: on a repo whose
-five contexts are `Test (Python 3.11)` … `Lint & type-check`, `gh run list --json
-name` returns a single `CI`, and `check-runs` returns all five by their context
-names. Add `commits/$PARENT/status` if the red context is a `StatusContext`
-rather than a `CheckRun` — the two live in separate lists, and Phase 6's GraphQL
-reads both.
-
-Then label the row, in three states and never two:
-
-| At `pr-<N>^` | Label | What it means for the verdict |
-|---|---|---|
-| the same check is green | **attributable** | the bump is implicated; this row can carry a Hold |
-| the same check is red | **pre-existing** | the tree the bump landed on was already red. A real finding, a *different* one, and it must not produce a Hold on this bump |
-| **no run at the base**, or no check by that name | **underivable**, per Phase 0 | say so rather than defaulting to attributable |
-
-**When `pr-<N>^` has no runs at all, fall back to `$BASE_SHA` and weaken the
-claim out loud.** An intermediate commit of a multi-commit branch is often never
-built — CI ran on the head and nowhere else — so the parent has nothing to
-compare against while the merge base, being on the default branch, does. That
-fallback answers a *different* question and the label has to say so:
+**When `pr-<N>^` has no runs at all the script falls back to `$BASE_SHA` and marks
+the claim weaker.** An intermediate commit of a multi-commit branch is often never
+built — CI ran on the head and nowhere else — so the parent has nothing to compare
+against while the merge base, being on the default branch, does. That fallback
+answers a *different* question:
 
 | Compared against | What a red result establishes |
 |---|---|
@@ -933,15 +906,17 @@ fallback answers a *different* question and the label has to say so:
 | `$BASE_SHA` | it was red **before this branch** — everything below the bump is inside the claim |
 
 Reaching for the second is legitimate and better than reporting nothing; passing
-it off as the first is the failure. Observed on this plugin's own PR #26:
-`pr-26^` is an intermediate commit of the branch and carries zero check runs.
+it off as the first is the failure, so carry the weakened wording into the report
+rather than dropping it. Observed on this plugin's own PR #26: `pr-26^` is an
+intermediate commit of the branch and carries zero check runs.
 
-**The third row has two more causes and they look identical.** The commit may
-predate the workflow or its run may have aged out — or the check may simply be
-*named* something else there. Names drift: `mdcat`'s `main` now reports `test`
-and `test-windows` where the PR reports `test (ubuntu-latest)`, so a name match
-against a distant commit finds nothing and reads as "never ran". Compare the
-whole name list, not just the one you are chasing.
+**The underivable row has two more causes and they look identical.** The commit
+may predate the workflow or its run may have aged out — or the check may simply be
+*named* something else there. Names drift: `mdcat`'s `main` now reports `test` and
+`test-windows` where the PR reports `test (ubuntu-latest)`, so a name match
+against a distant commit finds nothing and reads as "never ran". The script prints
+the whole name list at the comparison point for exactly this reason; read it
+rather than the one name you are chasing.
 
 **A red check on a workflow the diff never touched is a strong prior for
 pre-existing**, and Phase 6 already derives which workflows the diff touched for
