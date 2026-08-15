@@ -11,6 +11,78 @@ patch.
 
 ## [Unreleased]
 
+### Decided
+
+- **The evidence split is dropped**, closing 0.15.0's *Not done, deliberately*.
+  It was held pending something that could detect a narrative turning out to be
+  discriminating rather than motivating. Measuring it first is what settled it
+  instead.
+
+  Every narrative block left in `SKILL.md` totals **2,260 tokens** — that is the
+  figure for moving *all* of them, including the ones designated to stay. The
+  defensible set is ~1,470. The ~4k projection was taken against the 970-line
+  file, and 0.15.0 had already harvested most of it: `setup-nvc`, the seven green
+  release runs and `cli/cli` #14124 left for `actions.md` with the ecosystem
+  split. Of the four narratives listed to move, only the 3,682-deletion
+  `Cargo.lock` story survives, at 78 tokens.
+
+  **The classification had expired in both directions**, and that is the part
+  worth keeping. *Does removing this example make the rule ambiguous?* is a
+  question answered by someone who already knows the rule. The mechanical test is
+  **who enforces this rule now**: `discover.py` decides `BRANCH_POINT`, so
+  `cli/cli` #14049 no longer discriminates a choice the model makes, and
+  `ci_state.py` picks the comparison point, so `mdcat` #6's four-point table does
+  not either — both were listed as staying inline. Phase 4's ruff narrative *is*
+  discriminating and was never a candidate, because `gate_diff.py` takes `--tree`
+  from the caller.
+
+  The destination was also wrong: `evidence.md` is `traps.md` renamed, and
+  `SKILL.md` points at `traps.md` four times, so the move was into a file the
+  per-run cost tables exclude and nothing had measured.
+
+  Against that, ~1,470 tokens buys the property `CONTRIBUTING.md` argues for
+  everywhere else — a rule sitting next to the measurement that produced it
+  resists being reasoned away, which is the failure mode every entry in the
+  replay table shares. Priced honestly that is ~$0.09 of a ~$1.6 run — about 5%,
+  since documentation is re-read from cache on every turn, not once.
+
+### Measured
+
+Two cold runs against the **installed** 0.16.0 plugin, `--no-execute`, each in a
+fresh session so nothing was already in context:
+
+| | `cli/cli` #14091 | `cli/cli` #14049 |
+|---|---|---|
+| turns / cost | 30 / $1.61 | 27 / $1.63 |
+| `actions.md` | fetched | fetched |
+| `report-template.md` | fetched | fetched |
+| **`traps.md`** | **never** | **never** |
+
+Three `traps.md` pointers fire in each run — the preamble, Phase 0's
+branch-protection line, and Phase 6's tail — and none was followed. Both runs
+reached Phase 6 (`discover.py` twice, `ci_state.py` once each), so the phases
+carrying those pointers did execute.
+
+**Soft pointers are not followed; structural handoffs are.** *"`references/traps.md`
+has the reasoning"* does not load a file. *"Method: `references/actions.md` §
+Phase 1"*, in a table the phase must consult to proceed, does. That is why
+0.15.0's split worked, and it is the load-bearing reason this one was dropped:
+`evidence.md` would have been a document no run reaches.
+
+Both audits were sound without it. #14049 — the two-parent maintainer merge —
+came back `BRANCH_POINT=ok` with the base **not** substituted and a correct
+2-file, 4-`uses:`-line scope, which is the narrative that stayed inline doing
+exactly what keeping it inline was for.
+
+### Known, not yet addressed
+
+`traps.md` is ~4,891 tokens that no run reaches. `ci_state.py` mechanised most of
+its CI-state traps in 0.14.0, so what is actually unreachable is narrow: stale
+`CLEAN` right after a push, taking the *latest* run for a SHA, and a bot's own
+rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
+file changes what a phase verifies, so it belongs in its own release behind the
+replay gate rather than in this entry.
+
 ## [0.16.0] — 2026-08-15
 
 Phase 0 was the last large block of prose asking a reader to hold a three-state
