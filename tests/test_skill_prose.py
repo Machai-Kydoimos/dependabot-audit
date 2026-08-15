@@ -12,7 +12,9 @@ consistent **with itself**. Two gaps stay open around it, and they are different
 gaps — a green run here is evidence of neither.
 
 Whether the model *follows* the phases is behavioral and belongs in
-`claude plugin eval`, which is unavailable on this account.
+`claude plugin eval`, which is unavailable on this account — the subcommand
+prints a full `--help` and then refuses at exit 0, so reading the help is not
+checking availability.
 
 Whether the prose is **true** is not checkable at all. Consistency is not
 correctness: every case below can pass on a phase that names a real endpoint,
@@ -82,6 +84,26 @@ def phases(text: str) -> list[tuple[int, str]]:
 
 def bash_blocks(body: str) -> list[str]:
     return [code for lang, code in FENCE.findall(body) if lang == "bash"]
+
+
+def tables(body: str) -> list[list[str]]:
+    """Contiguous runs of markdown table rows, one list per table.
+
+    Phase 0's guidance is carried as much by its tables as by its prose, and a
+    guard that scans the whole phase body cannot tell "this word appears
+    somewhere" from "this word is a row in the table that decides the thing".
+    """
+    found: list[list[str]] = []
+    current: list[str] = []
+    for line in body.splitlines():
+        if line.startswith("|"):
+            current.append(line)
+        elif current:
+            found.append(current)
+            current = []
+    if current:
+        found.append(current)
+    return found
 
 
 def first_phase(hits: dict[str, list[int]], name: str) -> int:
@@ -623,6 +645,136 @@ class TestExecutionIsDisclosed(SkillHarness):
         """Running the cheap read-only checks first is worth something only if
         they are allowed to refuse."""
         self.assertIn("stop before Phase 4", dict(self.phases)[1])
+
+
+class TestCleanupRunsOnEveryPath(SkillHarness):
+    """The cleanup lived in Phase 5, which the correct path never reaches.
+
+    Phase 0 registers two worktrees and a `pr-<N>` branch in the **user's** repo.
+    Phase 1's gate stops the audit before Phase 4 whenever the diff reaches past
+    the lockfile, and `--no-execute` skips Phases 4 and 5 outright — so on both
+    of those paths the tidy-up was documented somewhere the audit had already
+    stopped. One set of litter per PR audited, and the gated path is the one an
+    auditor is *most* likely to take on a PR worth auditing.
+
+    The prose admitted it: "The branch outlives an audit that stopped before
+    Phase 5, too", written directly above the block that never ran.
+
+    Phase 7 is the only phase every audit reaches — a Phase 1 stop still writes
+    a report, because "stopping here is not a failed audit".
+    """
+
+    CLEANUP = re.compile(r"git worktree remove|git branch -D")
+
+    def test_the_cleanup_is_not_in_a_phase_that_can_be_skipped(self):
+        for number in (4, 5):
+            self.assertNotRegex(
+                self.shell[number],
+                self.CLEANUP,
+                f"Phase {number} executes PR code, so --no-execute and Phase 1's gate "
+                f"both skip it; cleanup placed there never runs on the paths that "
+                f"most need it",
+            )
+
+    def test_the_cleanup_is_in_the_phase_every_audit_reaches(self):
+        self.assertRegex(
+            self.shell[7],
+            self.CLEANUP,
+            "Phase 7 is the only phase reached on every path, including the Phase 1 "
+            "gate stop; the cleanup belongs there",
+        )
+
+    def test_both_worktrees_and_the_branch_are_removed(self):
+        """Removing the worktrees and leaving the branch still accumulates."""
+        phase7 = self.shell[7]
+        for artifact in ("$SCRATCH/pr-<N>", "$SCRATCH/base-<N>"):
+            self.assertIn(artifact, phase7, f"{artifact} is created in Phase 0 and never removed")
+        self.assertIn("git branch -D", phase7, "the fetched ref outlives the worktrees")
+
+
+class TestTheRequiredContextListIsNotSilentlyTruncated(SkillHarness):
+    """`contexts(first:100)` returns a page and says nothing about the rest.
+
+    A repo reporting more than a hundred contexts hands back the first hundred,
+    so a required check at position 101 is simply absent — which is
+    indistinguishable from a check that passed, and is the same shape as the
+    hand-joined required list `isRequired` was introduced to replace. The
+    connection carries `totalCount`, so the truncation is detectable rather than
+    inherent; not reading it is what makes it silent.
+
+    Written from the query rather than from a measurement: no repo to hand
+    reports over 100 contexts. What is asserted is therefore the *detectability*
+    — that the field is requested — not a behaviour observed in the wild.
+    """
+
+    def test_the_query_asks_how_many_contexts_there_are(self):
+        self.assertIn(
+            "totalCount",
+            self.shell[6],
+            "without totalCount a truncated page is indistinguishable from a "
+            "complete list, and the missing contexts read as passing",
+        )
+
+    def test_the_prose_gives_truncation_phase_0s_third_state(self):
+        """Asserted on the table that reads `totalCount`, not on the bare word.
+
+        Mutation-checked and caught: `underivable` was already in Phase 6 for
+        `mergeStateStatus: UNKNOWN`, so a phase-wide search for it passed against
+        the prose that had this defect. The same trap as
+        `test_a_base_with_no_run_is_underivable_rather_than_attributable`, which
+        records it one guard earlier. A word that is already present cannot
+        discriminate; the row that carries the meaning can.
+        """
+        for table in tables(dict(self.phases)[6]):
+            if any("totalCount" in row for row in table):
+                self.assertTrue(
+                    any("underivable" in row.lower() for row in table),
+                    "a context list truncated and not paged is not established, and "
+                    "must not be reported as the complete required set",
+                )
+                return
+        self.fail("Phase 6 has no table reading totalCount")
+
+
+class TestExecutionRequiresARepoYouControl(SkillHarness):
+    """Phase 1's gate does not defend against the case Phase 5 executes.
+
+    The gate catches a lockfile edited after it was written honestly. It cannot
+    catch a malicious *release*: Phase 1 compares the lockfile against what the
+    registry serves today, so when the attacker published the artifact the record
+    and the lockfile agree, and agreement is the entire test.
+
+    So the classification, not the gate, is what has to carry "should this run at
+    all". It already switched on `isCrossRepository` and a non-bot author. The
+    third condition is permission: a repo you cannot merge into is one whose PR
+    you had no plan to run, and the comparison to "CI would run it anyway" stops
+    holding — CI runs it in a fresh container with a scoped token, this runs it on
+    a workstation with the auditor's credentials in the environment.
+    """
+
+    def _classification_table(self) -> list[str]:
+        for table in tables(dict(self.phases)[0]):
+            if any("isCrossRepository" in row for row in table):
+                return table
+        self.fail("Phase 0 has no PR-classification table")
+
+    def test_the_classification_switches_on_permission_too(self):
+        table = self._classification_table()
+        self.assertTrue(
+            any("push" in row for row in table),
+            "the classification decides whether Phases 4 and 5 may run and never "
+            "asked whether this is a repo you control",
+        )
+
+    def test_the_execute_warning_says_the_gate_cannot_see_a_bad_release(self):
+        """The preamble claimed Phases 1-3 "would catch a bad dependency"."""
+        preamble = dict(self.phases)[-1].lower()
+        self.assertIn(
+            "does not catch a malicious release",
+            preamble,
+            "the ordering argument must scope itself, or it reads as a guarantee "
+            "against the case that actually reaches Phase 5",
+        )
 
 
 class TestFrontmatter(SkillHarness):

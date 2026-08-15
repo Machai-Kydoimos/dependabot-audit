@@ -135,7 +135,7 @@ version bumps change output formats about as often as they change behavior.
 python3 -m unittest discover -s tests -v
 ```
 
-139 cases, stdlib only, no network — they run offline and free. Every case
+149 cases, stdlib only, no network — they run offline and free. Every case
 corresponds to a defect that actually shipped, or to a failure the audit exists
 to detect. They fall into ten groups:
 
@@ -178,7 +178,11 @@ to detect. They fall into ten groups:
   safety properties: a dirty tree is refused, and the worktree is restored
   between runs — including when the gate *staged* its change, which
   `git checkout -- .` cannot undo. That group matters most: without it run two
-  inherits run one's edits and every comparison after it is fiction.
+  inherits run one's edits and every comparison after it is fiction. It also
+  covers a *staged rename*, which `git status --porcelain -z` emits as two fields
+  rather than one — the parse that assumed one turned `tracked.txt` into
+  `cked.txt`, reporting a path that never existed as deleted while the real
+  deletion went unreported.
 - **Ecosystem coverage** — no phase from 1 to 6 may be written for only one of
   the two supported ecosystems, Phase 3 must name an advisory source for actions,
   and it must keep the measured case behind the OSV version trap. This group
@@ -193,8 +197,12 @@ to detect. They fall into ten groups:
   that execute PR code must say so, the actions scope gate must key on the kind of
   line the diff touches rather than a count of files, Phase 2 must rule out a
   cooldown before calling a gap lag, and the frontmatter key that withholds tools
-  must be the one that works. Each corresponds to a defect that shipped in the
-  prose, where the other groups cannot reach.
+  must be the one that works. Since 0.12.0 it also checks that the cleanup lives
+  in a phase every audit reaches rather than one `--no-execute` skips, that the
+  rollup query reads `totalCount` so a truncated page cannot pass as a complete
+  required-check list, and that the classification asks whether this is a
+  repository you control before letting Phases 4 and 5 run. Each corresponds to a
+  defect that shipped in the prose, where the other groups cannot reach.
 
 The theme is **silent** failure. An audit that reports success while verifying
 less than it claimed is worse than one that crashes, so the assertions target
@@ -229,7 +237,23 @@ that the required contexts come from the API rather than an authored list. It
 cannot check
 whether Phase 6 gets run at all, or whether an unexpected file in the diff
 actually stops the audit. That is behavioral and belongs in `claude plugin eval`,
-which is in early access and unavailable on this account.
+which is in early access and **still unavailable on this account**.
+
+The subcommand is present in the CLI and prints a complete `--help` — options for
+graders, ablation arms, cost ceilings, thresholds — which reads exactly like a
+feature you can use. Invoking it does not:
+
+```
+$ claude plugin eval dependabot-audit
+`plugin eval` is currently in early access
+$ echo $?
+0
+```
+
+**It exits 0.** So a CI step added on the strength of the help text would go
+green while running nothing at all — the same shape as every other failure this
+repo collects, arriving in the tool that was supposed to close the gap. Checked
+0.12.0; worth re-checking rather than assuming, in either direction.
 
 That gap is real, and it is where the defects keep turning up. Seven have now
 shipped in the prose and nowhere else:
@@ -306,15 +330,23 @@ Phases 0–3 and 6–8 are network reads and `git` queries, and execute nothing.
 
 Three things follow, all of them in the skill:
 
-- **Phase 1 is a gate.** If the diff reaches past the manifest and lockfile, or
-  provenance fails, the audit stops there rather than continuing into the phases
-  that execute. Running the cheap read-only checks first is only worth something
-  if they are allowed to refuse.
+- **Phase 1 is a gate**, and it is worth knowing what it can see. If the diff
+  reaches past the manifest and lockfile, or provenance fails, the audit stops
+  there rather than continuing into the phases that execute. What that catches is
+  a lockfile edited after it was written honestly. It does **not** catch a
+  malicious *release*: the hash is compared against what the registry serves
+  today, so when the attacker published the artifact the record and the lockfile
+  agree — and agreement is the whole test. PEP 740 `PUBLISHER CHANGED` is the one
+  signal that speaks to that case, and its coverage is partial.
 - **`--no-execute` runs Phases 0–3 and 6–7 only** — provenance, currency,
   changelogs, OSV, CI state. That is most of the value, and it is the right
-  default for a PR you have no reason to trust. Phase 0 flags a cross-repository
-  or non-bot-authored bump and switches to it, because neither Dependabot nor
-  Renovate opens a fork PR.
+  default for a PR you have no reason to trust. Phase 0 switches to it on three
+  observations, any one of which is enough: a cross-repository PR, a non-bot
+  author — neither Dependabot nor Renovate opens a fork PR — or **an account
+  without `push` on the repo**. The last is the asymmetry worth stating: a bot PR
+  on a repo you control proposes code your own CI would run anyway, while a PR
+  you cannot merge proposes code you had no plan to run, and CI would run *that*
+  in a fresh container with a scoped token rather than on your workstation.
 - **The narrowed install is the documented default** — `uv sync --locked
   --no-build --no-install-project`, which succeeds only if every dependency in
   the lockfile resolved to a **wheel**, so no third-party build code runs at all.

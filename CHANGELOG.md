@@ -11,6 +11,137 @@ patch.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-15
+
+A review pass over the whole plugin rather than a round of replays, so the
+findings are structural: two of them are places where a rule was written into a
+phase that the paths most needing it never reach, and one is a claim the preamble
+made that the mechanism underneath it cannot support.
+
+This release **adds** to `SKILL.md` (970 → 1053 lines). That is the wrong
+direction and is deliberate for now: correctness first, relocation second. The
+restructure that halves it is scheduled and gated on the eval suite existing, so
+that "did a rule stop being followed when it moved" is a measurement rather than
+a hope.
+
+### Fixed
+
+- **The cleanup ran only on the path that needed it least.** Phase 0 registers
+  two worktrees and a `pr-<N>` branch in the **user's** repo, and the block that
+  removed them lived in Phase 5. `--no-execute` skips Phase 5, and Phase 1's gate
+  stops before it — so an audit that correctly refused to run an unexpected diff
+  left litter behind, one set per PR audited, while an audit that ran to
+  completion cleaned up after itself. Exactly backwards.
+
+  The prose already said so, two lines above the block that never ran: *"The
+  branch outlives an audit that stopped before Phase 5, too."* It was recorded and
+  not acted on.
+
+  Cleanup now lives in Phase 7, which is the only phase every audit reaches — a
+  Phase 1 stop still writes a report, because stopping there "is not a failed
+  audit… it reached a verdict early".
+
+- **`contexts(first:100)` was read as the answer rather than as a page.** A repo
+  reporting more than a hundred contexts returns the first hundred and says
+  nothing about the rest, so a required check at position 101 is absent from the
+  list — indistinguishable from one that passed. That is the same failure as the
+  hand-written required-list join that `isRequired` was introduced to replace,
+  reproduced one level up.
+
+  The query now selects `totalCount` and `pageInfo`, and the prose gives an
+  unpaged `totalCount > 100` Phase 0's third state: **underivable**, not
+  complete. Verified live against `cli/cli` #14148 — `totalCount=25`,
+  `hasNextPage=false`, 25 returned, 3 required — which confirms the fields exist
+  and are accepted, on a PR small enough that nothing was being truncated.
+
+- **`gate_diff.py` invented a file path and dropped a real one.** `git status
+  --porcelain -z` emits a staged rename as *two* NUL-delimited fields,
+  `R  <new>\0<orig>\0`, and only the first carries the `XY ` status prefix.
+  Slicing three characters off every field turned `tracked.txt` into `cked.txt`:
+
+      field='R  renamed.txt'  -> line[3:]='renamed.txt'
+      field='tracked.txt'     -> line[3:]='cked.txt'
+
+  So a run reported `cked.txt` as deleted — a path that never existed — while the
+  real deletion of the source went unreported. Both halves fail in the reporting
+  direction this repo cares about: a change invented, and a change dropped.
+
+  The old comment claimed "a rename shows as delete + add", which is true of the
+  **unstaged** case only (` D a` + `?? b`, two entries). Git detects renames in
+  the index, and `restore()`'s own docstring already names `pre-commit` as a gate
+  that stages directly. Measured against git 2.55.0; both shapes are now in the
+  docstring.
+
+### Changed
+
+- **Phase 0 switches to `--no-execute` when `$PERMS.push` is false.** The
+  classification already refused to execute a cross-repository or non-bot PR;
+  it never asked whether this was a repository you control. A PR you cannot merge
+  is one whose code you had no plan to run, and the usual defence — "CI would run
+  it anyway" — stops holding there: CI runs it in a fresh container with a scoped
+  token, and this procedure runs it on a workstation with the auditor's
+  credentials in the environment.
+
+  Replayed: `cli/cli` and `BIRSAx2/mdcat` are both `pull`-only for this account,
+  `dependabot-audit` is `push: true`. Which has a consequence for this repo's own
+  process, now recorded in CONTRIBUTING — the documented replay targets no longer
+  execute by default, so a Phase 4 or Phase 5 method change replayed against them
+  exercises everything except the phase being changed.
+
+- **`$PERMS` gets the three-state treatment, found while replaying the above.** A
+  failed `repos/:owner/:repo` call writes its error body to stdout, so the capture
+  succeeds and `$PERMS` holds `{"message":"Not Found",…}` — at which point `push`
+  is not `true` and reads exactly like a pull-only account. The **exit code is 1**,
+  which is what separates this from the branch-protection trap where the same
+  shape arrives at exit 0, so the derivation now gates on the call rather than the
+  value. Failing closed is right; reporting "you lack `push` here" when the audit
+  could not tell is not.
+
+- **The preamble no longer claims the ordering catches a bad dependency.** Phase 1
+  compares the lockfile against what the registry serves *today*, so a maliciously
+  published release passes it clean: the record and the lockfile agree, and
+  agreement is the entire test. `traps.md` has said this for several releases
+  while the preamble asserted otherwise two screens above it. The gate catches a
+  lockfile edited after it was written honestly, and a diff reaching into source.
+  PEP 740 `PUBLISHER CHANGED` is the only signal that speaks to the other case,
+  and its coverage is partial.
+
+- **Phase 0 derives both SHAs from one call.** `headRefOid` and `baseRefOid` were
+  two separate `gh pr view` invocations, which can straddle a bot rebase and pin a
+  head and a base that never coexisted — with nothing downstream able to tell,
+  because each is individually a real commit. Also dropped `files` (GitHub
+  computes it from the merge base, so it agrees with a rewritten one rather than
+  correcting it, and `SKILL.md` already warned against using it) and
+  `mergeStateStatus` (computed lazily; Phase 6 reads it fresh).
+
+- **`claude plugin eval` is still unavailable, and the three places that say so
+  now say how.** The subcommand exists in the CLI and prints a complete `--help`
+  — graders, ablation arms, cost ceilings, thresholds — which reads exactly like
+  a usable feature. Invoking it, on both `init` and the run path, prints
+  ``plugin eval` is currently in early access` and does nothing, **at exit 0**.
+
+  So a CI step added on the strength of the help text goes green while running
+  nothing: the silent-failure shape this whole repo is organised around, arriving
+  in the tool meant to close its largest gap. The first draft of this release
+  asserted the opposite, from reading `--help` rather than running it — which is
+  the same error one level up, and is why CONTRIBUTING now says to verify by
+  invoking.
+
+### Tests
+
+139 → 149. Seven new prose guards (cleanup placement, context truncation, the
+permission switch, and the scoped execution warning) and three for the staged
+rename. All ten mutation-checked against the pre-fix artifact.
+
+One of the seven did not discriminate on the first attempt and the mutation check
+is what caught it: a guard asserting `underivable` appears in Phase 6 passed
+against the defective prose, because that word was already there for
+`mergeStateStatus: UNKNOWN`. It now asserts on the table row that reads
+`totalCount`. This is the second time that exact trap has been recorded — the
+first is in `test_a_base_with_no_run_is_underivable_rather_than_attributable` —
+which is an argument for the mutation check rather than for reading more
+carefully.
+
 ## [0.11.0] — 2026-08-15
 
 Findings from running the procedure against `cli/cli`. Go is out of scope and
@@ -1109,7 +1240,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.9.0...v0.10.0

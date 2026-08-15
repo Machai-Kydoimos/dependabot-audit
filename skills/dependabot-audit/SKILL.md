@@ -35,12 +35,25 @@ isolate the machine from the PR.** Nothing here is a sandbox; if you need one, i
 has to come from outside — a container, a throwaway VM, or a Landlock confinement
 — and this skill cannot verify that you have one.
 
-The ordering is the mitigation available inside the skill. Phases 1–3 are the
-read-only checks that would catch a bad dependency, and **Phase 1 is a gate**: if
-the diff reaches beyond the manifest and lockfile, or provenance fails, stop there.
-Do not continue into the phases that execute. A procedure whose thesis is "verify
-before you trust" must not run the artifact before it has finished deciding
-whether to trust it.
+The ordering is the mitigation available inside the skill, and it is worth being
+exact about what that buys. **Phase 1 is a gate**: if the diff reaches beyond the
+manifest and lockfile, or provenance fails, stop there. Do not continue into the
+phases that execute. A procedure whose thesis is "verify before you trust" must
+not run the artifact before it has finished deciding whether to trust it.
+
+**What the gate catches is a lockfile edited after it was written honestly** — a
+hash, size, URL or yank status that disagrees with the registry — and a diff that
+reaches into source. **It does not catch a malicious release.** Phase 1 compares
+the lockfile against what the registry serves *today*, so when the attacker
+published the artifact, the record and the lockfile agree — and agreement is the
+entire test. A bump to a version whose maintainer account was compromised passes
+Phase 1 clean and arrives at Phase 5's install with the gate's blessing.
+
+The one signal that speaks to it is PEP 740 build provenance: `PUBLISHER CHANGED`
+means the release being adopted was built somewhere the previous one was not.
+Coverage is partial and version-dependent, so where there is no attestation there
+is no signal. Read the ordering as what it is — it removes the cases it can see,
+and `--no-execute` is the answer for the rest.
 
 **`--no-execute`** runs Phases 0–3 and 6–7 only. Every one of those is a network
 read: provenance, currency, changelogs, OSV, CI state. That is most of this
@@ -63,7 +76,20 @@ renamed, and a cached profile silently audits a repo that no longer exists.
 Deriving costs one call each.
 
 ```bash
-gh pr view <N> --json number,title,headRefOid,mergeStateStatus,files,author,createdAt,isCrossRepository
+# Both SHAs out of ONE call. Fetched separately they can straddle a bot rebase,
+# pinning a head and a base that never coexisted — and nothing downstream can
+# tell, because each is individually a real commit.
+PR_PIN=$(gh pr view <N> --json headRefOid,baseRefOid \
+  --jq '"\(.headRefOid) \(.baseRefOid)"')
+HEAD_SHA=${PR_PIN% *}                     # full 40 chars
+BASE_REF=${PR_PIN#* }                     # GitHub's own base
+
+# then what classifies the PR. Two fields are deliberately absent: `files`,
+# because GitHub computes it from the merge base and so agrees with a rewritten
+# one rather than correcting it, and `mergeStateStatus`, because GitHub computes
+# it lazily and Phase 6 is where it is read fresh. Carrying either here invites
+# a later phase to trust a value this one had no way to check.
+gh pr view <N> --json number,title,author,createdAt,isCrossRepository
 
 # derive the default branch — never assume "main"
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
@@ -73,8 +99,6 @@ cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
 # pin the commit under audit, fetch it once, and build the tree every later
 # phase works in
 SCRATCH=${SCRATCH:-$(mktemp -d)}          # any directory OUTSIDE the repo
-HEAD_SHA=$(gh pr view <N> --json headRefOid --jq .headRefOid)   # full 40 chars
-BASE_REF=$(gh pr view <N> --json baseRefOid --jq .baseRefOid)   # GitHub's own base
 git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
 BASE_SHA=$(git merge-base "$BASE_REF" "pr-<N>")
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
@@ -157,14 +181,48 @@ fork did not come from the bot:
 
 | Observation | Meaning |
 |---|---|
-| `isCrossRepository: false`, author `dependabot[bot]` or `renovate[bot]` | the ordinary case |
+| `isCrossRepository: false`, author `dependabot[bot]` or `renovate[bot]`, `push: true` | the ordinary case |
 | `isCrossRepository: true` | a fork PR — neither bot opens one |
 | any other author | a human PR shaped like a bump, which it may well be, and may not |
+| **`$PERMS.push` false** | **not a repository you control.** You cannot merge this PR, so nothing is gained by letting it run on your machine |
 
-Either of the last two is a **finding** in its own right, and it changes the
+Any of the last three is a **finding** in its own right, and each changes the
 default: run `--no-execute`, report what the read-only phases found, and let the
 user decide whether to authorise Phases 4 and 5. Say plainly that those phases
 would run the PR's code.
+
+The `push` row is the one easiest to argue away, so name the asymmetry it rests
+on. A bot PR on a repo you control proposes code you were going to run anyway,
+under gates you already trust — your own CI would run it too. A PR on a repo you
+cannot merge into proposes code you had no plan to run, and the comparison to CI
+stops holding: CI runs it in a fresh container with a scoped token, and this
+procedure runs it on your workstation with your credentials in the environment.
+`$PERMS` is already derived above, so this costs nothing to check.
+
+**`$PERMS` is itself a row with three states, and this is where that matters.**
+A failed `repos/:owner/:repo` call writes its error body to **stdout**, so the
+capture succeeds and `$PERMS` holds a JSON error rather than a permissions
+object — at which point `push` is not `true` and reads exactly like a pull-only
+account. Measured on a name that does not resolve:
+
+```
+PERMS = {"message":"Not Found","documentation_url":"...","status":"404"}
+```
+
+The **exit code is 1**, which is what separates this from the branch-protection
+trap below, where the same shape arrives at exit 0. So gate on the call, not on
+the value:
+
+```bash
+PERMS=$(gh api "repos/:owner/:repo" --jq '.permissions') || PERMS=underivable
+```
+
+Failing this one closed is right — `--no-execute` is the safe direction, and
+taking it costs the audit only the two phases it was least entitled to run. What
+must not happen is the *report* saying "you lack `push` on this repo" when the
+audit could not establish what you have. That is the underivable state
+masquerading as a finding, which is the failure this whole section is built
+against.
 
 **Pin the head SHA here and audit that one commit everywhere.** The lockfile
 Phase 1 reads, the worktree Phase 5 reproduces in, and the CI run Phase 6 checks
@@ -702,20 +760,9 @@ because it is one a reader can falsify.
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.
 
-**Close the loop.** The worktree *and* the `pr-<N>` branch Phase 0 created are
-both registered in the **user's** repo, so an audit that walks away leaves litter
-behind — and it accumulates, one per PR audited. The branch outlives an audit that
-stopped before Phase 5, too. Either remove them when finished, or keep them
-deliberately and say so in the report so the user knows they are there:
-
-```bash
-git worktree remove "$SCRATCH/pr-<N>"
-git worktree remove "$SCRATCH/base-<N>"
-git branch -D "pr-<N>"
-```
-
-Keeping them is reasonable when a follow-up run is likely; silently keeping them
-is not.
+The worktrees and the `pr-<N>` branch are cleaned up in Phase 7, not here — an
+audit that stops at Phase 1's gate never reaches this phase and still has to
+tidy up after itself.
 
 ## Phase 6 — CI verification
 
@@ -761,7 +808,7 @@ query($owner:String!, $name:String!, $number:Int!) {
     pullRequest(number:$number) {
       mergeable mergeStateStatus reviewDecision
       commits(last:1) { nodes { commit { statusCheckRollup { state
-        contexts(first:100) { nodes {
+        contexts(first:100) { totalCount pageInfo { hasNextPage endCursor } nodes {
           ... on CheckRun      { name    conclusion isRequired(pullRequestNumber:$number) }
           ... on StatusContext { context state      isRequired(pullRequestNumber:$number) }
         } } } } } }
@@ -778,6 +825,22 @@ to get wrong. Read **three** fields, and never substitute one for another:
 | `isRequired`, per context | which checks gate merge — a repo can report far more than it requires |
 | `statusCheckRollup.state` | whether the checks that *reported* passed |
 | `mergeStateStatus` | whether anything still blocks, **including what never reported** |
+
+**`first:100` is a page, not the answer.** A repo with more contexts than that
+returns the first hundred and says nothing about the rest, so a required check
+sitting at position 101 is absent from the list — which is indistinguishable from
+a check that passed, and is the same failure as the hand-written join one level
+up. `totalCount` is what tells you, so read it before reading the nodes:
+
+| `totalCount` | What the context list is |
+|---|---|
+| ≤ 100 | complete — every context reported is in the nodes |
+| > 100 | **a page.** Follow `pageInfo.hasNextPage` / `endCursor` until it is exhausted |
+| > 100, not paginated | **underivable**, per Phase 0. Say the required set could not be established; do not report the visible contexts as though they were all of them |
+
+`mergeStateStatus` still covers you for the *merge* question — an unsatisfied
+required check yields `BLOCKED` whether or not you paged to it. What truncation
+costs is the ability to name *which* check, which is what the report's row asserts.
 
 **A green rollup is not a mergeable PR.** Verified on a real PR: 39 contexts, 3
 required, every one `SUCCESS`, rollup `SUCCESS` — and `mergeStateStatus: BLOCKED`
@@ -950,6 +1013,26 @@ Verdicts are one of:
 
 If the user asked for `--comment`, print the report and offer to post it; posting
 is a separate, explicitly requested action.
+
+**Close the loop, whatever phase the audit reached.** The two worktrees *and* the
+`pr-<N>` branch Phase 0 created are registered in the **user's** repo, and they
+accumulate one set per PR audited. This step lives here rather than in Phase 5
+because Phase 5 is skippable and this is not: `--no-execute` skips it, and Phase
+1's gate stops before it — which is the path where the audit was *most* right to
+stop, and the one that used to litter every time. Phase 7 is the only phase every
+audit reaches, including the one that ends at the gate.
+
+```bash
+git worktree remove "$SCRATCH/pr-<N>"
+git worktree remove "$SCRATCH/base-<N>"
+git branch -D "pr-<N>"
+```
+
+Add `$SCRATCH/tip-<N>` if Phase 0 found the base rewritten and created it.
+
+Keeping them is reasonable when a follow-up run is likely — say so in the report,
+with the commands above, so the user knows what is there. Silently keeping them
+is what this step exists to prevent.
 
 ## Phase 8 — Learning loop (the only thing worth persisting)
 
