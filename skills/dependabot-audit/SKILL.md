@@ -66,8 +66,8 @@ the bots did not open. Say in the report which phases did not run.
 The failure modes that bite are not "is this package malicious" — they are a
 proposal that is already stale, a gap containing a fix no vulnerability database
 knows about, and a bump that changes a *default* rather than a behavior. All
-three are observed, not hypothetical. Phases 2 and 4 exist for them, and
-`references/traps.md` has the cases.
+three are observed, not hypothetical. Phases 2 and 4 exist for them, and each
+carries the measurement it came from.
 
 ## Phase 0 — Discover the repo (derive every run; never cache)
 
@@ -300,9 +300,12 @@ between them, and at `pull` only the verdict becomes a recommendation the reader
 cannot act on, so offer `--comment` text instead.
 
 Do **not** try to read the required checks here at any tier. That question moved
-to Phase 6, which asks it per-PR in a form readable at `pull`; the two endpoints
-that look like they answer it both fail into a plausible value, and
-`references/traps.md` has the four states they return.
+to Phase 6, which asks it per-PR in a form readable at `pull`. The two endpoints
+that look like they answer it both fail into a plausible value, in opposite
+directions: `branches/<b>/protection` needs `admin` and answers a bare `404` that
+is indistinguishable from an unprotected branch, while `rules/branches/<b>` reads
+at any tier and reports **rulesets only**, so classic protection returns `[]` and
+manufactures a false "nothing enforced". Both measured, in `CONTRIBUTING.md`.
 
 Recalled project memory may already name landmines for this repo (Phase 8 writes
 them). Treat those as leads to check, not as facts — verify before repeating.
@@ -462,8 +465,13 @@ human had to deal with it. Observed on a real `ruff 0.15.22 -> 0.16.0` bump: six
 Markdown files on the base, nothing on the PR's tree.
 
 **Do not read the exit codes as the answer.** Both versions can exit 0 while the
-scope moves underneath them — that is the founding observation of this phase, and
-`references/traps.md` has it.
+scope moves underneath them — the founding observation of this phase, measured on
+ruff 0.15.22 → 0.16.0 in a repo already compliant with both: identical exit 0,
+while the newer version formatted **33 more files**, having started formatting
+Python fences inside Markdown. Nothing in the pass/fail answer moved. Diffing the
+two versions' *output* does not rescue it either, because a bump changes output
+format about as often as behavior — which is why `gate_diff.py` compares what
+each run did to the files.
 
 **"Inert here" is a result, not silence.** Reaching it deliberately is this phase
 working; reaching it by not looking is the failure.
@@ -685,8 +693,17 @@ It is also the direction that costs least to be wrong in, and therefore gets
 least scrutiny: a false Hold looks conservative, so nobody goes back to check
 whether the bump was the cause.
 
-`references/traps.md` has the reasoning, plus stale `CLEAN`, `UNSTABLE` being
-mergeable, neutral CodeQL, and why a bot rebase does not re-trigger CI.
+**Three CI-state traps the script cannot cover**, because each is about whether
+the answer is *current* rather than how to read it:
+
+- **A merge state can read `CLEAN` on stale checks.** Right after a push the API
+  can serve the *previous* commit's results. Gate on a run reporting for the
+  current full head SHA, not on merge state alone.
+- **A run is `success` only if every job is, and only the latest run counts.** A
+  duplicate event can cancel an earlier one, and `cancelled` is not `failure`.
+- **A bot's own rebase does not re-trigger CI** — push-recursion suppression on
+  the bot's token. So a green you are reading may belong to the commit before the
+  rebase. Close and reopen under your own auth, or ask the bot to recreate.
 
 ## Phase 7 — Report
 
@@ -824,5 +841,6 @@ can, and it is the one that owns the decision. If no memory directory exists,
 offer the same text as an addition to the repo's `CONTRIBUTING.md` gotchas
 section.
 
-A generally portable trap belongs in `references/traps.md` in this plugin, not in
-one project's memory. Say which you are proposing, and why.
+A generally portable trap belongs in this plugin rather than in one project's
+memory — in the phase it applies to if it is a rule, or in that ecosystem's
+reference if it is a recipe. Say which you are proposing, and why.

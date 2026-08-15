@@ -196,8 +196,8 @@ Read the result as three distinct findings:
 The last is the one no security feed reports: a formatter that used to delete
 something and no longer does, in a write mode many repos run on every commit.
 
-**Do not read the exit codes as the answer** — see `references/traps.md`; both
-versions can exit 0 while the scope moves underneath them.
+**Do not read the exit codes as the answer** — both versions can exit 0 while the
+scope moves underneath them, which is why this phase measures the tree.
 
 `allow-list vs disable-list` is no longer something to work out in advance; the
 run settles it. Keep it for the *report*, to explain why a difference fired:

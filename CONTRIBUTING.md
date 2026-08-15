@@ -72,13 +72,26 @@ GET repos/:o/:r/rules/branches/main       -> deletion, non_fast_forward,
 GET repos/:o/:r/branches/main/protection  -> 404 "Branch not protected"
 ```
 
-That 404 is the *distinguishable* one from `references/traps.md`'s four-state
-table, not the bare `404 Not Found` that means you lack `admin` — and it is still
-wrong about enforcement, on a branch requiring five checks. It mirrors the case
-`traps.md` records from `mdcat`, where classic protection makes `rules/branches`
-return `[]`. Each endpoint answers about its own mechanism and returns a
-confident "nothing here" about the other. Neither substitutes for asking per-PR,
-which is what Phase 6 does.
+Each endpoint answers about its own mechanism and returns a confident "nothing
+here" about the other. Neither substitutes for asking per-PR, which is what Phase
+6 does — and why `SKILL.md` Phase 0 says not to call either one at any tier.
+
+**`branches/<b>/protection` returns four states, not three, and only the first is
+your own mistake.** It requires `admin`, and GitHub answers a bare `404` rather
+than a `403` so as not to confirm the resource exists — and `gh` writes the error
+body to *stdout*, so redirecting the call into a file yields a well-formed
+artifact asserting the opposite of the truth.
+
+| Response | Meaning |
+|---|---|
+| `404 Branch not found` | wrong branch name — fix and re-run |
+| `404 Branch not protected` | correct branch, no **classic** protection configured — which is what this repo returns while a ruleset requires five checks |
+| **`404 Not Found`** (bare) | **you lack `admin`** — protection may exist and be invisible to you |
+| `403 Upgrade to GitHub Pro…` | unavailable on this **plan**, not a permission you lack — returned even at `admin: true`, and what this repo returned before going public |
+
+Verified from the other side too: a repo whose `main` enforces three required
+checks via classic protection returns the bare `404` to a `pull`-only account
+while `branches/<b>` reports `"protected": true`.
 
 ## The gate with no script
 
@@ -178,7 +191,7 @@ the same failure as a test that has only ever passed, one level up, and rereadin
 it will not reveal anything because it agrees with itself by construction. Two
 instances in one session shipping 0.10.0: a Phase 6 prose guard written from the
 fix asserted the very property that *was* the defect, and went green; a
-`traps.md` paragraph written from its own diagnosis restated what the file
+reference paragraph written from its own diagnosis restated what that file
 already said two other places. The control is the guard written from a
 **measurement** — `gh run list --json name` returns `CI`, not the check name —
 which caught a real error. The discriminator is not the artifact and not the

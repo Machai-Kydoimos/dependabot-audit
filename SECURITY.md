@@ -29,6 +29,23 @@ is the largest thing it does that cannot be undone.
 
 Phases 0–3 and 6–8 are network reads and `git` queries and execute nothing.
 
+**What a frozen install actually runs, per ecosystem.** Only the first row is an
+install this plugin performs. The rest are here deliberately: the hazard is true
+whatever you are looking at, and someone arriving with an out-of-scope repository
+should find the warning rather than silence. Their presence is not an invitation
+to audit those ecosystems — see the scope section of the README for why they were
+removed.
+
+| Ecosystem | What an install runs | How to narrow it |
+|---|---|---|
+| **PyPI / uv** | any sdist in the resolution builds, running `setup.py` or the PEP 517 backend | `uv sync --locked --no-build --no-install-project` |
+| npm | `preinstall` / `install` / `postinstall` scripts — the standard supply-chain vector | `npm ci --ignore-scripts` |
+| Cargo | every crate's `build.rs` | **nothing** — there is no flag |
+| Go | nothing at install time; `go build` does not run third-party build hooks | not needed |
+
+This is the half of a removed recipe that fails *safe*. A warning that is ignored
+costs nothing; a verification that is wrong reports green.
+
 What the plugin does about it:
 
 - **Phase 1 gates.** A diff reaching past the manifest and lockfile, or a
