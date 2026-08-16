@@ -13,8 +13,8 @@ gaps — a green run here is evidence of neither.
 
 Whether the model *follows* the phases is behavioral and belongs in
 `claude plugin eval`, which is unavailable on this account — the subcommand
-prints a full `--help` and then refuses at exit 0, so reading the help is not
-checking availability.
+prints a full `--help` and then refuses on stderr with an empty stdout, so
+reading the help is not checking availability and neither is grepping the output.
 
 Whether the prose is **true** is not checkable at all. Consistency is not
 correctness: every case below can pass on a phase that names a real endpoint,

@@ -83,6 +83,43 @@ rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
 file changes what a phase verifies, so it belongs in its own release behind the
 replay gate rather than in this entry.
 
+## [0.21.1] — 2026-08-16
+
+`claude plugin eval` does not refuse at exit 0. Re-checked while answering "how
+will I know when it opens up", and the answer needed the refusal's shape to be
+right (#32).
+
+Measured directly on `claude` 2.1.233, no pipe, on both the run path and `init`:
+
+```
+$ claude plugin eval dependabot-audit >out 2>err
+$ echo $?
+1
+$ cat out          # empty
+$ cat err
+`plugin eval` is currently in early access
+```
+
+Two corrections, and the second inverts the argument built on the first:
+
+- **It exits 1**, not 0.
+- **The refusal is on stderr and stdout is empty.** So *"a CI step written from
+  the help text goes green while running nothing"* is backwards — at exit 1 that
+  step goes red, the safe direction. The real hazard is the undocumented one: a
+  check that greps the subcommand's **output** sees a clean empty result.
+
+**How the wrong reading arose**, reproduced: `claude plugin eval … | head` returns
+`head`'s status, which is 0. That is `SKILL.md` Phase 5's own trap — *"`cmd | tail
+&& next` gates on `tail`, so a failing suite sails through"* — landing on the
+measurement that argues for measuring. Whether the code was 0 then and is 1 now,
+or was always 1 with the pipe hiding it, is not separable after the fact; the
+claim is false today either way.
+
+Corrected in `README.md`, `CONTRIBUTING.md` and `tests/test_skill_prose.py`'s
+module docstring. Nothing else in #32 changes — the ten cases, the `live.yml`
+placement and the "not an oracle for a new rule" boundary all stand, and the
+suite is still blocked.
+
 ## [0.21.0] — 2026-08-16
 
 `ATTRIBUTABLE` is the only one of Phase 6's three labels that produces a **Hold**,
@@ -2091,7 +2128,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.18.0...v0.19.0
