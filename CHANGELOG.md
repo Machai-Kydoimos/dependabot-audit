@@ -11,6 +11,27 @@ patch.
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-08-16
+
+`CONTRIBUTING.md`'s release step stopped at the annotated tag and the CHANGELOG
+entry, so a contributor following it exactly would not cut a GitHub Release. The
+practice changed at 0.22.0; the instruction had not caught up, and an instruction
+that omits a required step is the kind of claim this repo treats as false rather
+than merely incomplete.
+
+The step is now written out, along with the two things about it that are not
+obvious:
+
+- **It is presentation, not distribution.** `.claude-plugin/marketplace.json`
+  declares `"source": "./"`, so `/plugin marketplace add` installs from the
+  default branch and never resolves a Release. Publishing one is for readers who
+  take a Release as more authoritative than a bare tag — and against the failure
+  0.21.1 shipped into, where `releases/latest` advertised `v0.17.0` while the
+  plugin was four versions ahead.
+- **Releases start at `v0.22.0`.** The 35 tags before it are deliberately
+  release-less. Recorded so the gap reads as a decision rather than an omission
+  somebody later tidies up.
+
 ## [0.22.0] — 2026-08-16
 
 ### Fixed
@@ -2154,7 +2175,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.1...v0.22.0
 [0.21.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.20.0...v0.21.0

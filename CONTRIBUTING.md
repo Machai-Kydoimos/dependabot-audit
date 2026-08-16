@@ -299,7 +299,21 @@ change to what a phase verifies, or to what the report asserts, is a minor bump
 even when no code moved. A fix that only makes an existing claim true is a patch.
 
 Every release gets an annotated tag matching the version in
-`.claude-plugin/plugin.json`, and an entry in `CHANGELOG.md`.
+`.claude-plugin/plugin.json`, an entry in `CHANGELOG.md`, and a published
+[GitHub Release](https://github.com/Machai-Kydoimos/dependabot-audit/releases)
+cut from that tag — `gh release create <tag> --verify-tag`, with notes drawn from
+the CHANGELOG entry.
+
+The Release is presentation, not distribution: `.claude-plugin/marketplace.json`
+declares `"source": "./"`, so `/plugin marketplace add` installs from the default
+branch and never resolves a Release. It is published anyway because a Release
+reads as more authoritative than a bare tag, and because the alternative is what
+0.21.1 shipped into — a repo whose sidebar advertised `v0.17.0` as *Latest* while
+the plugin was four versions ahead. Let `--latest` default so `releases/latest`
+tracks the newest version rather than drifting.
+
+Releases start at `v0.22.0`. The tags before it are deliberately release-less and
+are not to be backfilled.
 
 ## Security
 
