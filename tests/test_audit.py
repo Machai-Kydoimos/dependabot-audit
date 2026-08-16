@@ -890,6 +890,28 @@ class TestMainContract(_MainHarness):
         self.assertIn("NOT checked", out)
         self.assertIn("fpga-simulator", out)
 
+    def test_a_lookalike_registry_host_is_not_taken_for_pypi(self):
+        """`https://pypi.org.evil.com/simple` is a prefix match, so the old check passed it.
+
+        The damage was silence rather than a bad hash: artifacts are fetched from
+        the `SIMPLE` constant either way, so the package was still compared against
+        the real PyPI — but being classified PyPI-sourced kept it out of
+        `non_pypi`, and nothing in the report said the lockfile names an index
+        that is not PyPI.
+        """
+        lock = (
+            self.LOCK
+            + """
+[[package]]
+name = "impostor"
+version = "1.0"
+source = { registry = "https://pypi.org.evil.com/simple" }
+"""
+        )
+        _, out, _ = self._run([write_lock(self, lock), "--changed", "rumdl"], meta=self._meta())
+        self.assertIn("NOT checked", out)
+        self.assertIn("impostor", out)
+
     def test_an_unrecorded_size_survives_into_the_report(self):
         """A third state beside match/MISMATCH, or the distinction is lost at the
         last step — and `--json` gets null, which is the honest encoding."""

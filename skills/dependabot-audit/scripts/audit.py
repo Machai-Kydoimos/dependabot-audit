@@ -574,7 +574,14 @@ def load_lock(path: str) -> list[dict[str, Any]]:
 
 
 def _is_pypi(pkg: dict[str, Any]) -> bool:
-    return str(pkg.get("source", {}).get("registry", "")).startswith("https://pypi.org")
+    # The host is matched, not the prefix. `startswith("https://pypi.org")` also
+    # accepted `https://pypi.org.evil.com/simple`, and the damage was silence
+    # rather than a bad hash: artifacts are fetched from the `SIMPLE` constant
+    # regardless, so a look-alike index still got checked against the real PyPI —
+    # but it dropped out of `non_pypi` on the way, so nothing in the report ever
+    # said the lockfile points somewhere other than PyPI.
+    parts = urllib.parse.urlsplit(str(pkg.get("source", {}).get("registry", "")))
+    return parts.scheme == "https" and parts.hostname == "pypi.org"
 
 
 def pypi_sourced(packages: list[dict[str, Any]]) -> list[dict[str, Any]]:
