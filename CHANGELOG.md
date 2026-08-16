@@ -11,6 +11,32 @@ patch.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-08-16
+
+### Fixed
+
+- **A registry host that merely *starts with* `https://pypi.org` is no longer
+  taken for PyPI.** `_is_pypi` tested the URL with
+  `startswith("https://pypi.org")`, so `https://pypi.org.evil.com/simple` passed
+  it. Found by CodeQL (`py/incomplete-url-substring-sanitization`) once code
+  scanning was made a required check.
+
+  **The damage was silence, not a bad hash.** Artifacts are fetched from the
+  `SIMPLE` constant regardless of what the lockfile names, so a look-alike index
+  was still compared against the real pypi.org and a substituted artifact would
+  still have failed. What the prefix match cost was the *other* half of the
+  report: classifying the package as PyPI-sourced kept it out of `non_pypi`, and
+  `non_pypi` exists precisely so that a dependency this script cannot verify is
+  named rather than dropped. Run against a lockfile carrying such an entry, the
+  old code printed `RESULT: CLEAN — 1 package(s) NOT checked … fpga-simulator`
+  and never mentioned the look-alike at all — it even reached OSV as though it
+  were a real PyPI package. An under-audit indistinguishable from a clean one,
+  which is the failure `non_pypi`'s own docstring names.
+
+  Now `urllib.parse.urlsplit` is used and the **host is compared exactly**, with
+  the scheme required to be `https`. A look-alike index falls into `non_pypi`
+  and is reported as not checked, which is the honest answer.
+
 ### Decided
 
 - **The evidence split is dropped**, closing 0.15.0's *Not done, deliberately*.
@@ -2128,7 +2154,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.1...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.1...v0.22.0
 [0.21.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.19.0...v0.20.0
