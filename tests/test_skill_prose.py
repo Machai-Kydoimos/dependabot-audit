@@ -752,6 +752,80 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
         )
 
 
+class TestTheRepoConfigIsReadAtARef(SkillHarness):
+    """Phase 0 read the repo's gate list out of whatever was checked out.
+
+    Every other Phase 0 output is pinned to the PR, and the lockfile reads in
+    `references/uv-lock.md` do it properly — `git show "pr-<N>:uv.lock"`. The gate
+    read was the one that did not, and it ran in the user's working tree, so the
+    gate list came from whatever branch happened to be there.
+
+    Measured on `fpga-board-sim` #359: `ci.yml` at the checkout listed
+    `uv run actionlint`, which arrived in that repo's #362, three PRs later. Run
+    in the PR's worktree it exits 2 — `Failed to spawn: actionlint` — and reads as
+    a Phase 5 gate failure on a gate the PR never had. Exit 2 is the status this
+    procedure is most careful about everywhere else: "could not run", never "ran
+    and found something". Here the procedure manufactured one.
+
+    Auditing a merged PR makes the divergence certain — the checkout is ahead of
+    every merged PR by construction, and every replay CONTRIBUTING's gate asks for
+    is one. It is not only a replay problem: the same gap opens on an open PR
+    whenever another branch is checked out, or the default branch has moved since
+    the bot branched.
+    """
+
+    # Files whose *content the audit interprets*: the gates it reproduces, and
+    # the bot config that decides whether a currency gap is lag or a hold.
+    INTERPRETED = ("workflows/", ".pre-commit-config", "dependabot.yml", "renovate.json")
+    AT_A_REF = re.compile(r'git show "(?:pr-<N>|\$\{?BASE_SHA\}?|\$\{?DEFAULT\}?):')
+
+    def test_phase_0_reads_the_gate_list_at_a_ref(self):
+        self.assertRegex(
+            self.shell[0],
+            re.compile(r'git show "(?:pr-<N>|\$\{?BASE_SHA\}?):[^"]*(?:workflows|pre-commit)'),
+            "Phase 0 must read the repo's own gates from a ref. Read from the "
+            "checkout, the gate list is whatever happens to be there — and a gate "
+            "the PR never had exits 2, which reads as a Phase 5 failure",
+        )
+
+    def test_no_phase_reads_an_interpreted_config_out_of_the_working_tree(self):
+        """The negative half: `cat`, `grep` and friends read the checkout.
+
+        Asserted per line rather than per phase, because the defect was one line
+        sitting beside several that got it right.
+        """
+        for number, code in sorted(self.shell.items()):
+            for line in code.splitlines():
+                if not any(path in line for path in self.INTERPRETED):
+                    continue
+                self.assertRegex(
+                    line,
+                    self.AT_A_REF,
+                    f"Phase {number} reads a file the audit interprets without "
+                    f"pinning it to a ref, so it reports on the checkout rather "
+                    f"than on the PR: {line.strip()}",
+                )
+
+    def test_both_sides_of_the_bump_get_their_own_gate_list(self):
+        """Phase 4 and Phase 5 run gates in *different* trees.
+
+        One list run in both manufactures the exit 2 above in whichever tree did
+        not have that gate. And a gate present on one side of the bump and not
+        the other is itself a finding — quiet in both directions, since a gate
+        the PR *adds* never runs at all, which is the direction that matters
+        because a tooling bump can legitimately add its own.
+        """
+        shell = self.shell[0]
+        for ref, tree in (("pr-<N>", "Phase 5 reproduces"), (r"\$BASE_SHA", "Phase 4 measures")):
+            self.assertRegex(
+                shell,
+                rf'git show "{ref}:[^"]*workflows',
+                f"Phase 0 must read the gates at the ref of the tree {tree} in; "
+                f"one list serves both trees only until they differ, and the "
+                f"difference is itself the finding",
+            )
+
+
 class TestPhase4MeasuresTheRightTree(SkillHarness):
     """Measuring on the PR's tree hides the finding whenever it is real.
 

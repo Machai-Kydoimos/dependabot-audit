@@ -129,16 +129,45 @@ git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
 ```
 
+**An actions bump consumes neither worktree — do not create them for one.**
+`references/actions.md` reads the diff with `git show "pr-<N>:…"` throughout,
+Phase 4 reads release notes, and Phase 5's substitute is `gh run list`. Two
+worktrees added and removed for nothing, on every actions bump. The **fetch**
+stays either way: `git show` needs the ref, and Phase 7 still has a branch to
+remove. Where the ecosystem is not yet known, the scope diff settles it and costs
+one command.
+
 And the part no script can read for you — the bot's configuration, which decides
-whether a currency gap in Phase 2 is lag or a deliberate hold:
+whether a currency gap in Phase 2 is lag or a deliberate hold, and the repo's
+**own** verification commands. That stays here for the same reason the mutations
+do: `pytest` may be `uv run pytest`, `tox`, `nox`, or a `make` target, and only
+the workflow says so.
+
+**Read every one of them at a ref.** The rest of Phase 0 is pinned to the PR and
+these were not — they ran in the user's checkout, so the answers came from
+whatever branch happened to be there:
 
 ```bash
-cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
+git show "pr-<N>:.github/dependabot.yml" 2>/dev/null || git show "pr-<N>:renovate.json"
+git show "pr-<N>:.github/workflows/<ci>.yml"       # the gates Phase 5 reproduces
+git show "pr-<N>:.pre-commit-config.yaml"
+git show "$BASE_SHA:.github/workflows/<ci>.yml"    # the gates Phase 4 measures with
 ```
 
-Then read the CI workflow and the pre-commit config to learn the repo's **own**
-verification commands. That stays here for the same reason: `pytest` may be
-`uv run pytest`, `tox`, `nox`, or a `make` target, and only the workflow says so.
+**Each phase's gates come from the tree it runs them in**, and the two trees are
+not the same one: Phase 5 reproduces in `$SCRATCH/pr-<N>`, Phase 4 measures in
+`$SCRATCH/base-<N>` — or `$SCRATCH/tip-<N>`. One list run in both manufactures
+this phase's own worst outcome, an **exit 2** that reads downstream as a gate
+*failure*. Observed auditing a merged bump: the checkout's `ci.yml` listed
+`uv run actionlint`, which arrived three PRs later, so in the PR's worktree it
+could not spawn — "could not run" reported as "ran and found something", by the
+procedure that is most careful about that distinction everywhere else.
+
+**A gate on only one side of the bump is itself a finding**, and it is quiet in
+both directions. A gate since *removed* runs against a tree that never had it; a
+gate the PR *adds* never runs at all — and the second is the one that matters,
+because an actions or tooling bump can legitimately add its own. Diff the two
+lists and report the difference rather than picking a side.
 
 If `git worktree add` refuses because the path already exists, a previous run
 left it there. **Prove it still points at this PR's head before reusing it** — a
@@ -161,8 +190,9 @@ If either check fails, `git worktree remove` it and re-add.
 | `$HEAD_SHA` | the full 40-character commit under audit |
 | `$BASE_SHA` | the merge base, from GitHub's own `compare` endpoint — never a local `git merge-base` against `$DEFAULT`, which collapses onto the head once the PR lands. **And whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
-| `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it |
-| `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below |
+| `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it. Not created for an actions bump, which consumes no worktree |
+| `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below. Same exception |
+| the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
 | `$PERMS` | this account's permissions on the repo — `admin`, `maintain`, `push`, `triage`, `pull` |
 
@@ -228,7 +258,10 @@ construction, and Phase 7 re-checks the SHA before you write.
 
 **Never audit the working tree.** Whatever branch the user happens to have checked
 out is not the PR, and a lockfile read from it is indistinguishable from one read
-from the PR — it just quietly reports no changes.
+from the PR — it just quietly reports no changes. That holds for the repo's
+**config** as much as its content: the gate list and the bot config are read
+above at a ref for exactly this reason, and they were the last two reads here that
+were not.
 
 Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwise
 `mktemp -d`. **Never place it inside the repo under audit** — it pollutes
@@ -820,7 +853,9 @@ git worktree remove "$SCRATCH/base-<N>"
 git branch -D "pr-<N>"
 ```
 
-Add `$SCRATCH/tip-<N>` if Phase 0 found the base rewritten and created it.
+Remove exactly what Phase 0 created, and nothing else. Add `$SCRATCH/tip-<N>` if
+Phase 0 found the base rewritten; drop both worktree lines on an actions bump,
+where Phase 0 creates neither and only the branch is left to remove.
 
 Keeping them is reasonable when a follow-up run is likely — say so in the report,
 with the commands above, so the user knows what is there. Silently keeping them

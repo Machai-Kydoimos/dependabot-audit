@@ -90,9 +90,9 @@ verdict is robust and why.
 
 For a follow-up: a separate branch, never a push onto the bot's branch.
 
-**Say what was left behind, on every path.** Phase 0 registers two worktrees and
-a `pr-<N>` branch in the user's repo, and it does so before the audit knows
-whether it will reach Phase 5 — so an audit that stopped at Phase 1's gate has
-exactly the same litter as one that ran to the end. Phase 7 removes them. If they
-were kept deliberately, name them here with their cleanup commands; never leave
-one registered in the user's repo unannounced.
+**Say what was left behind, on every path.** Phase 0 registers a `pr-<N>` branch
+in the user's repo, plus two worktrees on any bump that consumes them — and it
+does so before the audit knows whether it will reach Phase 5, so an audit that
+stopped at Phase 1's gate has exactly the same litter as one that ran to the end.
+Phase 7 removes them. If they were kept deliberately, name them here with their
+cleanup commands; never leave one registered in the user's repo unannounced.

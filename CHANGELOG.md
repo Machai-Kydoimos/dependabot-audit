@@ -83,6 +83,63 @@ rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
 file changes what a phase verifies, so it belongs in its own release behind the
 replay gate rather than in this entry.
 
+## [0.18.0] — 2026-08-16
+
+Phase 0 read the repo's own gate list out of the **working tree** (#44). Every
+other Phase 0 output is pinned to the PR, and the lockfile reads in
+`uv-lock.md` do it properly — `git show "pr-<N>:uv.lock"`. The gate read was the
+one that did not.
+
+### The replay
+
+`fpga-board-sim` #359, merged. `ci.yml` read three ways:
+
+| Read from | Gates |
+|---|---|
+| the checkout — `main` at `bddcc47` | 6, including `uv run actionlint` |
+| `git show "pr-359:.github/workflows/ci.yml"` | **5** — no `actionlint` |
+| the PR's merge base, `fff3eaf12` | 5 |
+
+`actionlint` arrived in that repo's #362, three PRs *after* the one under audit.
+Run in the PR's worktree it exits **2** — `Failed to spawn: actionlint` — which
+reads downstream as a Phase 5 gate failure on a gate the PR never had. Exit 2 is
+the status this procedure is most careful about everywhere else: "could not run",
+never "ran and found something". Here the procedure manufactured one.
+
+**Not only a replay problem.** Auditing merged PRs is supported and makes the
+divergence certain — the checkout is ahead of every merged PR by construction,
+and every replay CONTRIBUTING's gate asks for is one. The same gap opens on an
+**open** PR whenever another branch is checked out, or the default branch has
+moved since the bot branched.
+
+### Changed
+
+- **Phase 0 reads the gates, and the bot config, at a ref.** The bot config went
+  with them for the same reason: whether a currency gap is lag or a deliberate
+  hold is decided by the config in force on the PR, not by the copy in whatever
+  is checked out.
+
+- **Each phase's gate list comes from the tree that phase runs it in.** Phase 5
+  reproduces in `$SCRATCH/pr-<N>`, Phase 4 measures in `$SCRATCH/base-<N>`, and
+  one list served both. On #359 the two lists agree, which is the honest thing to
+  report and not a reason to read only one.
+
+- **A gate on only one side of the bump is now a finding.** Quiet in both
+  directions: a gate since *removed* runs against a tree that never had it, and a
+  gate the PR *adds* never runs at all. The second is the one that matters — an
+  actions or tooling bump can legitimately add its own.
+
+- **An actions bump creates no worktrees.** `actions.md` reads the diff with
+  `git show` throughout, Phase 4 reads release notes, and Phase 5's substitute is
+  `gh run list`, so Phase 0 was adding and Phase 7 removing two worktrees that no
+  phase consumed. The fetch stays: `git show` needs the ref.
+
+### Tests
+
+`TestTheRepoConfigIsReadAtARef`, three guards. Mutation-checked against the
+0.17.0 prose: the positive guard found no `git show` of a gate list in Phase 0 at
+all, and the per-line negative guard fired on `cat .github/dependabot.yml`.
+
 ## [0.17.0] — 2026-08-15
 
 `references/traps.md` is retired (#35). It was never fetched — measured, not
@@ -1825,7 +1882,11 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.2...v0.17.0
+[0.16.2]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.1...v0.16.2
+[0.16.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.13.0...v0.14.0
