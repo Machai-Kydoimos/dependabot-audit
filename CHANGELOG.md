@@ -83,6 +83,74 @@ rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
 file changes what a phase verifies, so it belongs in its own release behind the
 replay gate rather than in this entry.
 
+## [0.20.0] — 2026-08-16
+
+Phase 2's prose and Phase 7's table disagreed about the case Phase 2 was written
+for (#42). Phase 2: *"What outranks the hold is what this phase reads for next: a
+`Security` entry or a destructive-fix bug in the gap."* Phase 7's security row
+was gated on `and the gap is outside the cooldown`, so on a gap **inside** the
+window it could not match, and the fall-through landed on *"Merge as-is. Do not
+offer a follow-up"* — the opposite instruction.
+
+### The replay
+
+`fpga-board-sim` #355 and #359, both `rumdl`, three days apart. Publish times
+from PyPI, PR open times from the API:
+
+| | #355 | #359 |
+|---|---|---|
+| proposed | 0.2.43 → **0.2.47** | 0.2.49 → **0.2.52** |
+| opened | 2026-08-03T13:11:49Z | 2026-08-10T13:11:23Z |
+| the evidence in the gap | 0.2.49's `Security` section, published 16h54m before the PR opened | 0.2.53's `md084` / `md038` destructive fixes, 7h13m before |
+| cooldown | **inside** | **inside** |
+| OSV / GHSA / CVE | none — `audit.py` clean across 37 packages | none |
+| does this repo exercise it | **no** — `[tool.rumdl]` inline, `extends` count 0 | **yes** — `entry: uv run rumdl check --fix` |
+| 0.19.0's verdict | merge, do **not** follow up | merge, do **not** follow up |
+| 0.20.0's verdict | merge, then follow up on the merits | merge, then follow up **at once** |
+| what the maintainer did | — | merged, followed up four minutes later |
+
+Three defects in those rows, not one. **Destructive-fix bugs had no row at all**,
+though Phase 2 ranks them equal to `Security` entries — the only evidence class
+this procedure finds that no security feed carries. And **the recommendation
+turned on when you ran the audit**: replayed today, 0.2.49 is outside the window,
+the old row 3 matches, and identical evidence produces the opposite advice.
+Phase 7's stated reason for having a table at all is that leaving the function
+implicit is how two audits with the same evidence reach different
+recommendations.
+
+### Changed
+
+- **Three rows replace one, and none of them reads the clock.** The cooldown
+  decides Hold-versus-follow-up; it never decides whether to look. The wait
+  exempts Dependabot's *security updates* — the advisory-driven kind — not a
+  version update whose changelog happens to carry a privately disclosed fix.
+
+- **"Exercises the affected path" moved from the prose into the row**, where a
+  verdict rule reads it. It was doing real work in both measured cases and no
+  verdict consumed it.
+
+- **Exposure sets the urgency of the follow-up, not the verdict.** The issue
+  proposed `Hold if the repo exercises the affected path`; replaying #359 — the
+  only exposed case measured — says otherwise. The gap is *newer* than what the
+  PR proposes, so the bump moves toward the fix and never away: holding #359
+  leaves the repo on 0.2.49, carrying **both** destructive bugs, rather than
+  0.2.52 carrying neither more of them. Its maintainer merged and followed up
+  four minutes later. Hold is kept for the one configuration where merging is
+  what increases exposure — the bump moving *into* the bug, adopted version
+  affected where the current pin is not.
+
+- **Phase 2 asks the exposure question for `Security` entries too**, not only for
+  destructive fixes. Same `grep`, and Phase 7 now takes a verdict from it.
+
+- **The report template's Security row** carries the exposure answer and the
+  config line that settles it.
+
+### Tests
+
+`TestSecurityEvidenceOutranksTheCooldown`, three guards, asserted on the parsed
+verdict table rather than on the phase text. Mutation-checked against the 0.19.0
+table: all three fire.
+
 ## [0.19.0] — 2026-08-16
 
 Phase 1's scope gate fired on a bump that never left the manifest and the
@@ -1947,7 +2015,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.2...v0.17.0

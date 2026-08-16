@@ -1166,6 +1166,114 @@ class TestTheVerdictIsDerivedRatherThanJudged(SkillHarness):
             self.assertIn(level, template)
 
 
+class TestSecurityEvidenceOutranksTheCooldown(SkillHarness):
+    """Phase 2's prose and Phase 7's table disagreed about Phase 2's own case.
+
+    Phase 2: "A gap inside the cooldown window does not earn a follow-up branch.
+    [...] What outranks the hold is what this phase reads for next: a `Security`
+    entry or a destructive-fix bug in the gap."
+
+    Phase 7, read top-down taking the first row that matches: the security row
+    was gated on `and the gap is outside the cooldown`, so it could not match,
+    and the fall-through landed on "a gap exists **inside** the cooldown window →
+    Merge as-is. Do *not* offer a follow-up" — the opposite of the prose.
+
+    Measured on `fpga-board-sim` #355: `rumdl` 0.2.49 carries a `Security`
+    section — config `extends` values expanded from the environment before
+    resolution, so naming the resolved path printed environment variable values
+    into the build log. Privately reported, no CVE, no GHSA; `audit.py` reported
+    "no known vulnerabilities across 37 packages", correctly. The changelog is
+    the only place it exists, which is the whole reason Phase 2 reads changelogs.
+    0.2.49 published 17 hours before the PR opened — inside the three-day
+    cooldown, so the bot was right to hold, and the gap still contained a
+    security fix.
+
+    Two more gaps in the same rows. **Destructive-fix bugs had no row at all**,
+    though Phase 2 ranks them equal: `fpga-board-sim` #359, `rumdl` 0.2.53 fixing
+    `md084: stop deleting line endings as invisible characters` and `md038: stop
+    deleting a line when trimming a multi-line code span`, in a repo whose
+    pre-commit config runs `rumdl check --fix` on every commit touching Markdown.
+    And **the recommendation turned on when you ran the audit**: replayed once
+    0.2.49 is thirteen days old the gap is outside the cooldown, row 3 matches,
+    and the same evidence produces the opposite verdict. Phase 7's own stated
+    reason for having a table is that leaving the function implicit is how two
+    audits with the same evidence reach different recommendations.
+    """
+
+    def _verdict_table(self) -> list[str]:
+        for table in tables(dict(self.phases)[7]):
+            if any("Verdict" in row for row in table):
+                return table
+        self.fail("Phase 7 has no verdict table")
+
+    def _security_rows(self) -> list[tuple[int, str]]:
+        """Rows that positively *read* security-shaped evidence in the gap.
+
+        Matched on the evidence named rather than on the word "security", which
+        also appears in the row for a gap containing **nothing** security-shaped
+        — and that row is legitimately conditioned on the cooldown.
+        """
+        return [
+            (i, row)
+            for i, row in enumerate(self._verdict_table())
+            if "`security` entry" in row.lower() or "destructive-fix" in row.lower()
+        ]
+
+    def _cooldown_row(self) -> int:
+        for i, row in enumerate(self._verdict_table()):
+            low = row.lower()
+            if "inside" in low and "cooldown" in low:
+                return i
+        self.fail("Phase 7 has no row for a gap inside the cooldown")
+
+    def test_the_evidence_is_read_whatever_the_cooldown_says(self):
+        """The cooldown decides Hold-vs-follow-up, never whether to look."""
+        rows = self._security_rows()
+        self.assertTrue(rows, "no row reads a Security entry in the gap")
+        self.assertLess(
+            min(i for i, _ in rows),
+            self._cooldown_row(),
+            "a security-shaped row below the cooldown row is unreachable: the "
+            "table is first-match, and every gap inside the window stops there",
+        )
+        for _, row in rows:
+            self.assertNotIn(
+                "outside the cooldown",
+                row.lower(),
+                "gating the *reading* of a Security entry on the cooldown routes "
+                "Phase 2's founding case to 'do not follow up' — the cooldown "
+                "exempts Dependabot's security updates, not a version update "
+                "whose changelog carries a privately disclosed fix",
+            )
+
+    def test_a_destructive_fix_bug_reaches_the_table_at_all(self):
+        """Phase 2 ranks them equal to `Security` entries. Phase 7 never
+        mentioned them, so the only evidence class this procedure discovers that
+        no security feed carries had no verdict rule."""
+        self.assertIn(
+            "destructive",
+            " ".join(self._verdict_table()).lower(),
+            "a data-loss bug in a write mode the repo runs automatically is "
+            "Phase 2's second reading target and had no row",
+        )
+
+    def test_the_row_decides_on_exposure_rather_than_on_the_clock(self):
+        """ "if the repo exercises the affected path" was doing real work in both
+        measured cases and sat in the prose, where no verdict reads it: #355's
+        leak path is inert (the repo configures rumdl inline, with no `extends`
+        anywhere), #359's `--fix` write mode is live on every Markdown commit.
+        Same shape of finding, two urgencies, and the distinction is a grep the
+        phase already knows how to do."""
+        rows = " ".join(row for _, row in self._security_rows()).lower()
+        self.assertIn(
+            "affected path",
+            rows,
+            "the verdict has to turn on whether this repo is exposed; taking it "
+            "from the calendar makes the same evidence produce opposite "
+            "recommendations on different days",
+        )
+
+
 class TestFrontmatter(SkillHarness):
     """0.1.9 shipped `tools:`, which is not a field and withheld nothing.
 

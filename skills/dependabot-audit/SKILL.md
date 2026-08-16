@@ -493,7 +493,17 @@ adopted. Look for two things, in this order:
 - **Destructive-fix bugs.** Entries like "stop deleting…" or "no longer removes…"
   in a tool the repo runs in **write mode** (`--fix`, `--write`, `-i`) are
   data-loss bugs in a mode that runs automatically. They never appear in a
-  security feed. Check whether the repo actually invokes that write mode.
+  security feed.
+
+**Then ask whether this repo is in the change's scope**, for either kind. Phase 7
+takes the verdict from that answer, so it is a finding and not a footnote: read
+the advisory or the bug for the setting, flag or mode it lives in, and grep this
+repo's config for it. A `Security` entry whose leak path the repo never
+configures is a follow-up on the merits; a destructive fix in a write mode the
+repo runs on every commit is not. Same shape of evidence, two urgencies, and the
+distinction is one `grep` — it is the same question Phase 4 asks of an actions
+bump, where `references/actions.md` calls the answer "inert here", a result and
+not silence.
 
 ## Phase 3 — Known vulnerabilities
 
@@ -835,7 +845,9 @@ recommendations. Read the table top-down and take the **first** row that matches
 |---|---|
 | Phase 1's gate fired — scope, a provenance discrepancy, or `PUBLISHER CHANGED` | **Hold** |
 | OSV or GHSA reports a vulnerability in a version being **adopted** | **Hold** |
-| A `Security` entry in the gap, and the gap is outside the cooldown | **Hold** — or merge-then-follow-up when the fix is already in the adopted version |
+| A `Security` entry or a destructive-fix bug in the gap, and the bump moves **into** it — the version being adopted is affected where the **current pin** is not | **Hold.** Merging is what increases exposure here; take the fixed version instead |
+| A `Security` entry or a destructive-fix bug in the gap, **and this repo exercises the affected path** — cooldown notwithstanding | **Merge as-is, then follow up at once.** The bump is still an improvement; the urgency is the follow-up's |
+| A `Security` entry or a destructive-fix bug in the gap, **inert here** — cooldown notwithstanding | **Merge as-is, then follow up** on the merits. The evidence is real and the exposure is not |
 | Actions: the tag rolled **behind** the proposed SHA | **Hold.** Close the bot's PR and replace it by hand; a bot cannot express a downgrade |
 | Phase 4: base differs, PR differs — the change is real and unabsorbed | **Hold** |
 | Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
@@ -845,8 +857,42 @@ recommendations. Read the table top-down and take the **first** row that matches
 | `mergeStateStatus: BLOCKED` with every check green | **Merge as-is** on the bump's merits; name what blocks it, usually `reviewDecision` |
 | Actions: the workflow file is generated (`DO NOT EDIT`) | **Merge as-is, then follow up** on the generator — this bump is transient without it |
 | A gap exists, outside the cooldown, nothing security-shaped in it | **Merge as-is, then follow up** |
-| A gap exists **inside** the cooldown window | **Merge as-is.** Do *not* offer a follow-up: it hand-lands the release the control exists to delay |
+| A gap exists **inside** the cooldown window, nothing security-shaped in it | **Merge as-is.** Do *not* offer a follow-up: it hand-lands the release the control exists to delay |
 | Everything derived, nothing above matched | **Merge as-is** |
+
+**The cooldown decides Hold-versus-follow-up. It never decides whether to look.**
+The wait exempts Dependabot's *security updates* — the advisory-driven kind — and
+not a version update whose changelog happens to carry a privately disclosed fix,
+which is exactly the evidence Phase 2 reads for. Gating those rows on the gap
+being outside the window makes them unreachable on the case they were written
+for, and the fall-through then says *merge, do not follow up*.
+
+It also makes the recommendation a function of **when you ran the audit**: the
+same PR, replayed once the release ages past three days, matches a different row
+and gets the opposite advice on identical evidence. That is the failure this
+table exists to prevent, reproduced inside the table.
+
+**"Exercises the affected path" is a grep, and it decides which row.** Both halves
+are measured, on the same dependency, three days apart:
+
+| Observed | Exposure | Verdict |
+|---|---|---|
+| a `Security` entry — config `extends` values expanded from the environment, so naming the resolved path printed environment variable values into the build log — in a repo that configures the tool inline with no `extends` anywhere | inert | merge, then follow up on the merits |
+| two destructive-fix bugs, "stop deleting line endings as invisible characters" and "stop deleting a line when trimming a multi-line code span", in a repo whose pre-commit config runs that tool's `--fix` write mode on every commit touching Markdown | live | merge, then follow up **at once** |
+
+Neither had a CVE, a GHSA, or an OSV hit — `audit.py` reported no known
+vulnerabilities across 37 packages, correctly, and the changelog was the only
+place either existed. Both were inside the cooldown.
+
+**Exposure sets the urgency of the follow-up, not the verdict**, and the reason
+is worth being exact about, because "Hold" reads as the cautious choice here and
+is not. The gap is *newer* than what the PR proposes, so the bump moves toward
+the fix and never away from it: holding the second case above leaves the repo on
+a version carrying **both** destructive bugs rather than one carrying neither
+more of them. Its maintainer merged and followed up four minutes later, which is
+what the row now says. The one configuration where Hold is right is the first
+row's — the bug lives in the version being *adopted*, so merging is the thing
+that increases exposure.
 
 **When phases disagree, this is the precedence** — and they are *expected* to
 disagree, which is why more than one of them exists:
