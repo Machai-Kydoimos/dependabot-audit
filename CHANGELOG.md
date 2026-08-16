@@ -83,6 +83,82 @@ rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
 file changes what a phase verifies, so it belongs in its own release behind the
 replay gate rather than in this entry.
 
+## [0.21.0] — 2026-08-16
+
+`ATTRIBUTABLE` is the only one of Phase 6's three labels that produces a **Hold**,
+and it said the least about its own evidence (#41). `PRE-EXISTING` ships with a
+caveat and `underivable` gets a paragraph in `SKILL.md`; attribution was a bare
+assertion.
+
+### The replay
+
+`fpga-board-sim` #332, `actions/checkout` 7.0.0 → 7.0.1. What 0.20.0 printed:
+
+```
+RED  Board-data drift  FAILURE  [CheckRun]
+     ATTRIBUTABLE — green at 3a5b0b4ed (pr-<N>^)
+```
+
+Every cell true. The causal reading it invites is false. That job re-syncs
+generated board sources from **other people's repositories** through the API and
+requires a zero diff; the cause was an upstream ref moving, fixed in that repo's
+own #335 and #336. `actions/checkout` 7.0.1 is "skip running unsafe pr check if
+input is default", "trim only ascii whitespace for branch" and "escape values
+passed to `--unset`" — none of which changes what `litex-boards` serves.
+
+**The comparison could not have settled it.** `pr-332^` is from
+2026-07-23T20:07:40Z, the head from 2026-07-27T13:09:25Z: **3d 17h**, on a check
+whose inputs live upstream. That is the asymmetry, and it is the whole finding:
+
+| Label | Survives a wide interval? |
+|---|---|
+| `pre-existing` | **yes.** If the check was already red the bump is exonerated, whatever else moved |
+| `attributable` | **no.** Green-then-red across 3d 17h is equally consistent with the bump, an upstream change, a runner image roll, or a flake |
+
+The two are not equally strong evidence and were presented as though they were.
+
+**No Hold fired only because `Board-data drift` is not required.** Phase 7's row
+reads "a red **required** check labelled attributable → Hold", so had the repo
+marked it so, this would have Held a security backport released across six majors
+inside 34 minutes, on an upstream board-data change. The guard was the audited
+repo's branch-protection configuration, not anything in the procedure.
+
+### Added
+
+- **The interval travels with the row.** `ATTRIBUTABLE — green at 3a5b0b4ed
+  (pr-<N>^), 3d 17h earlier`, live on #332. Minutes apart on a one-commit bot PR
+  is a strong claim; most of a week is not, and the reader cannot discount what
+  they are not shown.
+
+- **A hedge on the attributable row**, as the other two labels carry: *green-then-
+  red across that interval is CONSISTENT WITH the bump, not proof of it. Read the
+  failing step's log at both commits before this row carries a Hold — especially
+  where the check has inputs outside this repo.* The rule was already in
+  `SKILL.md`, sitting under the *pre-existing* discussion where the reader has
+  been told what to conclude; nothing on the attributable path prompted it.
+
+- **`interval underivable`** rather than silence when a timestamp cannot be read.
+  A missing interval must not be indistinguishable from a tight one — that is the
+  original complaint reproduced inside the fix.
+
+### Changed
+
+- **Phase 7's Hold row keeps the verdict and drops the causal claim.** A red
+  required check blocks the merge either way; what needed qualifying was the
+  report saying the bump *caused* it.
+
+- **`_gh_soft`**, for reads that qualify a row rather than establish one. The
+  interval is a hedge on a claim, so a failed read weakens the row and must never
+  turn Phase 6 into an exit 2. Two calls, and only when a red row exists to
+  qualify.
+
+### Tests
+
+`TestAnAttributableRowSaysWhatItRestsOn` (5) and
+`TestTheAttributableLabelIsHedgedLikeTheOthers` (3). Mutation-checked: hedging
+the pre-existing row identically, making a failed date read fatal, printing
+nothing for an underivable interval, and the 0.20.0 prose.
+
 ## [0.20.0] — 2026-08-16
 
 Phase 2's prose and Phase 7's table disagreed about the case Phase 2 was written
@@ -2015,7 +2091,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.17.0...v0.18.0

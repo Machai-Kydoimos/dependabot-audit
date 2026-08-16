@@ -66,6 +66,14 @@ a different finding with a different verdict. A Hold that rests on an
 unattributed red row is correct only by accident, and the report gives the reader
 no way to tell which.
 
+**An `attributable` row needs the interval too, and whether the log was read.**
+It is the label that carries a Hold, and it is the weakest of the three: a
+`pre-existing` row survives any gap between the two commits, while green-then-red
+across days is equally consistent with an upstream change, a runner image roll or
+a flake. "FAILURE — **attributable**, green at `3a5b0b4ed` 3d 17h earlier; log
+not read at either commit" is a row a reader can weigh. "FAILURE —
+**attributable**" invites a causal reading nothing established.
+
 **A pre-existing red gets a row and does not get the verdict.** Phase 7's table
 is explicit that it is not a Hold *on this bump*, so the report has two things to
 carry at once and must not collapse them: the bump's own verdict, taken from the

@@ -698,6 +698,80 @@ class TestARedCheckIsAttributedBeforeItCarriesTheVerdict(SkillHarness):
         self.assertIn("underivable", phase6, "and give it Phase 0's third state")
 
 
+class TestTheAttributableLabelIsHedgedLikeTheOthers(SkillHarness):
+    """The only label that produces a Hold said the least about its evidence.
+
+    #25 gave Phase 6 the base comparison and three labels. `PRE-EXISTING` ships
+    with a caveat, `underivable` gets a paragraph, and `ATTRIBUTABLE` was a bare
+    assertion. Observed on `fpga-board-sim` #332, `actions/checkout` 7.0.0 ->
+    7.0.1: `Board-data drift` red at the head, green at `pr-332^`, every cell
+    true — and the failing job re-syncs generated board sources from **other
+    people's repositories** through the API and requires a zero diff. The cause
+    was an upstream ref moving, fixed in that repo's own #335 and #336.
+
+    `pr-332^` is from 2026-07-23T20:07:40Z and the head from
+    2026-07-27T13:09:25Z: **3d 17h**. `PRE-EXISTING` survives that gap — if the
+    check was already red, the bump is exonerated regardless of what else moved.
+    `ATTRIBUTABLE` does not: green-then-red across 3d 17h is consistent with the
+    bump, with an upstream change, with a runner image roll, or with a flake, and
+    the comparison distinguishes none of them. The two labels are not equally
+    strong evidence and were presented as though they were.
+
+    This is #25's own argument pointed the other way, and no Hold fired only
+    because `Board-data drift` is not a required check. Had the repo marked it
+    required, Phase 7's table would have Held a security backport released across
+    six majors inside 34 minutes, on an upstream board-data change. The guard was
+    the audited repo's branch-protection configuration, not the procedure.
+    """
+
+    def _attribution_row(self) -> str:
+        for table in tables(dict(self.phases)[6]):
+            for row in table:
+                if "**attributable**" in row.lower():
+                    return row
+        self.fail("Phase 6 has no attributable row")
+
+    def test_the_row_does_not_read_as_a_licence_to_hold(self):
+        row = self._attribution_row().lower()
+        self.assertIn(
+            "both commits",
+            row,
+            "the pre-existing row already tells the reader what it must not do; "
+            "the attributable row is the one that can carry a Hold and said "
+            "least — it has to name the read that would settle causation",
+        )
+
+    def test_the_interval_the_comparison_spans_reaches_the_reader(self):
+        """Minutes apart on a one-commit bot PR is a strong claim; most of a week
+        is not. Both print the same sentence without it."""
+        self.assertIn(
+            "interval",
+            dict(self.phases)[6].lower(),
+            "Phase 6 must say that the interval qualifies the claim",
+        )
+        self.assertIn(
+            "CONSISTENT WITH",
+            self.reachable(6),
+            "and the script has to print the hedge, or it lives only where the "
+            "reader of the output never sees it",
+        )
+
+    def test_phase_7s_hold_row_does_not_assert_causation_by_itself(self):
+        for table in tables(dict(self.phases)[7]):
+            for row in table:
+                if "attributable" in row.lower() and "hold" in row.lower():
+                    self.assertIn(
+                        "both commits",
+                        row.lower(),
+                        "an evidence table saying a check is red — true — while "
+                        "implying a cause it never established is the same "
+                        "family as the rewritten base and the hand-joined "
+                        "required list, and this is the row that acts on it",
+                    )
+                    return
+        self.fail("Phase 7 has no verdict row for an attributable red check")
+
+
 class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
     """`--locked` checks every fork; the install materialises one of them.
 

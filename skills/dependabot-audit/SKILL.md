@@ -710,9 +710,37 @@ row in three states, never two:
 
 | At `pr-<N>^` | Label | What it means for the verdict |
 |---|---|---|
-| the same check is green | **attributable** | the bump is implicated; this row can carry a Hold |
+| the same check is green | **attributable** | the bump is *implicated*, not convicted. Read the interval the comparison spans, and the failing step's log at **both commits**, before this row carries a Hold |
 | the same check is red | **pre-existing** | the tree the bump landed on was already red. A real finding, a *different* one, and it must not produce a Hold on this bump |
 | **no run at the base**, or no check by that name | **underivable**, per Phase 0 | say so rather than defaulting to attributable |
+
+**The three labels are not equally strong evidence, and the interval is why.**
+`pre-existing` survives any gap between the two commits: if the check was already
+red, the bump is exonerated regardless of what else moved in between.
+`attributable` does not. Green-then-red across days is consistent with the bump,
+with an upstream change, with a runner image roll, or with a flake — and this
+comparison distinguishes none of them. The script prints the span for that
+reason, and prints `interval underivable` rather than nothing when it cannot, so
+a missing interval never reads as a tight one:
+
+```
+RED  Board-data drift  FAILURE  [CheckRun]
+     ATTRIBUTABLE — green at 3a5b0b4ed (pr-<N>^), 3d 17h earlier
+```
+
+Measured on `actions/checkout` 7.0.0 → 7.0.1. Every cell true; the causal reading
+false. The failing job re-syncs generated sources from **other people's
+repositories** and requires a zero diff, so its inputs are outside this repo
+entirely — an upstream ref had moved, and 7.0.1 is three argument-handling fixes.
+No Hold fired only because that check is not required; had it been, this table
+would have Held a security backport released across six majors inside 34 minutes.
+The guard was the audited repo's configuration, not this procedure.
+
+That is the pre-existing argument pointed the other way. A Hold on an unread
+attributable row is unfalsifiable in exactly the same manner — an evidence table
+saying a check is red, which is true, while implying a cause it never
+established — and it is the direction that costs least to be wrong in, so nobody
+goes back and checks.
 
 **`pr-<N>^` and `$BASE_SHA` are the same commit for a genuine one-commit bot PR**,
 which is the ordinary case — so preferring the parent costs nothing there and is
@@ -851,7 +879,7 @@ recommendations. Read the table top-down and take the **first** row that matches
 | Actions: the tag rolled **behind** the proposed SHA | **Hold.** Close the bot's PR and replace it by hand; a bot cannot express a downgrade |
 | Phase 4: base differs, PR differs — the change is real and unabsorbed | **Hold** |
 | Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
-| A red required check labelled **attributable** | **Hold** |
+| A red **required** check labelled **attributable** | **Hold** — the PR cannot merge either way. But read the failing step's log at **both commits** before the report says the bump *caused* it: green-then-red is consistent with the bump, not proof, and the wider the interval the weaker the claim |
 | A red required check labelled **pre-existing** | **Not a Hold on this bump.** Report it as its own finding, take the verdict from the remaining evidence, and say the PR is unmergeable until someone fixes it |
 | Phase 4: base differs, PR agrees — real and already absorbed | **Merge as-is**, naming what the PR absorbed and how |
 | `mergeStateStatus: BLOCKED` with every check green | **Merge as-is** on the bump's merits; name what blocks it, usually `reviewDecision` |
