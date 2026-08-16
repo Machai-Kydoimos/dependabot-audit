@@ -13,8 +13,8 @@ gaps — a green run here is evidence of neither.
 
 Whether the model *follows* the phases is behavioral and belongs in
 `claude plugin eval`, which is unavailable on this account — the subcommand
-prints a full `--help` and then refuses at exit 0, so reading the help is not
-checking availability.
+prints a full `--help` and then refuses on stderr with an empty stdout, so
+reading the help is not checking availability and neither is grepping the output.
 
 Whether the prose is **true** is not checkable at all. Consistency is not
 correctness: every case below can pass on a phase that names a real endpoint,
@@ -698,6 +698,80 @@ class TestARedCheckIsAttributedBeforeItCarriesTheVerdict(SkillHarness):
         self.assertIn("underivable", phase6, "and give it Phase 0's third state")
 
 
+class TestTheAttributableLabelIsHedgedLikeTheOthers(SkillHarness):
+    """The only label that produces a Hold said the least about its evidence.
+
+    #25 gave Phase 6 the base comparison and three labels. `PRE-EXISTING` ships
+    with a caveat, `underivable` gets a paragraph, and `ATTRIBUTABLE` was a bare
+    assertion. Observed on `fpga-board-sim` #332, `actions/checkout` 7.0.0 ->
+    7.0.1: `Board-data drift` red at the head, green at `pr-332^`, every cell
+    true — and the failing job re-syncs generated board sources from **other
+    people's repositories** through the API and requires a zero diff. The cause
+    was an upstream ref moving, fixed in that repo's own #335 and #336.
+
+    `pr-332^` is from 2026-07-23T20:07:40Z and the head from
+    2026-07-27T13:09:25Z: **3d 17h**. `PRE-EXISTING` survives that gap — if the
+    check was already red, the bump is exonerated regardless of what else moved.
+    `ATTRIBUTABLE` does not: green-then-red across 3d 17h is consistent with the
+    bump, with an upstream change, with a runner image roll, or with a flake, and
+    the comparison distinguishes none of them. The two labels are not equally
+    strong evidence and were presented as though they were.
+
+    This is #25's own argument pointed the other way, and no Hold fired only
+    because `Board-data drift` is not a required check. Had the repo marked it
+    required, Phase 7's table would have Held a security backport released across
+    six majors inside 34 minutes, on an upstream board-data change. The guard was
+    the audited repo's branch-protection configuration, not the procedure.
+    """
+
+    def _attribution_row(self) -> str:
+        for table in tables(dict(self.phases)[6]):
+            for row in table:
+                if "**attributable**" in row.lower():
+                    return row
+        self.fail("Phase 6 has no attributable row")
+
+    def test_the_row_does_not_read_as_a_licence_to_hold(self):
+        row = self._attribution_row().lower()
+        self.assertIn(
+            "both commits",
+            row,
+            "the pre-existing row already tells the reader what it must not do; "
+            "the attributable row is the one that can carry a Hold and said "
+            "least — it has to name the read that would settle causation",
+        )
+
+    def test_the_interval_the_comparison_spans_reaches_the_reader(self):
+        """Minutes apart on a one-commit bot PR is a strong claim; most of a week
+        is not. Both print the same sentence without it."""
+        self.assertIn(
+            "interval",
+            dict(self.phases)[6].lower(),
+            "Phase 6 must say that the interval qualifies the claim",
+        )
+        self.assertIn(
+            "CONSISTENT WITH",
+            self.reachable(6),
+            "and the script has to print the hedge, or it lives only where the "
+            "reader of the output never sees it",
+        )
+
+    def test_phase_7s_hold_row_does_not_assert_causation_by_itself(self):
+        for table in tables(dict(self.phases)[7]):
+            for row in table:
+                if "attributable" in row.lower() and "hold" in row.lower():
+                    self.assertIn(
+                        "both commits",
+                        row.lower(),
+                        "an evidence table saying a check is red — true — while "
+                        "implying a cause it never established is the same "
+                        "family as the rewritten base and the hand-joined "
+                        "required list, and this is the row that acts on it",
+                    )
+                    return
+        self.fail("Phase 7 has no verdict row for an attributable red check")
+
+
 class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
     """`--locked` checks every fork; the install materialises one of them.
 
@@ -750,6 +824,136 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
             (PLUGIN / "scripts/audit.py").read_text(encoding="utf-8"),
             "SKILL.md quotes a line audit.py no longer prints",
         )
+
+
+class TestTheScopeGateIsAboutTheBumpNotTheBranch(SkillHarness):
+    """Phase 1 gated on the union of every commit above the base.
+
+    A bot PR's branch is not always all bot. On `fpga-board-sim` #334 a
+    maintainer landed `style: reformat docs for ruff 0.16's markdown code-fence
+    formatting` on the bot's own branch so a required check would pass again —
+    correct, and necessary. Phase 0 read the authorship of all three commits
+    above the base and printed `HUMAN` against two of them; Phase 1 consumed
+    none of that, took its diff from the merge base, saw eight files, and Held.
+
+    An output derived early and then dropped — the inverse of the
+    forward-reference defect this suite was built for.
+
+    The cost is not only the verdict. The gate stops the audit **before Phase
+    4**, and Phase 4 was the phase that would have measured that bump: ruff
+    0.15.22 -> 0.16.0, this plugin's founding Phase 4 observation, occurring for
+    real. The base worktree was built and the measurement was available.
+    """
+
+    def test_phase_1_gates_on_the_bots_own_commits(self):
+        self.assertIn(
+            "$BOT_COMMITS",
+            self.shell[1],
+            "the gate's invariant is 'did the bump reach past the manifest and "
+            "lockfile', not 'did this branch' — and only the bot's commits are "
+            "the bump",
+        )
+
+    def test_the_human_half_reaches_phase_1_too(self):
+        """Reporting it is the other half of the fix: a maintainer commit on the
+        branch is a real thing a reader needs before merging. Suppressing it
+        would trade a false Hold for a silent omission."""
+        self.assertIn(
+            "$HUMAN_COMMITS",
+            self.shell[1],
+            "the split has two halves and dropping the second one reports less than the union did",
+        )
+
+    def test_an_underivable_split_falls_back_rather_than_passing_empty(self):
+        """`for c in $BOT_COMMITS` over an empty string iterates zero times, so
+        the file list is empty and the gate passes **trivially**. That is worse
+        than the false Hold it replaces: a gate that reports clean rather than
+        erroring, on the one phase whose entire job is to refuse."""
+        phase1 = dict(self.phases)[1].lower()
+        self.assertIn(
+            "underivable",
+            phase1,
+            "Phase 0's third state applies to the split too; an unset list is not an empty one",
+        )
+        self.assertIn(
+            "$base_sha..pr-<n>",
+            phase1,
+            "and the fallback has to name the whole-diff gate it falls back to",
+        )
+
+
+class TestTheRepoConfigIsReadAtARef(SkillHarness):
+    """Phase 0 read the repo's gate list out of whatever was checked out.
+
+    Every other Phase 0 output is pinned to the PR, and the lockfile reads in
+    `references/uv-lock.md` do it properly — `git show "pr-<N>:uv.lock"`. The gate
+    read was the one that did not, and it ran in the user's working tree, so the
+    gate list came from whatever branch happened to be there.
+
+    Measured on `fpga-board-sim` #359: `ci.yml` at the checkout listed
+    `uv run actionlint`, which arrived in that repo's #362, three PRs later. Run
+    in the PR's worktree it exits 2 — `Failed to spawn: actionlint` — and reads as
+    a Phase 5 gate failure on a gate the PR never had. Exit 2 is the status this
+    procedure is most careful about everywhere else: "could not run", never "ran
+    and found something". Here the procedure manufactured one.
+
+    Auditing a merged PR makes the divergence certain — the checkout is ahead of
+    every merged PR by construction, and every replay CONTRIBUTING's gate asks for
+    is one. It is not only a replay problem: the same gap opens on an open PR
+    whenever another branch is checked out, or the default branch has moved since
+    the bot branched.
+    """
+
+    # Files whose *content the audit interprets*: the gates it reproduces, and
+    # the bot config that decides whether a currency gap is lag or a hold.
+    INTERPRETED = ("workflows/", ".pre-commit-config", "dependabot.yml", "renovate.json")
+    AT_A_REF = re.compile(r'git show "(?:pr-<N>|\$\{?BASE_SHA\}?|\$\{?DEFAULT\}?):')
+
+    def test_phase_0_reads_the_gate_list_at_a_ref(self):
+        self.assertRegex(
+            self.shell[0],
+            re.compile(r'git show "(?:pr-<N>|\$\{?BASE_SHA\}?):[^"]*(?:workflows|pre-commit)'),
+            "Phase 0 must read the repo's own gates from a ref. Read from the "
+            "checkout, the gate list is whatever happens to be there — and a gate "
+            "the PR never had exits 2, which reads as a Phase 5 failure",
+        )
+
+    def test_no_phase_reads_an_interpreted_config_out_of_the_working_tree(self):
+        """The negative half: `cat`, `grep` and friends read the checkout.
+
+        Asserted per line rather than per phase, because the defect was one line
+        sitting beside several that got it right.
+        """
+        for number, code in sorted(self.shell.items()):
+            for line in code.splitlines():
+                if not any(path in line for path in self.INTERPRETED):
+                    continue
+                self.assertRegex(
+                    line,
+                    self.AT_A_REF,
+                    f"Phase {number} reads a file the audit interprets without "
+                    f"pinning it to a ref, so it reports on the checkout rather "
+                    f"than on the PR: {line.strip()}",
+                )
+
+    def test_both_sides_of_the_bump_get_their_own_gate_list(self):
+        """Phase 4 and Phase 5 run gates in *different* trees.
+
+        One list run in both manufactures the exit 2 above in whichever tree did
+        not have that gate. And a gate present on one side of the bump and not
+        the other is itself a finding — quiet in both directions, since a gate
+        the PR *adds* never runs at all, which is the direction that matters
+        because a tooling bump can legitimately add its own.
+        """
+        shell = self.shell[0]
+        for ref, tree in (("pr-<N>", "Phase 5 reproduces"), (r"\$BASE_SHA", "Phase 4 measures")):
+            self.assertRegex(
+                shell,
+                rf'git show "{ref}:[^"]*workflows',
+                f"Phase 0 must read the gates at the ref of the tree {tree} in; "
+                f"one list serves both trees only until they differ, and the "
+                f"difference is itself the finding",
+            )
 
 
 class TestPhase4MeasuresTheRightTree(SkillHarness):
@@ -1034,6 +1238,114 @@ class TestTheVerdictIsDerivedRatherThanJudged(SkillHarness):
         self.assertIn("confidence is derived", template)
         for level in ("high", "medium", "low"):
             self.assertIn(level, template)
+
+
+class TestSecurityEvidenceOutranksTheCooldown(SkillHarness):
+    """Phase 2's prose and Phase 7's table disagreed about Phase 2's own case.
+
+    Phase 2: "A gap inside the cooldown window does not earn a follow-up branch.
+    [...] What outranks the hold is what this phase reads for next: a `Security`
+    entry or a destructive-fix bug in the gap."
+
+    Phase 7, read top-down taking the first row that matches: the security row
+    was gated on `and the gap is outside the cooldown`, so it could not match,
+    and the fall-through landed on "a gap exists **inside** the cooldown window →
+    Merge as-is. Do *not* offer a follow-up" — the opposite of the prose.
+
+    Measured on `fpga-board-sim` #355: `rumdl` 0.2.49 carries a `Security`
+    section — config `extends` values expanded from the environment before
+    resolution, so naming the resolved path printed environment variable values
+    into the build log. Privately reported, no CVE, no GHSA; `audit.py` reported
+    "no known vulnerabilities across 37 packages", correctly. The changelog is
+    the only place it exists, which is the whole reason Phase 2 reads changelogs.
+    0.2.49 published 17 hours before the PR opened — inside the three-day
+    cooldown, so the bot was right to hold, and the gap still contained a
+    security fix.
+
+    Two more gaps in the same rows. **Destructive-fix bugs had no row at all**,
+    though Phase 2 ranks them equal: `fpga-board-sim` #359, `rumdl` 0.2.53 fixing
+    `md084: stop deleting line endings as invisible characters` and `md038: stop
+    deleting a line when trimming a multi-line code span`, in a repo whose
+    pre-commit config runs `rumdl check --fix` on every commit touching Markdown.
+    And **the recommendation turned on when you ran the audit**: replayed once
+    0.2.49 is thirteen days old the gap is outside the cooldown, row 3 matches,
+    and the same evidence produces the opposite verdict. Phase 7's own stated
+    reason for having a table is that leaving the function implicit is how two
+    audits with the same evidence reach different recommendations.
+    """
+
+    def _verdict_table(self) -> list[str]:
+        for table in tables(dict(self.phases)[7]):
+            if any("Verdict" in row for row in table):
+                return table
+        self.fail("Phase 7 has no verdict table")
+
+    def _security_rows(self) -> list[tuple[int, str]]:
+        """Rows that positively *read* security-shaped evidence in the gap.
+
+        Matched on the evidence named rather than on the word "security", which
+        also appears in the row for a gap containing **nothing** security-shaped
+        — and that row is legitimately conditioned on the cooldown.
+        """
+        return [
+            (i, row)
+            for i, row in enumerate(self._verdict_table())
+            if "`security` entry" in row.lower() or "destructive-fix" in row.lower()
+        ]
+
+    def _cooldown_row(self) -> int:
+        for i, row in enumerate(self._verdict_table()):
+            low = row.lower()
+            if "inside" in low and "cooldown" in low:
+                return i
+        self.fail("Phase 7 has no row for a gap inside the cooldown")
+
+    def test_the_evidence_is_read_whatever_the_cooldown_says(self):
+        """The cooldown decides Hold-vs-follow-up, never whether to look."""
+        rows = self._security_rows()
+        self.assertTrue(rows, "no row reads a Security entry in the gap")
+        self.assertLess(
+            min(i for i, _ in rows),
+            self._cooldown_row(),
+            "a security-shaped row below the cooldown row is unreachable: the "
+            "table is first-match, and every gap inside the window stops there",
+        )
+        for _, row in rows:
+            self.assertNotIn(
+                "outside the cooldown",
+                row.lower(),
+                "gating the *reading* of a Security entry on the cooldown routes "
+                "Phase 2's founding case to 'do not follow up' — the cooldown "
+                "exempts Dependabot's security updates, not a version update "
+                "whose changelog carries a privately disclosed fix",
+            )
+
+    def test_a_destructive_fix_bug_reaches_the_table_at_all(self):
+        """Phase 2 ranks them equal to `Security` entries. Phase 7 never
+        mentioned them, so the only evidence class this procedure discovers that
+        no security feed carries had no verdict rule."""
+        self.assertIn(
+            "destructive",
+            " ".join(self._verdict_table()).lower(),
+            "a data-loss bug in a write mode the repo runs automatically is "
+            "Phase 2's second reading target and had no row",
+        )
+
+    def test_the_row_decides_on_exposure_rather_than_on_the_clock(self):
+        """ "if the repo exercises the affected path" was doing real work in both
+        measured cases and sat in the prose, where no verdict reads it: #355's
+        leak path is inert (the repo configures rumdl inline, with no `extends`
+        anywhere), #359's `--fix` write mode is live on every Markdown commit.
+        Same shape of finding, two urgencies, and the distinction is a grep the
+        phase already knows how to do."""
+        rows = " ".join(row for _, row in self._security_rows()).lower()
+        self.assertIn(
+            "affected path",
+            rows,
+            "the verdict has to turn on whether this repo is exposed; taking it "
+            "from the calendar makes the same evidence produce opposite "
+            "recommendations on different days",
+        )
 
 
 class TestFrontmatter(SkillHarness):

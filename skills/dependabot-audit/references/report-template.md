@@ -29,7 +29,7 @@ named is unfalsifiable, which is the thing this whole report shape exists agains
 | **Scope** | Which files the diff touches. | this run |
 | **Provenance** | N package(s), M artifact(s): hash, size, URL, yanked status — quote the script's own counts, plus anything it reported as unreachable. | this run |
 | **Currency** | Registry latest vs. proposed, with publish time vs. PR open time. Yank and ignore-rule status. | this run |
-| **Security** | Changelog `Security` sections across the gap — including their absence. | this run *or* reused — release notes immutable |
+| **Security** | Changelog `Security` sections and destructive-fix bugs across the gap — including their absence. For each, **whether this repo exercises the affected path**, with the config line that settles it: Phase 7's verdict turns on that, not on the cooldown. | this run *or* reused — release notes immutable |
 | **Vulnerabilities** | OSV result and the ecosystem auditor's, over N packages. | this run |
 | **Behavior change** | Added rules / changed defaults, whether config is opt-in or opt-out, and what running the tool actually showed. | this run *or* reused — head `<sha>` unchanged |
 | **Local reproduction** | Frozen install *in the form that ran*, the interpreter it ran under, any fork verified but not installed, each repo gate with its exit code, test count. | this run *or* reused — head `<sha>` unchanged, worktree verified |
@@ -66,6 +66,14 @@ a different finding with a different verdict. A Hold that rests on an
 unattributed red row is correct only by accident, and the report gives the reader
 no way to tell which.
 
+**An `attributable` row needs the interval too, and whether the log was read.**
+It is the label that carries a Hold, and it is the weakest of the three: a
+`pre-existing` row survives any gap between the two commits, while green-then-red
+across days is equally consistent with an upstream change, a runner image roll or
+a flake. "FAILURE — **attributable**, green at `3a5b0b4ed` 3d 17h earlier; log
+not read at either commit" is a row a reader can weigh. "FAILURE —
+**attributable**" invites a causal reading nothing established.
+
 **A pre-existing red gets a row and does not get the verdict.** Phase 7's table
 is explicit that it is not a Hold *on this bump*, so the report has two things to
 carry at once and must not collapse them: the bump's own verdict, taken from the
@@ -90,9 +98,9 @@ verdict is robust and why.
 
 For a follow-up: a separate branch, never a push onto the bot's branch.
 
-**Say what was left behind, on every path.** Phase 0 registers two worktrees and
-a `pr-<N>` branch in the user's repo, and it does so before the audit knows
-whether it will reach Phase 5 — so an audit that stopped at Phase 1's gate has
-exactly the same litter as one that ran to the end. Phase 7 removes them. If they
-were kept deliberately, name them here with their cleanup commands; never leave
-one registered in the user's repo unannounced.
+**Say what was left behind, on every path.** Phase 0 registers a `pr-<N>` branch
+in the user's repo, plus two worktrees on any bump that consumes them — and it
+does so before the audit knows whether it will reach Phase 5, so an audit that
+stopped at Phase 1's gate has exactly the same litter as one that ran to the end.
+Phase 7 removes them. If they were kept deliberately, name them here with their
+cleanup commands; never leave one registered in the user's repo unannounced.

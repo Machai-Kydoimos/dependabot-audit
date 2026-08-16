@@ -304,15 +304,20 @@ graders, ablation arms, cost ceilings, thresholds — which reads exactly like a
 feature you can use. Invoking it does not:
 
 ```
-$ claude plugin eval dependabot-audit
-`plugin eval` is currently in early access
+$ claude plugin eval dependabot-audit >out 2>err
 $ echo $?
-0
+1
+$ cat out          # empty — the refusal is on stderr
+$ cat err
+`plugin eval` is currently in early access
 ```
 
-**It exits 0.** So a CI step added on the strength of the help text would go
-green while running nothing at all — the same shape as every other failure this
-repo collects, arriving in the tool that was supposed to close the gap. Checked
+**The refusal goes to stderr, and stdout is empty.** So a CI step added on the
+strength of the help text has nothing to grep: a check written against the
+subcommand's output sees a clean, empty result and reports on it. The exit code
+is the only signal, which is the same lesson `SKILL.md` Phase 5 carries about
+`cmd | tail && next` — and this claim used to read *"it exits 0"* here, taken
+through a `| head` that returned `head`'s status rather than `claude`'s. Checked
 0.12.0; worth re-checking rather than assuming, in either direction.
 
 That gap is real, and it is where the defects keep turning up. Seven have now

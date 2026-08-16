@@ -52,6 +52,7 @@ def page(
     review: str = "APPROVED",
     rollup_state: str = "SUCCESS",
     oid: str = HEAD,
+    committed: str = "2026-08-01T00:00:00Z",
 ) -> dict[str, Any]:
     """One GraphQL response. `total` defaults to the node count (nothing truncated)."""
     return {
@@ -66,6 +67,7 @@ def page(
                             {
                                 "commit": {
                                     "oid": oid,
+                                    "committedDate": committed,
                                     "statusCheckRollup": {
                                         "state": rollup_state,
                                         "contexts": {
@@ -95,14 +97,24 @@ class CiStateHarness(unittest.TestCase):
         pages: list[dict[str, Any]],
         runs: dict[str, list[tuple[str, str]]] | None = None,
         statuses: dict[str, list[tuple[str, str]]] | None = None,
+        dates: dict[str, str] | None = None,
+        date_fails: bool = False,
     ) -> tuple[Any, list[str]]:
-        """A `_gh` that dispatches on the call shape, plus the call log."""
+        """A `_gh` that dispatches on the call shape, plus the call log.
+
+        `dates` serves the commit-timestamp read behind the attribution
+        interval; `date_fails` makes that one call exit 2 the way a real `gh`
+        failure does, which must weaken the row rather than end the phase.
+        """
         runs = runs or {}
         statuses = statuses or {}
+        dates = dates or {}
         calls: list[str] = []
         remaining: list[dict[str, Any]] = []
 
         def fake(args: list[str]) -> str:
+            from ci_state import fail
+
             joined = " ".join(args)
             calls.append(joined)
             if "graphql" in joined:
@@ -117,6 +129,10 @@ class CiStateHarness(unittest.TestCase):
             for sha, rows in statuses.items():
                 if f"/commits/{sha}/status" in joined:
                     return "\n".join(json.dumps({"name": n, "result": s}) for n, s in rows)
+            if "committer.date" in joined:
+                if date_fails:
+                    fail("`gh api` failed: HTTP 404")
+                return next((d for sha, d in dates.items() if f"/commits/{sha}" in joined), "")
             return ""
 
         def reset() -> None:
@@ -330,6 +346,99 @@ class TestARedCheckIsAttributedBeforeItCarriesAVerdict(CiStateHarness):
         report = self._json(fake)
         self.assertEqual(report["red"][0]["kind"], "StatusContext")
         self.assertEqual(report["red"][0]["attribution"]["label"], "pre-existing")
+
+
+class TestAnAttributableRowSaysWhatItRestsOn(CiStateHarness):
+    """`ATTRIBUTABLE` is the only label that produces a Hold, and said least.
+
+    `PRE-EXISTING` ships with a caveat and `underivable` gets a paragraph;
+    attribution was a bare assertion. Observed on `fpga-board-sim` #332,
+    `actions/checkout` 7.0.0 -> 7.0.1:
+
+        RED  Board-data drift  FAILURE  [CheckRun]
+             ATTRIBUTABLE — green at 3a5b0b4ed (pr-<N>^)
+
+    Every cell true. The causal reading it invites is false. That job re-syncs
+    generated board sources from *other people's repositories* through the API
+    and requires a zero diff; the cause was an upstream ref moving, fixed in that
+    repo's own #335 and #336. `actions/checkout` 7.0.1 is "skip running unsafe pr
+    check if input is default", "trim only ascii whitespace for branch" and
+    "escape values passed to `--unset`" — none of which changes what
+    `litex-boards` serves.
+
+    **The comparison could not have settled it.** `pr-332^` is from
+    2026-07-23T20:07:40Z and the head from 2026-07-27T13:09:25Z — **3d 17h**, on
+    a check whose inputs live upstream. `PRE-EXISTING` survives that gap: if the
+    check was already red the bump is exonerated regardless of what else moved.
+    `ATTRIBUTABLE` does not — green-then-red across 3d 17h is consistent with the
+    bump, with an upstream change, with a runner image roll, or with a flake, and
+    the comparison distinguishes none of them. That asymmetry is the defect: the
+    two labels are not equally strong evidence and were presented as though they
+    were.
+
+    No Hold fired only because `Board-data drift` is not required. Had the repo
+    marked it so, this would have Held a security backport released across six
+    majors inside 34 minutes, on an upstream board-data change. The guard was the
+    audited repo's branch-protection configuration, not anything in the procedure.
+    """
+
+    RED: ClassVar[list[dict[str, Any]]] = [check_run("Board-data drift", "FAILURE", required=True)]
+
+    def _attributable(
+        self, *, head: str = "2026-07-27T13:09:25Z", parent: str | None = None
+    ) -> Any:
+        return self._fake_gh(
+            [page(self.RED, rollup_state="FAILURE", committed=head)],
+            runs={PARENT: [("Board-data drift", "success")]},
+            dates={PARENT: parent} if parent is not None else {PARENT: "2026-07-23T20:07:40Z"},
+        )[0]
+
+    def test_the_interval_the_comparison_spans_is_printed(self):
+        """Minutes apart on a one-commit bot PR is a strong claim; most of a week
+        is not. The reader cannot discount what they are not shown."""
+        _, out, _ = self._run(self._attributable())
+        self.assertIn("ATTRIBUTABLE", out)
+        self.assertIn("3d 17h", out, "the row must say how far apart the two commits are")
+
+    def test_the_attributable_row_carries_a_hedge(self):
+        """As the other two labels do. This is the one that can carry a Hold."""
+        _, out, _ = self._run(self._attributable())
+        self.assertIn("CONSISTENT WITH", out)
+        self.assertIn("log at both commits", out)
+
+    def test_a_pre_existing_row_is_not_hedged_the_same_way(self):
+        """It survives a wide interval by construction: if the check was already
+        red, the bump is exonerated whatever else moved in between. Hedging both
+        identically would train the reader to discount the row that matters."""
+        fake, _ = self._fake_gh(
+            [page(self.RED, rollup_state="FAILURE")],
+            runs={PARENT: [("Board-data drift", "failure")]},
+            dates={PARENT: "2026-07-23T20:07:40Z"},
+        )
+        _, out, _ = self._run(fake)
+        self.assertIn("PRE-EXISTING", out)
+        self.assertNotIn("CONSISTENT WITH", out)
+
+    def test_an_underivable_interval_says_so_rather_than_reading_as_minutes(self):
+        """Phase 0's third state, one artifact along. A missing interval must not
+        be indistinguishable from a tight one — that is the whole complaint about
+        the unhedged row, reproduced in the hedge."""
+        _, out, _ = self._run(self._attributable(parent=""))
+        self.assertIn("ATTRIBUTABLE", out)
+        self.assertIn("interval underivable", out.lower())
+        self.assertIn("CONSISTENT WITH", out, "the hedge does not depend on the interval")
+
+    def test_a_failed_date_read_does_not_end_the_phase(self):
+        """The interval is a hedge on a claim, not the claim. A read that cannot
+        be made weakens the row; it must not turn Phase 6 into an exit 2."""
+        fake, _ = self._fake_gh(
+            [page(self.RED, rollup_state="FAILURE")],
+            runs={PARENT: [("Board-data drift", "success")]},
+            date_fails=True,
+        )
+        code, out, _ = self._run(fake)
+        self.assertEqual(code, 1, "a red required check is a finding, not a failure to run")
+        self.assertIn("ATTRIBUTABLE", out)
 
 
 class TestMergeStateIsReadAsThreeStates(CiStateHarness):

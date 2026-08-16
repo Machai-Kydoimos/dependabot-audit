@@ -106,6 +106,8 @@ defines:
 #   NAME=<name>
 #   BRANCH_POINT=<ok|rewritten|suspect|underivable>
 #   MAY_EXECUTE=<yes|no>   whether Phases 4 and 5 are authorised
+#   BOT_COMMITS=<shas>     the bot's own commits above the base — Phase 1's gate
+#   HUMAN_COMMITS=<shas>   non-bot commits on the branch — a finding, not a gate
 ```
 
 **An underivable output is emitted commented-out, so it stays unset.** That is
@@ -129,16 +131,45 @@ git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
 ```
 
+**An actions bump consumes neither worktree — do not create them for one.**
+`references/actions.md` reads the diff with `git show "pr-<N>:…"` throughout,
+Phase 4 reads release notes, and Phase 5's substitute is `gh run list`. Two
+worktrees added and removed for nothing, on every actions bump. The **fetch**
+stays either way: `git show` needs the ref, and Phase 7 still has a branch to
+remove. Where the ecosystem is not yet known, the scope diff settles it and costs
+one command.
+
 And the part no script can read for you — the bot's configuration, which decides
-whether a currency gap in Phase 2 is lag or a deliberate hold:
+whether a currency gap in Phase 2 is lag or a deliberate hold, and the repo's
+**own** verification commands. That stays here for the same reason the mutations
+do: `pytest` may be `uv run pytest`, `tox`, `nox`, or a `make` target, and only
+the workflow says so.
+
+**Read every one of them at a ref.** The rest of Phase 0 is pinned to the PR and
+these were not — they ran in the user's checkout, so the answers came from
+whatever branch happened to be there:
 
 ```bash
-cat .github/dependabot.yml 2>/dev/null || cat renovate.json 2>/dev/null
+git show "pr-<N>:.github/dependabot.yml" 2>/dev/null || git show "pr-<N>:renovate.json"
+git show "pr-<N>:.github/workflows/<ci>.yml"       # the gates Phase 5 reproduces
+git show "pr-<N>:.pre-commit-config.yaml"
+git show "$BASE_SHA:.github/workflows/<ci>.yml"    # the gates Phase 4 measures with
 ```
 
-Then read the CI workflow and the pre-commit config to learn the repo's **own**
-verification commands. That stays here for the same reason: `pytest` may be
-`uv run pytest`, `tox`, `nox`, or a `make` target, and only the workflow says so.
+**Each phase's gates come from the tree it runs them in**, and the two trees are
+not the same one: Phase 5 reproduces in `$SCRATCH/pr-<N>`, Phase 4 measures in
+`$SCRATCH/base-<N>` — or `$SCRATCH/tip-<N>`. One list run in both manufactures
+this phase's own worst outcome, an **exit 2** that reads downstream as a gate
+*failure*. Observed auditing a merged bump: the checkout's `ci.yml` listed
+`uv run actionlint`, which arrived three PRs later, so in the PR's worktree it
+could not spawn — "could not run" reported as "ran and found something", by the
+procedure that is most careful about that distinction everywhere else.
+
+**A gate on only one side of the bump is itself a finding**, and it is quiet in
+both directions. A gate since *removed* runs against a tree that never had it; a
+gate the PR *adds* never runs at all — and the second is the one that matters,
+because an actions or tooling bump can legitimately add its own. Diff the two
+lists and report the difference rather than picking a side.
 
 If `git worktree add` refuses because the path already exists, a previous run
 left it there. **Prove it still points at this PR's head before reusing it** — a
@@ -161,10 +192,13 @@ If either check fails, `git worktree remove` it and re-add.
 | `$HEAD_SHA` | the full 40-character commit under audit |
 | `$BASE_SHA` | the merge base, from GitHub's own `compare` endpoint — never a local `git merge-base` against `$DEFAULT`, which collapses onto the head once the PR lands. **And whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
-| `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it |
-| `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below |
+| `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it. Not created for an actions bump, which consumes no worktree |
+| `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below. Same exception |
+| the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
 | `$PERMS` | this account's permissions on the repo — `admin`, `maintain`, `push`, `triage`, `pull` |
+| `$BOT_COMMITS` | the bot's own commits above the base. **Phase 1's scope gate takes its diff from these**, because that is the invariant the gate is about |
+| `$HUMAN_COMMITS` | every non-bot commit on the branch, merges included. Its files are a **finding to report**, never a Hold |
 
 If a later phase needs something not on this list, it belongs here rather than
 there. A phase that consumes what a later phase creates cannot be run in order,
@@ -228,7 +262,10 @@ construction, and Phase 7 re-checks the SHA before you write.
 
 **Never audit the working tree.** Whatever branch the user happens to have checked
 out is not the PR, and a lockfile read from it is indistinguishable from one read
-from the PR — it just quietly reports no changes.
+from the PR — it just quietly reports no changes. That holds for the repo's
+**config** as much as its content: the gate list and the bot config are read
+above at a ref for exactly this reason, and they were the last two reads here that
+were not.
 
 Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwise
 `mktemp -d`. **Never place it inside the repo under audit** — it pollutes
@@ -320,6 +357,46 @@ fire on files the bump never touched — so take the diff from `pr-<N>^..pr-<N>`
 and report the rewritten base as its own finding. Firing the gate on a stale
 base is not a safe default: it stops the audit for a reason that is not true, and
 it reads in the report exactly like a bump that reaches into source.
+
+**Split the diff by authorship before you gate on it.** A bot PR's branch is not
+always all bot. A maintainer can land the fixup the bump *requires* on the bot's
+own branch, so a required check goes green again — and merging that is correct.
+Gated on the union of the branch's commits it produces a Hold, in language that
+reads exactly like a bump reaching into source.
+
+Phase 0 derived both halves, so take the gate's diff from the bot's commits and
+report the human's separately:
+
+```bash
+# what the bump itself changed — this is what the gate is about
+for c in $BOT_COMMITS;   do git show --name-only --format= "$c"; done | sort -u
+# a maintainer's commit on the bot's branch: read it, report it, do not Hold on it
+for c in $HUMAN_COMMITS; do git show --name-only --format= "$c"; done | sort -u
+```
+
+A merge commit is in the second list and normally prints nothing — its content
+arrived from the branch it merged. What it *does* print is what the merge itself
+changed, which is the one thing worth seeing there.
+
+**Where `$BOT_COMMITS` is unset, gate on the whole `$BASE_SHA..pr-<N>` diff and
+say the split was underivable.** That is Phase 0's third state and the old
+behaviour: the right fallback, not the right default. Never gate on an *empty*
+list — it iterates zero times and the gate passes silently, which is the one
+outcome worse than a false Hold.
+
+**Two reasons a scope diff overshoots, and they present identically.** A moved
+base (`BRANCH_POINT=rewritten`, above) and a human fixup on the bot's branch.
+Both produce a diff far past the manifest, both read in the report as a bump
+reaching into source, and they take different fixes. Observed together on one
+PR: Phase 0 printed `HUMAN` against two of three commits above the base, and
+Phase 1 gated on all three.
+
+Getting this wrong costs more than the verdict. The gate stops the audit **before
+Phase 4** — and on that PR Phase 4 was the phase that would have measured the
+bump, `ruff` 0.15.22 → 0.16.0, this phase's own founding observation occurring
+for real. Phase 4 measures on the merge base precisely because a PR carrying the
+fixup reports no difference on its own tree; the base worktree was built, the
+measurement was available, and the gate stopped one phase short of it.
 
 **This phase is a gate, not just a step.** The diff should touch **only** the
 manifest and the lockfile — or, for an actions bump, **only `uses:` lines**, in
@@ -416,7 +493,17 @@ adopted. Look for two things, in this order:
 - **Destructive-fix bugs.** Entries like "stop deleting…" or "no longer removes…"
   in a tool the repo runs in **write mode** (`--fix`, `--write`, `-i`) are
   data-loss bugs in a mode that runs automatically. They never appear in a
-  security feed. Check whether the repo actually invokes that write mode.
+  security feed.
+
+**Then ask whether this repo is in the change's scope**, for either kind. Phase 7
+takes the verdict from that answer, so it is a finding and not a footnote: read
+the advisory or the bug for the setting, flag or mode it lives in, and grep this
+repo's config for it. A `Security` entry whose leak path the repo never
+configures is a follow-up on the merits; a destructive fix in a write mode the
+repo runs on every commit is not. Same shape of evidence, two urgencies, and the
+distinction is one `grep` — it is the same question Phase 4 asks of an actions
+bump, where `references/actions.md` calls the answer "inert here", a result and
+not silence.
 
 ## Phase 3 — Known vulnerabilities
 
@@ -623,9 +710,37 @@ row in three states, never two:
 
 | At `pr-<N>^` | Label | What it means for the verdict |
 |---|---|---|
-| the same check is green | **attributable** | the bump is implicated; this row can carry a Hold |
+| the same check is green | **attributable** | the bump is *implicated*, not convicted. Read the interval the comparison spans, and the failing step's log at **both commits**, before this row carries a Hold |
 | the same check is red | **pre-existing** | the tree the bump landed on was already red. A real finding, a *different* one, and it must not produce a Hold on this bump |
 | **no run at the base**, or no check by that name | **underivable**, per Phase 0 | say so rather than defaulting to attributable |
+
+**The three labels are not equally strong evidence, and the interval is why.**
+`pre-existing` survives any gap between the two commits: if the check was already
+red, the bump is exonerated regardless of what else moved in between.
+`attributable` does not. Green-then-red across days is consistent with the bump,
+with an upstream change, with a runner image roll, or with a flake — and this
+comparison distinguishes none of them. The script prints the span for that
+reason, and prints `interval underivable` rather than nothing when it cannot, so
+a missing interval never reads as a tight one:
+
+```
+RED  Board-data drift  FAILURE  [CheckRun]
+     ATTRIBUTABLE — green at 3a5b0b4ed (pr-<N>^), 3d 17h earlier
+```
+
+Measured on `actions/checkout` 7.0.0 → 7.0.1. Every cell true; the causal reading
+false. The failing job re-syncs generated sources from **other people's
+repositories** and requires a zero diff, so its inputs are outside this repo
+entirely — an upstream ref had moved, and 7.0.1 is three argument-handling fixes.
+No Hold fired only because that check is not required; had it been, this table
+would have Held a security backport released across six majors inside 34 minutes.
+The guard was the audited repo's configuration, not this procedure.
+
+That is the pre-existing argument pointed the other way. A Hold on an unread
+attributable row is unfalsifiable in exactly the same manner — an evidence table
+saying a check is red, which is true, while implying a cause it never
+established — and it is the direction that costs least to be wrong in, so nobody
+goes back and checks.
 
 **`pr-<N>^` and `$BASE_SHA` are the same commit for a genuine one-commit bot PR**,
 which is the ordinary case — so preferring the parent costs nothing there and is
@@ -758,18 +873,54 @@ recommendations. Read the table top-down and take the **first** row that matches
 |---|---|
 | Phase 1's gate fired — scope, a provenance discrepancy, or `PUBLISHER CHANGED` | **Hold** |
 | OSV or GHSA reports a vulnerability in a version being **adopted** | **Hold** |
-| A `Security` entry in the gap, and the gap is outside the cooldown | **Hold** — or merge-then-follow-up when the fix is already in the adopted version |
+| A `Security` entry or a destructive-fix bug in the gap, and the bump moves **into** it — the version being adopted is affected where the **current pin** is not | **Hold.** Merging is what increases exposure here; take the fixed version instead |
+| A `Security` entry or a destructive-fix bug in the gap, **and this repo exercises the affected path** — cooldown notwithstanding | **Merge as-is, then follow up at once.** The bump is still an improvement; the urgency is the follow-up's |
+| A `Security` entry or a destructive-fix bug in the gap, **inert here** — cooldown notwithstanding | **Merge as-is, then follow up** on the merits. The evidence is real and the exposure is not |
 | Actions: the tag rolled **behind** the proposed SHA | **Hold.** Close the bot's PR and replace it by hand; a bot cannot express a downgrade |
 | Phase 4: base differs, PR differs — the change is real and unabsorbed | **Hold** |
 | Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
-| A red required check labelled **attributable** | **Hold** |
+| A red **required** check labelled **attributable** | **Hold** — the PR cannot merge either way. But read the failing step's log at **both commits** before the report says the bump *caused* it: green-then-red is consistent with the bump, not proof, and the wider the interval the weaker the claim |
 | A red required check labelled **pre-existing** | **Not a Hold on this bump.** Report it as its own finding, take the verdict from the remaining evidence, and say the PR is unmergeable until someone fixes it |
 | Phase 4: base differs, PR agrees — real and already absorbed | **Merge as-is**, naming what the PR absorbed and how |
 | `mergeStateStatus: BLOCKED` with every check green | **Merge as-is** on the bump's merits; name what blocks it, usually `reviewDecision` |
 | Actions: the workflow file is generated (`DO NOT EDIT`) | **Merge as-is, then follow up** on the generator — this bump is transient without it |
 | A gap exists, outside the cooldown, nothing security-shaped in it | **Merge as-is, then follow up** |
-| A gap exists **inside** the cooldown window | **Merge as-is.** Do *not* offer a follow-up: it hand-lands the release the control exists to delay |
+| A gap exists **inside** the cooldown window, nothing security-shaped in it | **Merge as-is.** Do *not* offer a follow-up: it hand-lands the release the control exists to delay |
 | Everything derived, nothing above matched | **Merge as-is** |
+
+**The cooldown decides Hold-versus-follow-up. It never decides whether to look.**
+The wait exempts Dependabot's *security updates* — the advisory-driven kind — and
+not a version update whose changelog happens to carry a privately disclosed fix,
+which is exactly the evidence Phase 2 reads for. Gating those rows on the gap
+being outside the window makes them unreachable on the case they were written
+for, and the fall-through then says *merge, do not follow up*.
+
+It also makes the recommendation a function of **when you ran the audit**: the
+same PR, replayed once the release ages past three days, matches a different row
+and gets the opposite advice on identical evidence. That is the failure this
+table exists to prevent, reproduced inside the table.
+
+**"Exercises the affected path" is a grep, and it decides which row.** Both halves
+are measured, on the same dependency, three days apart:
+
+| Observed | Exposure | Verdict |
+|---|---|---|
+| a `Security` entry — config `extends` values expanded from the environment, so naming the resolved path printed environment variable values into the build log — in a repo that configures the tool inline with no `extends` anywhere | inert | merge, then follow up on the merits |
+| two destructive-fix bugs, "stop deleting line endings as invisible characters" and "stop deleting a line when trimming a multi-line code span", in a repo whose pre-commit config runs that tool's `--fix` write mode on every commit touching Markdown | live | merge, then follow up **at once** |
+
+Neither had a CVE, a GHSA, or an OSV hit — `audit.py` reported no known
+vulnerabilities across 37 packages, correctly, and the changelog was the only
+place either existed. Both were inside the cooldown.
+
+**Exposure sets the urgency of the follow-up, not the verdict**, and the reason
+is worth being exact about, because "Hold" reads as the cautious choice here and
+is not. The gap is *newer* than what the PR proposes, so the bump moves toward
+the fix and never away from it: holding the second case above leaves the repo on
+a version carrying **both** destructive bugs rather than one carrying neither
+more of them. Its maintainer merged and followed up four minutes later, which is
+what the row now says. The one configuration where Hold is right is the first
+row's — the bug lives in the version being *adopted*, so merging is the thing
+that increases exposure.
 
 **When phases disagree, this is the precedence** — and they are *expected* to
 disagree, which is why more than one of them exists:
@@ -820,7 +971,9 @@ git worktree remove "$SCRATCH/base-<N>"
 git branch -D "pr-<N>"
 ```
 
-Add `$SCRATCH/tip-<N>` if Phase 0 found the base rewritten and created it.
+Remove exactly what Phase 0 created, and nothing else. Add `$SCRATCH/tip-<N>` if
+Phase 0 found the base rewritten; drop both worktree lines on an actions bump,
+where Phase 0 creates neither and only the branch is left to remove.
 
 Keeping them is reasonable when a follow-up run is likely — say so in the report,
 with the commands above, so the user knows what is there. Silently keeping them

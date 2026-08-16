@@ -304,6 +304,121 @@ class TestTheMergeBaseSurvivesThePrHavingLanded(DiscoverHarness):
         self.assertTrue(any("$BASE_SHA is underivable" in f for f in report["findings"]))
 
 
+class TestTheScopeDiffIsSplitByAuthorship(DiscoverHarness):
+    """A bot PR's branch is not always all bot, and Phase 1 gated on the union.
+
+    `fpga-board-sim` #334: the bot's bump, then a maintainer's `style: reformat
+    docs for ruff 0.16's markdown code-fence formatting` **on the bot's own
+    branch** so a required CI check goes green again, then a merge of `main`.
+    Phase 0 read the authorship of all three and printed `HUMAN` against two.
+    Phase 1 then took its diff from the merge base, saw eight files, and fired
+    the scope gate — reported as "this bump reaches beyond the manifest and
+    lockfile", which is not what happened. Merging it was correct.
+
+    The cost is more than the wrong verdict: the gate stops the audit **before
+    Phase 4**, and Phase 4 is the phase that would have measured this very bump.
+    ruff 0.15.22 -> 0.16.0 is this plugin's founding Phase 4 observation occurring
+    for real, and Phase 4 measures on the merge base precisely because a PR
+    carrying the fixup reports no difference on its own tree. Of the five PRs in
+    that batch it is the only one where Phase 4 had something to find, and the
+    only one where it did not run.
+
+    Same family as #19 and the same shape — the gate stopping the audit for a
+    reason that is not true, in language that reads exactly like a bump reaching
+    into source. #19 was a rewritten base; this is a human commit on the bot's
+    own branch. They present identically and take different fixes.
+    """
+
+    BOT_SHA = "1" * 40
+    HUMAN_SHA = "2" * 40
+    MERGE_SHA = "3" * 40
+
+    def _mixed(self) -> Any:
+        """#334's branch shape: bot, human, then a merge of the base branch."""
+        fake, _ = self._fake(
+            commits=[
+                commit(self.BOT_SHA, BOT, subject="chore(deps-dev): Bump the python-deps group"),
+                commit(self.HUMAN_SHA, "a-human", subject="style: reformat docs for ruff 0.16"),
+                commit(
+                    self.MERGE_SHA, "a-human", parents=2, subject="Merge remote-tracking branch"
+                ),
+            ]
+        )
+        return fake
+
+    def test_the_two_halves_are_emitted_for_phase_1_to_gate_on(self):
+        _, out, _ = self._run(self._mixed(), ["--shell"])
+        self.assertIn(
+            f'BOT_COMMITS="{self.BOT_SHA}"',
+            out,
+            "the gate is about what the *bump* changed, and only the bot's own commits are that",
+        )
+        self.assertIn(
+            f'HUMAN_COMMITS="{self.HUMAN_SHA} {self.MERGE_SHA}"',
+            out,
+            "a maintainer's commit on this branch is a finding to report, not a "
+            "Hold — and it has to reach Phase 1 to be reported at all",
+        )
+
+    def test_a_merge_commit_is_carried_into_the_split_but_not_into_the_verdict(self):
+        """The commit list has two consumers and they filter differently.
+
+        The branch-point scan drops two-parent commits deliberately — someone
+        merging the base *into* the branch leaves the merge base correct, and
+        substituting there halts the audit on `cli/cli` #14049's four workflow
+        lines. Reusing that `parents == 1` filter for the authorship split would
+        be the obvious move and is wrong: `git show` on a clean merge prints
+        nothing, and on an **evil** merge prints what the merge itself changed.
+        Dropping merges makes that invisible; carrying them costs nothing.
+        """
+        _, out, _ = self._run(self._mixed(), ["--shell"])
+        self.assertIn(self.MERGE_SHA, out, "an evil merge would be invisible to Phase 1")
+        report = self._json(self._mixed())
+        self.assertEqual(
+            report["branch_point"]["verdict"],
+            "ok",
+            "and the same merge must still leave the merge base alone",
+        )
+
+    def test_the_emitted_shas_are_full_length(self):
+        """The report truncates to nine characters for reading; a ref handed to
+        `git show` is Phase 0's own rule about transcribing SHAs, one artifact
+        along. Rendered short and emitted short are different requirements."""
+        report = self._json(self._mixed())
+        self.assertEqual(report["branch_point"]["commits_above_base"][0]["sha"], self.BOT_SHA)
+        _, out, _ = self._run(self._mixed())
+        self.assertIn(self.BOT_SHA[:9], out, "the human-readable report still abbreviates")
+
+    def test_an_unreadable_commit_list_leaves_both_unset(self):
+        """Phase 0's third state. The split is underivable, not empty, and Phase
+        1's fallback is the old whole-diff gate."""
+        fake, _ = self._fake(fails=("/commits",))
+        _, out, _ = self._run(fake, ["--shell"])
+        self.assertNotRegex(out, r"(?m)^BOT_COMMITS=")
+        self.assertNotRegex(out, r"(?m)^HUMAN_COMMITS=")
+        self.assertIn("# BOT_COMMITS", out, "an underivable output is emitted commented-out")
+
+    def test_no_bot_commits_leaves_the_gate_list_unset_rather_than_empty(self):
+        """The dangerous shape, and the reason this cannot be a plain join.
+
+        `for c in $BOT_COMMITS` over an empty string iterates zero times, so the
+        file list comes back empty and the gate passes **trivially** — reporting
+        clean rather than erroring, on the one phase whose entire job is to
+        refuse. Unset instead: Phase 1 then falls back to the merge-base diff and
+        says the split was underivable.
+        """
+        fake, _ = self._fake(
+            pull_json=pull(author="someone"),
+            commits=[commit(HEAD, "someone")],
+        )
+        _, out, _ = self._run(fake, ["--shell"])
+        self.assertNotRegex(
+            out,
+            r"(?m)^BOT_COMMITS=",
+            "an empty gate list is worse than no gate list: it passes silently",
+        )
+
+
 class TestExecutionRequiresABotPrOnARepoYouControl(DiscoverHarness):
     def test_an_ordinary_bot_pr_on_your_own_repo_may_execute(self):
         fake, _ = self._fake()

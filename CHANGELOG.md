@@ -83,6 +83,309 @@ rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
 file changes what a phase verifies, so it belongs in its own release behind the
 replay gate rather than in this entry.
 
+## [0.21.1] — 2026-08-16
+
+`claude plugin eval` does not refuse at exit 0. Re-checked while answering "how
+will I know when it opens up", and the answer needed the refusal's shape to be
+right (#32).
+
+Measured directly on `claude` 2.1.233, no pipe, on both the run path and `init`:
+
+```
+$ claude plugin eval dependabot-audit >out 2>err
+$ echo $?
+1
+$ cat out          # empty
+$ cat err
+`plugin eval` is currently in early access
+```
+
+Two corrections, and the second inverts the argument built on the first:
+
+- **It exits 1**, not 0.
+- **The refusal is on stderr and stdout is empty.** So *"a CI step written from
+  the help text goes green while running nothing"* is backwards — at exit 1 that
+  step goes red, the safe direction. The real hazard is the undocumented one: a
+  check that greps the subcommand's **output** sees a clean empty result.
+
+**How the wrong reading arose**, reproduced: `claude plugin eval … | head` returns
+`head`'s status, which is 0. That is `SKILL.md` Phase 5's own trap — *"`cmd | tail
+&& next` gates on `tail`, so a failing suite sails through"* — landing on the
+measurement that argues for measuring. Whether the code was 0 then and is 1 now,
+or was always 1 with the pipe hiding it, is not separable after the fact; the
+claim is false today either way.
+
+Corrected in `README.md`, `CONTRIBUTING.md` and `tests/test_skill_prose.py`'s
+module docstring. Nothing else in #32 changes — the ten cases, the `live.yml`
+placement and the "not an oracle for a new rule" boundary all stand, and the
+suite is still blocked.
+
+## [0.21.0] — 2026-08-16
+
+`ATTRIBUTABLE` is the only one of Phase 6's three labels that produces a **Hold**,
+and it said the least about its own evidence (#41). `PRE-EXISTING` ships with a
+caveat and `underivable` gets a paragraph in `SKILL.md`; attribution was a bare
+assertion.
+
+### The replay
+
+`fpga-board-sim` #332, `actions/checkout` 7.0.0 → 7.0.1. What 0.20.0 printed:
+
+```
+RED  Board-data drift  FAILURE  [CheckRun]
+     ATTRIBUTABLE — green at 3a5b0b4ed (pr-<N>^)
+```
+
+Every cell true. The causal reading it invites is false. That job re-syncs
+generated board sources from **other people's repositories** through the API and
+requires a zero diff; the cause was an upstream ref moving, fixed in that repo's
+own #335 and #336. `actions/checkout` 7.0.1 is "skip running unsafe pr check if
+input is default", "trim only ascii whitespace for branch" and "escape values
+passed to `--unset`" — none of which changes what `litex-boards` serves.
+
+**The comparison could not have settled it.** `pr-332^` is from
+2026-07-23T20:07:40Z, the head from 2026-07-27T13:09:25Z: **3d 17h**, on a check
+whose inputs live upstream. That is the asymmetry, and it is the whole finding:
+
+| Label | Survives a wide interval? |
+|---|---|
+| `pre-existing` | **yes.** If the check was already red the bump is exonerated, whatever else moved |
+| `attributable` | **no.** Green-then-red across 3d 17h is equally consistent with the bump, an upstream change, a runner image roll, or a flake |
+
+The two are not equally strong evidence and were presented as though they were.
+
+**No Hold fired only because `Board-data drift` is not required.** Phase 7's row
+reads "a red **required** check labelled attributable → Hold", so had the repo
+marked it so, this would have Held a security backport released across six majors
+inside 34 minutes, on an upstream board-data change. The guard was the audited
+repo's branch-protection configuration, not anything in the procedure.
+
+### Added
+
+- **The interval travels with the row.** `ATTRIBUTABLE — green at 3a5b0b4ed
+  (pr-<N>^), 3d 17h earlier`, live on #332. Minutes apart on a one-commit bot PR
+  is a strong claim; most of a week is not, and the reader cannot discount what
+  they are not shown.
+
+- **A hedge on the attributable row**, as the other two labels carry: *green-then-
+  red across that interval is CONSISTENT WITH the bump, not proof of it. Read the
+  failing step's log at both commits before this row carries a Hold — especially
+  where the check has inputs outside this repo.* The rule was already in
+  `SKILL.md`, sitting under the *pre-existing* discussion where the reader has
+  been told what to conclude; nothing on the attributable path prompted it.
+
+- **`interval underivable`** rather than silence when a timestamp cannot be read.
+  A missing interval must not be indistinguishable from a tight one — that is the
+  original complaint reproduced inside the fix.
+
+### Changed
+
+- **Phase 7's Hold row keeps the verdict and drops the causal claim.** A red
+  required check blocks the merge either way; what needed qualifying was the
+  report saying the bump *caused* it.
+
+- **`_gh_soft`**, for reads that qualify a row rather than establish one. The
+  interval is a hedge on a claim, so a failed read weakens the row and must never
+  turn Phase 6 into an exit 2. Two calls, and only when a red row exists to
+  qualify.
+
+### Tests
+
+`TestAnAttributableRowSaysWhatItRestsOn` (5) and
+`TestTheAttributableLabelIsHedgedLikeTheOthers` (3). Mutation-checked: hedging
+the pre-existing row identically, making a failed date read fatal, printing
+nothing for an underivable interval, and the 0.20.0 prose.
+
+## [0.20.0] — 2026-08-16
+
+Phase 2's prose and Phase 7's table disagreed about the case Phase 2 was written
+for (#42). Phase 2: *"What outranks the hold is what this phase reads for next: a
+`Security` entry or a destructive-fix bug in the gap."* Phase 7's security row
+was gated on `and the gap is outside the cooldown`, so on a gap **inside** the
+window it could not match, and the fall-through landed on *"Merge as-is. Do not
+offer a follow-up"* — the opposite instruction.
+
+### The replay
+
+`fpga-board-sim` #355 and #359, both `rumdl`, three days apart. Publish times
+from PyPI, PR open times from the API:
+
+| | #355 | #359 |
+|---|---|---|
+| proposed | 0.2.43 → **0.2.47** | 0.2.49 → **0.2.52** |
+| opened | 2026-08-03T13:11:49Z | 2026-08-10T13:11:23Z |
+| the evidence in the gap | 0.2.49's `Security` section, published 16h54m before the PR opened | 0.2.53's `md084` / `md038` destructive fixes, 7h13m before |
+| cooldown | **inside** | **inside** |
+| OSV / GHSA / CVE | none — `audit.py` clean across 37 packages | none |
+| does this repo exercise it | **no** — `[tool.rumdl]` inline, `extends` count 0 | **yes** — `entry: uv run rumdl check --fix` |
+| 0.19.0's verdict | merge, do **not** follow up | merge, do **not** follow up |
+| 0.20.0's verdict | merge, then follow up on the merits | merge, then follow up **at once** |
+| what the maintainer did | — | merged, followed up four minutes later |
+
+Three defects in those rows, not one. **Destructive-fix bugs had no row at all**,
+though Phase 2 ranks them equal to `Security` entries — the only evidence class
+this procedure finds that no security feed carries. And **the recommendation
+turned on when you ran the audit**: replayed today, 0.2.49 is outside the window,
+the old row 3 matches, and identical evidence produces the opposite advice.
+Phase 7's stated reason for having a table at all is that leaving the function
+implicit is how two audits with the same evidence reach different
+recommendations.
+
+### Changed
+
+- **Three rows replace one, and none of them reads the clock.** The cooldown
+  decides Hold-versus-follow-up; it never decides whether to look. The wait
+  exempts Dependabot's *security updates* — the advisory-driven kind — not a
+  version update whose changelog happens to carry a privately disclosed fix.
+
+- **"Exercises the affected path" moved from the prose into the row**, where a
+  verdict rule reads it. It was doing real work in both measured cases and no
+  verdict consumed it.
+
+- **Exposure sets the urgency of the follow-up, not the verdict.** The issue
+  proposed `Hold if the repo exercises the affected path`; replaying #359 — the
+  only exposed case measured — says otherwise. The gap is *newer* than what the
+  PR proposes, so the bump moves toward the fix and never away: holding #359
+  leaves the repo on 0.2.49, carrying **both** destructive bugs, rather than
+  0.2.52 carrying neither more of them. Its maintainer merged and followed up
+  four minutes later. Hold is kept for the one configuration where merging is
+  what increases exposure — the bump moving *into* the bug, adopted version
+  affected where the current pin is not.
+
+- **Phase 2 asks the exposure question for `Security` entries too**, not only for
+  destructive fixes. Same `grep`, and Phase 7 now takes a verdict from it.
+
+- **The report template's Security row** carries the exposure answer and the
+  config line that settles it.
+
+### Tests
+
+`TestSecurityEvidenceOutranksTheCooldown`, three guards, asserted on the parsed
+verdict table rather than on the phase text. Mutation-checked against the 0.19.0
+table: all three fire.
+
+## [0.19.0] — 2026-08-16
+
+Phase 1's scope gate fired on a bump that never left the manifest and the
+lockfile (#43). Same family as #19 and the same shape — the gate stopping the
+audit for a reason that is not true, in language that reads exactly like a bump
+reaching into source. #19 was a rewritten base; this is a **human commit on the
+bot's own branch**.
+
+### The replay
+
+`fpga-board-sim` #334, `ruff` 0.15.22 → 0.16.0. Three commits above the base, and
+Phase 0 already printed `HUMAN` against two of them:
+
+| | Files gated on |
+|---|---|
+| 0.18.0 — `git diff $BASE_SHA..pr-334` | **8**: 6 docs, `pyproject.toml`, `uv.lock` → gate fires → Hold |
+| 0.19.0 — the bot's own commits | **2**: `pyproject.toml`, `uv.lock` → gate does not fire |
+| reported separately — the human commits | the 6 docs, as their own finding |
+
+The six files are `8a5f2e130`, *"style: reformat docs for ruff 0.16's markdown
+code-fence formatting"* — a maintainer landing the reformat the bump requires, on
+the bot's branch, so a required check passes again. Merging it is correct.
+
+**The signal was already derived and then thrown away.** Phase 0 reads the
+authorship of every commit above the base; Phase 1 consumed none of it and gated
+on the union. That is this file's forward-reference defect inverted — an output
+derived early and dropped.
+
+**It cost more than the verdict.** The gate stops the audit *before Phase 4*, and
+Phase 4 was the phase that would have measured this bump: ruff 0.16.0 "can now
+format Python code blocks in Markdown files and will do this by default" is this
+plugin's founding Phase 4 observation occurring for real. Phase 4 measures on the
+merge base precisely because a PR carrying the fixup reports no difference on its
+own tree. The base worktree was built, the measurement was available, and the
+gate stopped one phase short of it. Of the five PRs in that batch it is the only
+one where Phase 4 had something to find, and the only one where it did not run.
+
+**A no-op wherever the old form worked.** Replayed against #359, #355 and #332 —
+ordinary one-commit bot PRs — the bot's-commits gate returns exactly the files
+the merge-base diff returned, and `$HUMAN_COMMITS` is correctly unset.
+
+### Added
+
+- **`$BOT_COMMITS` and `$HUMAN_COMMITS`**, Phase 0 outputs. Full 40-character
+  SHAs; the report still abbreviates to nine for reading.
+
+- **A merge commit is in the human half**, not dropped. The branch-point scan
+  drops two-parent commits deliberately — `cli/cli` #14049 — and reusing that
+  filter here would be the obvious move and wrong: `git show` on a clean merge
+  prints nothing, and on an **evil** merge prints what the merge itself changed.
+
+### Changed
+
+- **An empty gate list is never emitted.** `for c in $BOT_COMMITS` over an empty
+  string iterates zero times, so the gate would pass *trivially* — clean rather
+  than erroring, on the one phase whose whole job is to refuse. Underivable is
+  emitted commented-out, and Phase 1 falls back to the whole-diff gate saying so.
+
+### Tests
+
+`TestTheScopeDiffIsSplitByAuthorship` (5) and
+`TestTheScopeGateIsAboutTheBumpNotTheBranch` (3). Mutation-checked: emitting
+unconditionally, reusing `parents == 1` for the split, keeping the `[:9]`
+truncation, and the 0.18.0 Phase 1 prose — each caught by 2–3 cases.
+
+## [0.18.0] — 2026-08-16
+
+Phase 0 read the repo's own gate list out of the **working tree** (#44). Every
+other Phase 0 output is pinned to the PR, and the lockfile reads in
+`uv-lock.md` do it properly — `git show "pr-<N>:uv.lock"`. The gate read was the
+one that did not.
+
+### The replay
+
+`fpga-board-sim` #359, merged. `ci.yml` read three ways:
+
+| Read from | Gates |
+|---|---|
+| the checkout — `main` at `bddcc47` | 6, including `uv run actionlint` |
+| `git show "pr-359:.github/workflows/ci.yml"` | **5** — no `actionlint` |
+| the PR's merge base, `fff3eaf12` | 5 |
+
+`actionlint` arrived in that repo's #362, three PRs *after* the one under audit.
+Run in the PR's worktree it exits **2** — `Failed to spawn: actionlint` — which
+reads downstream as a Phase 5 gate failure on a gate the PR never had. Exit 2 is
+the status this procedure is most careful about everywhere else: "could not run",
+never "ran and found something". Here the procedure manufactured one.
+
+**Not only a replay problem.** Auditing merged PRs is supported and makes the
+divergence certain — the checkout is ahead of every merged PR by construction,
+and every replay CONTRIBUTING's gate asks for is one. The same gap opens on an
+**open** PR whenever another branch is checked out, or the default branch has
+moved since the bot branched.
+
+### Changed
+
+- **Phase 0 reads the gates, and the bot config, at a ref.** The bot config went
+  with them for the same reason: whether a currency gap is lag or a deliberate
+  hold is decided by the config in force on the PR, not by the copy in whatever
+  is checked out.
+
+- **Each phase's gate list comes from the tree that phase runs it in.** Phase 5
+  reproduces in `$SCRATCH/pr-<N>`, Phase 4 measures in `$SCRATCH/base-<N>`, and
+  one list served both. On #359 the two lists agree, which is the honest thing to
+  report and not a reason to read only one.
+
+- **A gate on only one side of the bump is now a finding.** Quiet in both
+  directions: a gate since *removed* runs against a tree that never had it, and a
+  gate the PR *adds* never runs at all. The second is the one that matters — an
+  actions or tooling bump can legitimately add its own.
+
+- **An actions bump creates no worktrees.** `actions.md` reads the diff with
+  `git show` throughout, Phase 4 reads release notes, and Phase 5's substitute is
+  `gh run list`, so Phase 0 was adding and Phase 7 removing two worktrees that no
+  phase consumed. The fetch stays: `git show` needs the ref.
+
+### Tests
+
+`TestTheRepoConfigIsReadAtARef`, three guards. Mutation-checked against the
+0.17.0 prose: the positive guard found no `git show` of a gate list in Phase 0 at
+all, and the per-line negative guard fired on `cat .github/dependabot.yml`.
+
 ## [0.17.0] — 2026-08-15
 
 `references/traps.md` is retired (#35). It was never fetched — measured, not
@@ -1825,7 +2128,15 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.0...v0.21.1
+[0.21.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.2...v0.17.0
+[0.16.2]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.1...v0.16.2
+[0.16.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.13.0...v0.14.0

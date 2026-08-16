@@ -228,10 +228,13 @@ gaps** — treating the suite's green as coverage of either is the mistake:
   `claude plugin eval`, still unavailable on this account. The README says so and
   should keep saying so — and note *how* it is unavailable, because the shape is
   this repo's own theme: the subcommand exists, prints a full `--help`, and then
-  refuses with ``plugin eval` is currently in early access` **at exit 0**. A CI
-  step written from the help text passes while running nothing. Verify by
-  invoking it, not by reading `--help`; that distinction cost a wrong claim in
-  0.12.0's first draft.
+  refuses with ``plugin eval` is currently in early access` **on stderr, with an
+  empty stdout**, at exit 1. A check written from the help text has nothing to
+  grep and reports a clean empty result; the exit code is the only signal.
+  Verify by invoking it, not by reading `--help` — and **not through a pipe**:
+  this claim read *"at exit 0"* until 2026-08-16, measured as
+  `claude plugin eval … | head`, which returns `head`'s status. Phase 5's own
+  trap, landing on the measurement that argues for measuring.
 
   When it does open up, know in advance what it will and will not discharge. It
   can replay PRs whose right answer a human already established and grade whether
