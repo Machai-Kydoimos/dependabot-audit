@@ -83,6 +83,71 @@ rebase not re-triggering CI. Promoting those into Phase 6 versus retiring the
 file changes what a phase verifies, so it belongs in its own release behind the
 replay gate rather than in this entry.
 
+## [0.19.0] — 2026-08-16
+
+Phase 1's scope gate fired on a bump that never left the manifest and the
+lockfile (#43). Same family as #19 and the same shape — the gate stopping the
+audit for a reason that is not true, in language that reads exactly like a bump
+reaching into source. #19 was a rewritten base; this is a **human commit on the
+bot's own branch**.
+
+### The replay
+
+`fpga-board-sim` #334, `ruff` 0.15.22 → 0.16.0. Three commits above the base, and
+Phase 0 already printed `HUMAN` against two of them:
+
+| | Files gated on |
+|---|---|
+| 0.18.0 — `git diff $BASE_SHA..pr-334` | **8**: 6 docs, `pyproject.toml`, `uv.lock` → gate fires → Hold |
+| 0.19.0 — the bot's own commits | **2**: `pyproject.toml`, `uv.lock` → gate does not fire |
+| reported separately — the human commits | the 6 docs, as their own finding |
+
+The six files are `8a5f2e130`, *"style: reformat docs for ruff 0.16's markdown
+code-fence formatting"* — a maintainer landing the reformat the bump requires, on
+the bot's branch, so a required check passes again. Merging it is correct.
+
+**The signal was already derived and then thrown away.** Phase 0 reads the
+authorship of every commit above the base; Phase 1 consumed none of it and gated
+on the union. That is this file's forward-reference defect inverted — an output
+derived early and dropped.
+
+**It cost more than the verdict.** The gate stops the audit *before Phase 4*, and
+Phase 4 was the phase that would have measured this bump: ruff 0.16.0 "can now
+format Python code blocks in Markdown files and will do this by default" is this
+plugin's founding Phase 4 observation occurring for real. Phase 4 measures on the
+merge base precisely because a PR carrying the fixup reports no difference on its
+own tree. The base worktree was built, the measurement was available, and the
+gate stopped one phase short of it. Of the five PRs in that batch it is the only
+one where Phase 4 had something to find, and the only one where it did not run.
+
+**A no-op wherever the old form worked.** Replayed against #359, #355 and #332 —
+ordinary one-commit bot PRs — the bot's-commits gate returns exactly the files
+the merge-base diff returned, and `$HUMAN_COMMITS` is correctly unset.
+
+### Added
+
+- **`$BOT_COMMITS` and `$HUMAN_COMMITS`**, Phase 0 outputs. Full 40-character
+  SHAs; the report still abbreviates to nine for reading.
+
+- **A merge commit is in the human half**, not dropped. The branch-point scan
+  drops two-parent commits deliberately — `cli/cli` #14049 — and reusing that
+  filter here would be the obvious move and wrong: `git show` on a clean merge
+  prints nothing, and on an **evil** merge prints what the merge itself changed.
+
+### Changed
+
+- **An empty gate list is never emitted.** `for c in $BOT_COMMITS` over an empty
+  string iterates zero times, so the gate would pass *trivially* — clean rather
+  than erroring, on the one phase whose whole job is to refuse. Underivable is
+  emitted commented-out, and Phase 1 falls back to the whole-diff gate saying so.
+
+### Tests
+
+`TestTheScopeDiffIsSplitByAuthorship` (5) and
+`TestTheScopeGateIsAboutTheBumpNotTheBranch` (3). Mutation-checked: emitting
+unconditionally, reusing `parents == 1` for the split, keeping the `[:9]`
+truncation, and the 0.18.0 Phase 1 prose — each caught by 2–3 cases.
+
 ## [0.18.0] — 2026-08-16
 
 Phase 0 read the repo's own gate list out of the **working tree** (#44). Every
@@ -1882,7 +1947,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.2...v0.17.0
 [0.16.2]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.16.1...v0.16.2

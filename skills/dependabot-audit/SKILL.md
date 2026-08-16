@@ -106,6 +106,8 @@ defines:
 #   NAME=<name>
 #   BRANCH_POINT=<ok|rewritten|suspect|underivable>
 #   MAY_EXECUTE=<yes|no>   whether Phases 4 and 5 are authorised
+#   BOT_COMMITS=<shas>     the bot's own commits above the base — Phase 1's gate
+#   HUMAN_COMMITS=<shas>   non-bot commits on the branch — a finding, not a gate
 ```
 
 **An underivable output is emitted commented-out, so it stays unset.** That is
@@ -195,6 +197,8 @@ If either check fails, `git worktree remove` it and re-add.
 | the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
 | `$PERMS` | this account's permissions on the repo — `admin`, `maintain`, `push`, `triage`, `pull` |
+| `$BOT_COMMITS` | the bot's own commits above the base. **Phase 1's scope gate takes its diff from these**, because that is the invariant the gate is about |
+| `$HUMAN_COMMITS` | every non-bot commit on the branch, merges included. Its files are a **finding to report**, never a Hold |
 
 If a later phase needs something not on this list, it belongs here rather than
 there. A phase that consumes what a later phase creates cannot be run in order,
@@ -353,6 +357,46 @@ fire on files the bump never touched — so take the diff from `pr-<N>^..pr-<N>`
 and report the rewritten base as its own finding. Firing the gate on a stale
 base is not a safe default: it stops the audit for a reason that is not true, and
 it reads in the report exactly like a bump that reaches into source.
+
+**Split the diff by authorship before you gate on it.** A bot PR's branch is not
+always all bot. A maintainer can land the fixup the bump *requires* on the bot's
+own branch, so a required check goes green again — and merging that is correct.
+Gated on the union of the branch's commits it produces a Hold, in language that
+reads exactly like a bump reaching into source.
+
+Phase 0 derived both halves, so take the gate's diff from the bot's commits and
+report the human's separately:
+
+```bash
+# what the bump itself changed — this is what the gate is about
+for c in $BOT_COMMITS;   do git show --name-only --format= "$c"; done | sort -u
+# a maintainer's commit on the bot's branch: read it, report it, do not Hold on it
+for c in $HUMAN_COMMITS; do git show --name-only --format= "$c"; done | sort -u
+```
+
+A merge commit is in the second list and normally prints nothing — its content
+arrived from the branch it merged. What it *does* print is what the merge itself
+changed, which is the one thing worth seeing there.
+
+**Where `$BOT_COMMITS` is unset, gate on the whole `$BASE_SHA..pr-<N>` diff and
+say the split was underivable.** That is Phase 0's third state and the old
+behaviour: the right fallback, not the right default. Never gate on an *empty*
+list — it iterates zero times and the gate passes silently, which is the one
+outcome worse than a false Hold.
+
+**Two reasons a scope diff overshoots, and they present identically.** A moved
+base (`BRANCH_POINT=rewritten`, above) and a human fixup on the bot's branch.
+Both produce a diff far past the manifest, both read in the report as a bump
+reaching into source, and they take different fixes. Observed together on one
+PR: Phase 0 printed `HUMAN` against two of three commits above the base, and
+Phase 1 gated on all three.
+
+Getting this wrong costs more than the verdict. The gate stops the audit **before
+Phase 4** — and on that PR Phase 4 was the phase that would have measured the
+bump, `ruff` 0.15.22 → 0.16.0, this phase's own founding observation occurring
+for real. Phase 4 measures on the merge base precisely because a PR carrying the
+fixup reports no difference on its own tree; the base worktree was built, the
+measurement was available, and the gate stopped one phase short of it.
 
 **This phase is a gate, not just a step.** The diff should touch **only** the
 manifest and the lockfile — or, for an actions bump, **only `uses:` lines**, in

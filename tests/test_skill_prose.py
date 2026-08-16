@@ -752,6 +752,62 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
         )
 
 
+class TestTheScopeGateIsAboutTheBumpNotTheBranch(SkillHarness):
+    """Phase 1 gated on the union of every commit above the base.
+
+    A bot PR's branch is not always all bot. On `fpga-board-sim` #334 a
+    maintainer landed `style: reformat docs for ruff 0.16's markdown code-fence
+    formatting` on the bot's own branch so a required check would pass again —
+    correct, and necessary. Phase 0 read the authorship of all three commits
+    above the base and printed `HUMAN` against two of them; Phase 1 consumed
+    none of that, took its diff from the merge base, saw eight files, and Held.
+
+    An output derived early and then dropped — the inverse of the
+    forward-reference defect this suite was built for.
+
+    The cost is not only the verdict. The gate stops the audit **before Phase
+    4**, and Phase 4 was the phase that would have measured that bump: ruff
+    0.15.22 -> 0.16.0, this plugin's founding Phase 4 observation, occurring for
+    real. The base worktree was built and the measurement was available.
+    """
+
+    def test_phase_1_gates_on_the_bots_own_commits(self):
+        self.assertIn(
+            "$BOT_COMMITS",
+            self.shell[1],
+            "the gate's invariant is 'did the bump reach past the manifest and "
+            "lockfile', not 'did this branch' — and only the bot's commits are "
+            "the bump",
+        )
+
+    def test_the_human_half_reaches_phase_1_too(self):
+        """Reporting it is the other half of the fix: a maintainer commit on the
+        branch is a real thing a reader needs before merging. Suppressing it
+        would trade a false Hold for a silent omission."""
+        self.assertIn(
+            "$HUMAN_COMMITS",
+            self.shell[1],
+            "the split has two halves and dropping the second one reports less than the union did",
+        )
+
+    def test_an_underivable_split_falls_back_rather_than_passing_empty(self):
+        """`for c in $BOT_COMMITS` over an empty string iterates zero times, so
+        the file list is empty and the gate passes **trivially**. That is worse
+        than the false Hold it replaces: a gate that reports clean rather than
+        erroring, on the one phase whose entire job is to refuse."""
+        phase1 = dict(self.phases)[1].lower()
+        self.assertIn(
+            "underivable",
+            phase1,
+            "Phase 0's third state applies to the split too; an unset list is not an empty one",
+        )
+        self.assertIn(
+            "$base_sha..pr-<n>",
+            phase1,
+            "and the fallback has to name the whole-diff gate it falls back to",
+        )
+
+
 class TestTheRepoConfigIsReadAtARef(SkillHarness):
     """Phase 0 read the repo's gate list out of whatever was checked out.
 

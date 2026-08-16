@@ -197,7 +197,10 @@ def branch_point(
             if index == len(commits) - 1:
                 head_is_merge = parents > 1
             above.append({
-                "sha": commit.get("sha", "")[:9],
+                # Full length. The report abbreviates for reading; Phase 1 hands
+                # these to `git show`, and Phase 0's rule against transcribing a
+                # 40-character SHA by hand is the same rule one artifact along.
+                "sha": commit.get("sha", ""),
                 "author": author or "(unknown)",
                 "parents": parents,
                 "bot": (author or "") in BOTS,
@@ -251,6 +254,11 @@ def branch_point(
         "base_sha": base_sha,
         "head_is_merge_commit": head_is_merge,
         "commits_above_base": above,
+        # Three states here too: `above` is empty both when the branch genuinely
+        # carries nothing above the base and when the call failed. Phase 1 gates
+        # on this split, and an empty gate list passes trivially — so which of
+        # the two it is has to survive to the shell output.
+        "commits_underivable": commits is None,
         "force_pushes": None if forced is None else len(forced),
     }
 
@@ -342,7 +350,12 @@ def render(report: dict[str, Any]) -> None:
         print("    commits above the base:")
         for c in bp["commits_above_base"]:
             kind = "bot" if c["bot"] else "HUMAN"
-            print(f"      {c['sha']}  parents={c['parents']}  {kind:5}  {c['subject'][:46]}")
+            print(f"      {c['sha'][:9]}  parents={c['parents']}  {kind:5}  {c['subject'][:46]}")
+        if any(not c["bot"] for c in bp["commits_above_base"]):
+            print("\n    A HUMAN commit sits on this branch. Phase 1 gates on $BOT_COMMITS,")
+            print("    not on the merge-base diff: a maintainer landing the fixup the bump")
+            print("    requires is a finding to report, and never a Hold. $HUMAN_COMMITS")
+            print("    carries the other half — read it before merging.")
 
     if bp["verdict"] == "rewritten":
         print("\n    SUBSTITUTE, and report the rewritten base as its own finding:")
@@ -429,6 +442,28 @@ def shell(report: dict[str, Any]) -> None:
     bp, cls = report["branch_point"], report["classification"]
     print(f"BRANCH_POINT={bp['verdict']}")
     print(f"MAY_EXECUTE={'yes' if cls['execute'] else 'no'}")
+
+    # Phase 1's scope gate is about what the *bump* changed, and a bot PR's
+    # branch is not always all bot: a maintainer can land the fixup the bump
+    # requires on the bot's own branch, so a required check goes green. Gating on
+    # the union calls that a Hold. Both halves are already derived above.
+    #
+    # Emitted through `state()` like every other output, and here that matters
+    # more than anywhere else: an *empty* BOT_COMMITS makes `for c in
+    # $BOT_COMMITS` iterate zero times, so the gate passes trivially — clean
+    # rather than erroring, on the one phase whose whole job is to refuse.
+    split = {
+        "BOT_COMMITS": " ".join(c["sha"] for c in bp["commits_above_base"] if c["bot"]),
+        "HUMAN_COMMITS": " ".join(c["sha"] for c in bp["commits_above_base"] if not c["bot"]),
+    }
+    for key, value in split.items():
+        if not bp["commits_underivable"] and state(value) == DERIVED:
+            print(f'{key}="{value}"')
+        else:
+            print(f"# {key} is {'underivable' if bp['commits_underivable'] else ABSENT}")
+    if bp["commits_underivable"] or state(split["BOT_COMMITS"]) != DERIVED:
+        print("#   Phase 1 gates on the whole $BASE_SHA..pr-<N> diff and reports")
+        print("#   the split as underivable. An empty gate list would pass silently")
 
 
 def main() -> int:
