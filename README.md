@@ -52,7 +52,7 @@ $ echo $?
 
 ## Use
 
-Two entry points, either of which does the same thing:
+Two ways in, both of which load the same skill:
 
 ```
 /dependabot-audit <PR>                 # e.g. /dependabot-audit 42
@@ -60,9 +60,14 @@ Two entry points, either of which does the same thing:
 ```
 
 or say "there's a new Dependabot PR, take a look" — the skill's description
-matches and it loads itself. Neither is shorthand for the other; the command
-exists so the documented form is real and can declare its own argument hint,
-and the natural-language path exists because that is how most people arrive.
+matches and it loads itself. Both reach the same skill: the slash form invokes it
+by name and hands it the arguments, and the natural-language path exists because
+that is how most people arrive.
+
+There is deliberately no `commands/` wrapper. A command and a skill share one
+`<plugin>:<name>` address, so a command called `dependabot-audit` claimed the
+skill's own address and the skill could never load — taking `disallowed-tools`
+with it. That shipped through 0.22.1.
 
 The output is a fixed report shape: verdict, confidence, an evidence table where
 every row is something that was actually run, the reasoning, what would change

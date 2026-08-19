@@ -61,6 +61,25 @@ procedure's value, and it is the right default for a PR you have no reason to
 trust yet. Use it when the user asks, and when Phase 0 classifies the PR as one
 the bots did not open. Say in the report which phases did not run.
 
+## Arguments
+
+`/dependabot-audit <PR> [--no-execute] [--comment]`, and the same words said in
+prose. The PR number is the only one that is required.
+
+**If no PR number arrived, ask which one before starting.** Do not reach for the
+most recent bump, and do not audit whatever branch happens to be checked out.
+Both read as helpful, and both audit something the user did not ask about — the
+report that comes back is then about the wrong PR while looking exactly like a
+report about the right one.
+
+- **`--no-execute`** — as above: Phases 0–3 and 6–7, and name the skipped phases
+  in the report.
+- **`--comment`** — produce the report and print it, then *offer* to post it.
+  Posting is a separate action the user asks for explicitly; the flag requests
+  the offer, not the post.
+- **Anything else is not a flag this procedure knows.** Say so, rather than
+  inferring what it might have meant.
+
 ## Why this procedure exists
 
 The failure modes that bite are not "is this package malicious" — they are a

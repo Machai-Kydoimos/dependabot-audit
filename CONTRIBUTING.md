@@ -266,6 +266,12 @@ after nine commits of growth.
 - **Do not extend a script to an ecosystem you have no repository to test it
   against.** The per-ecosystem references document what is in scope instead,
   deliberately.
+- **The plugin ships no `commands/` directory.** A command basename and a skill
+  directory name resolve to the same `<plugin>:<name>` address, and the command
+  wins — so `commands/dependabot-audit.md` made `SKILL.md` unloadable, and with
+  it the `disallowed-tools` that is the read-only contract. Anything a command
+  would carry belongs in `SKILL.md` under **Arguments**.
+  `tests/test_plugin_layout.py` fails if a command reclaims the address.
 - **Observations stay specific.** `rpds-py` at 231 artifacts of which a name-keyed
   audit checked 116; ruff formatting 33 more files; the six Markdown files. These
   name public packages at public versions, and generalising them would convert

@@ -11,6 +11,61 @@ patch.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-08-19
+
+A skill and a command are not in separate namespaces. Both are addressed as
+`<plugin>:<name>`, so `commands/dependabot-audit.md` and
+`skills/dependabot-audit/` claimed the same address — and the command won. This
+is a minor bump rather than a patch because it changes which tools are withheld
+while an audit runs, and removes a shipped artifact.
+
+### Removed
+
+- **`commands/dependabot-audit.md`.** Its entire body said *"invoke the
+  `dependabot-audit` skill"*, which resolved back to the command: a delegation
+  loop that closed on itself, leaving `SKILL.md` unloadable rather than merely
+  deprioritised.
+
+  Measured on Claude Code 2.1.235. The single listed entry for
+  `dependabot-audit:dependabot-audit` carried the *command's* description, not
+  the skill's; and a real audit — `fpga-board-sim` #363 — was handed the
+  1527-character command body with `$1` expanded to `363`, never the skill's 999
+  lines.
+
+  **What that cost is `disallowed-tools`.** `Edit`, `Write` and `NotebookEdit`
+  were never withheld, because the file that withholds them never loaded. The
+  read-only contract the command file itself called "the whole point" was
+  enforced by nothing: the #363 audit stayed read-only because the model chose
+  to, and got the procedure at all only by reading `SKILL.md` off disk by hand.
+
+  The same run had to invent `export CLAUDE_PLUGIN_ROOT=…/0.22.1`. That variable
+  measures empty in the environment — `CLAUDE_PLUGIN_ROOT=[]`, which expands the
+  script paths to `/skills/…` and resolves to nothing. Whether a correctly loaded
+  skill is given it has never been measured, because no recorded run ever loaded
+  one; that is now measurable and is deliberately left for a separate change. The
+  invented workaround is worth naming, because it pins a version into a cache
+  that retains every older copy — carried forward after a release, it runs a
+  stale plugin silently and successfully.
+
+  `/dependabot-audit <PR>` is unchanged for anyone typing it. With nothing
+  shadowing the name, it now reaches the skill.
+
+### Added
+
+- **`tests/test_plugin_layout.py`.** Nothing in `tests/` had ever looked inside
+  `commands/`, which is how a file whose only purpose was delegation survived
+  twenty versions as the thing that broke delegation. Three guards: no command
+  may claim a skill directory's name, none may claim the plugin's own name, and
+  every skill's `name:` must equal its directory — the last is load-bearing for
+  the other two, which compare directory names on the assumption that the
+  directory *is* the address. Verified in both directions: two of the three fail
+  with the command restored, all three pass without it.
+
+- **`SKILL.md` § Arguments**, carrying the two rules that existed only in the
+  command file — ask which PR when none arrived, rather than reaching for the
+  most recent bump or the checked-out branch; and refuse an unrecognised flag
+  rather than inferring what it might have meant.
+
 ## [0.22.1] — 2026-08-16
 
 `CONTRIBUTING.md`'s release step stopped at the annotated tag and the CHANGELOG
