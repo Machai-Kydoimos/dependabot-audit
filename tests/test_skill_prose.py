@@ -1479,33 +1479,6 @@ class TestTheAuditHandsBackItsOwnDeviations(SkillHarness):
             "the deviation list has no home unless the phase says where it goes",
         )
 
-    def test_it_names_path_resolution_as_the_row_that_goes_missing(self):
-        """Two for two, and the replay of this very clause was the second.
-
-        Both recorded runs improvised on *where is this plugin?* and neither
-        reported it. #363 invented `export CLAUDE_PLUGIN_ROOT=...`; the first
-        audit run under this clause listed the plugin's `scripts/` and
-        `references/` directories and then substituted an absolute path for
-        `${CLAUDE_PLUGIN_ROOT}` in every invocation, handing back three other
-        deviations and not that one.
-
-        The clause is general and the general form did not reach it, so the case
-        is named. Written from the measurement rather than from the clause:
-        `CLAUDE_PLUGIN_ROOT` is empty in the Bash tool's environment on Claude
-        Code 2.1.238, under a marketplace install and `--plugin-dir` alike.
-        """
-        self.assertRegex(
-            self._deviation_section(),
-            re.compile(
-                r"CLAUDE_PLUGIN_ROOT.{0,400}?(is \*\*empty\*\*|expands to nothing)",
-                re.IGNORECASE | re.DOTALL,
-            ),
-            "naming the variable is not enough — the narrative above already does, and "
-            "that version of this guard passed against prose with no path-resolution "
-            "clause at all. What the clause has to carry is the measurement: the "
-            "variable is empty, so substituting it is unavoidable *and* a deviation",
-        )
-
     def test_phase_7_puts_a_plugin_defect_in_the_report(self):
         """Phase 8 is the maintainer's; the PR's reader needs one line of it.
 

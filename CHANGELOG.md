@@ -54,88 +54,83 @@ back and what the report asserts.
 
 ### The replay
 
-Two rounds, `fpga-board-sim` #363 — the PR that motivated the change — audited
-end to end against the working tree via `claude -p --plugin-dir`, in a fresh
-context each time, with the deviation list checked afterwards against the
-session transcript's actual `Bash` calls. The transcript is the independent
-record; the model's recollection is not, and the two disagreed.
+`fpga-board-sim` #363 — the PR that motivated the change — audited end to end in
+a fresh context via `claude -p --plugin-dir`, then the hand-back checked against
+that session transcript's actual `Bash` calls. The transcript is the independent
+record; the model's recollection is not.
 
-**Round one, the clause exactly as proposed.** The hand-back appeared
-**unprompted** and was substantive: three `gh api` calls correctly identified as
-outside the procedure, two of them classified a **prose gap** with a portable
-addition proposed for `references/actions.md` — the release notes for
-`setup-uv` v10.0.0 name three events for the `enable-cache: auto` change while
-`action.yml` and `src/utils/inputs.ts` name four, so a scope grep built from the
-notes checks three triggers and misses one.
+**The hand-back appeared unprompted and was substantive.** Three `gh api` calls
+correctly identified as outside the procedure, two of them classified a **prose
+gap** with a portable addition proposed for `references/actions.md`: `setup-uv`
+v10.0.0's release notes name three events for the `enable-cache: auto` change,
+while `action.yml` and `src/utils/inputs.ts` name four, so a scope grep built
+from the notes checks three triggers and misses tag pushes. Filed as its own
+issue. Verdict unaffected — **merge as-is, high confidence** — so the clause did
+not distort the audit it rides on.
 
-**And it missed the row it was written for.** From the same transcript, neither
-reported:
+**Checked against the transcript, the list was materially complete.** One
+unreported item: an `ls` of the plugin's own `scripts/` and `references/`, run to
+get bearings before Phase 0.
+
+### The second round, and why it is not in this release
+
+A second round ran against an amended clause that named *path resolution* as the
+row most likely to go missing, on the reading that the audit had silently
+replaced every `${CLAUDE_PLUGIN_ROOT}/scripts/…` with an absolute path. **That
+reading was wrong, and the amendment is reverted.** It is recorded because the
+error is the exact class this release exists to surface.
+
+`${CLAUDE_PLUGIN_ROOT}` is expanded **textually at skill load**; it is not an
+environment variable. 0.23.0 said so. Settled from the round-two transcript,
+where the 62,674-character skill injection delivered to the model reads:
 
 ```
-ls .../skills/dependabot-audit/scripts/ .../references/
 D="/home/rick/Projects/dependabot-audit/skills/dependabot-audit/scripts/discover.py"
 ```
 
-Every `${CLAUDE_PLUGIN_ROOT}/scripts/…` in this file was silently replaced by an
-absolute path — the same question #363 improvised on, *where is this plugin?*,
-answered by hand and handed back by neither run. The clause was general, and the
-general form did not reach its own motivating case.
+against a `SKILL.md` that holds `D="${CLAUDE_PLUGIN_ROOT}/…"` on disk at line
+104. The model ran exactly what it was handed. **There was no substitution and no
+deviation** — and round two, following the amended prose, dutifully reported one
+as its first row. A clause that manufactures false deviations is worse than one
+that misses an `ls`, so the clause ships as #50 proposed it.
 
-**Round two, after naming path resolution explicitly**, reported the
-substitution as its **first** row — "exactly the row SKILL.md predicts goes
-unreported" — plus three more, all four verified true against that transcript:
-orientation commands before Phase 0, `git ls-tree` to enumerate workflows at a
-ref (a genuine `actions.md` prose gap), and re-sourcing `phase0.env` per call
-because shell state does not persist between tool calls. Phase 7's line fired
-correctly and narrowly: *"This audit did not have to improvise on procedure —
-every phase ran as written. It did substitute one absolute path."*
-
-Residual, stated rather than smoothed over: round two folded the `ls` that
-*discovered* the path into the substitution row instead of itemising it. The
-substantive half is reported; the reconnaissance half still is not.
+What found this was neither round: it was a project memory recording 0.23.0's own
+conclusion, read back afterwards. The replay gate proved the clause works and did
+**not** catch the error in the amendment written from it — the amendment's row
+looked like a success in both the report and the transcript.
 
 ### Measured
 
-- **`CLAUDE_PLUGIN_ROOT` is empty even when the skill loads correctly.** 0.23.0
-  recorded that the shadowed #363 run measured `CLAUDE_PLUGIN_ROOT=[]` and noted
-  that *"whether a correctly loaded skill is given it has never been measured"*,
-  deferring it. Measured now, Claude Code 2.1.238, skill loaded and confirmed by
-  reading back its own final heading:
-
-  | Load path | `printf 'ROOT=[%s]' "$CLAUDE_PLUGIN_ROOT"` |
-  |---|---|
-  | marketplace install, 0.23.0 | `ROOT=[]` |
-  | `--plugin-dir` on the working tree | `ROOT=[]` |
-
-  In both the harness supplies the skill's absolute directory *alongside the
-  instructions*, which is where every recorded run has actually got the path
-  from. So every `${CLAUDE_PLUGIN_ROOT}/scripts/…` in `SKILL.md` is written
-  against a variable that expands to nothing, and each audit silently
-  substitutes — correct, unavoidable, and until now unreported. **Not fixed
-  here**, deliberately: 0.23.0 called it a separate change and it still is. This
-  release makes it *visible*, which is the whole point of the clause.
+- **`$CLAUDE_PLUGIN_ROOT` is empty in the Bash tool's environment, and that is
+  correct.** Claude Code 2.1.238, skill loaded and confirmed loaded, marketplace
+  install and `--plugin-dir` alike: `printf 'ROOT=[%s]' "$CLAUDE_PLUGIN_ROOT"`
+  gives `ROOT=[]` on both. This looks like a defect and is not one — the token is
+  substituted into the skill *text* before the model ever sees it, so nothing at
+  runtime needs the variable. Recorded because the naive probe points the wrong
+  way, and because 0.23.0 left "whether a correctly loaded skill is given it" as
+  an open question. It is not given it, and does not need to be.
 
 ### Tests
 
-- **Seven guards in `tests/test_skill_prose.py`**, one class, all seven
-  mutation-checked against the prose that preceded them.
+- **Six guards in `tests/test_skill_prose.py`**, one class, each mutation-checked
+  against the prose that preceded it — all six fail against 0.23.0's Phase 8 and
+  report-template.
 
-  The seventh had to be rewritten before it counted. As first written it
-  asserted that the clause **names** `CLAUDE_PLUGIN_ROOT`, and it **passed
-  against prose carrying no path-resolution clause at all** — the narrative
-  above it already quotes the #363 `export`. Rewritten to assert the
-  *measurement*, that the variable is empty, it fails against the earlier text
-  as a guard should. Written from the fix it
-  would have shipped green and meaningless; CONTRIBUTING's rule about the
-  direction the writing flows from, caught by running it.
+  A seventh, written for the amended clause, is gone with it. It is worth its own
+  line: as first written it asserted that the clause **names**
+  `CLAUDE_PLUGIN_ROOT`, and it **passed against prose carrying no
+  path-resolution clause at all**, because the narrative above already quotes the
+  #363 `export`. Rewriting it to assert the measurement made it discriminate —
+  and the measurement it then asserted was false. A guard can be made to fail
+  correctly against the old text and still encode a wrong claim; mutation
+  checking sizes the discrimination, never the truth.
 
 ### Not done, deliberately
 
-- **The `${CLAUDE_PLUGIN_ROOT}` paths are unchanged.** See **Measured**.
-- **Two candidates the replay raised** stay out: enumerating workflows at a ref
-  in `references/actions.md`, and Phase 7's cleanup block leading with the
+- **Two candidates the second round raised** stay out: enumerating workflows at a
+  ref in `references/actions.md`, and Phase 7's cleanup block leading with the
   two-worktree case so the actions exception reads as a parenthetical. Both are
-  real, neither is this change.
+  real; neither is this change, and neither has a defect behind it yet.
 
 ## [0.23.0] — 2026-08-19
 

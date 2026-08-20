@@ -1060,20 +1060,5 @@ headings returns a clean sheet every time, because the headings are what you
 *meant* to run; the deviation least likely to be recalled is the small one that
 felt too obvious to mention, and that is the shape both #363 commands had.
 
-**Path resolution counts, and it is the row most likely to go missing.** Both
-recorded runs improvised on the same question — *where is this plugin?* — and
-neither volunteered it. #363 invented the `export`. The first audit run under this
-clause, `fpga-board-sim` #363 replayed on 2026-08-20, listed `scripts/` and
-`references/` and then substituted an absolute path for `${CLAUDE_PLUGIN_ROOT}` in
-every invocation; it reported three other deviations accurately and not that one.
-
-Measured the same day on Claude Code 2.1.238, from a marketplace install and
-under `--plugin-dir` alike: `CLAUDE_PLUGIN_ROOT` is **empty** in the Bash tool's
-environment, while the harness supplies this skill's absolute directory alongside
-these instructions. Substituting it is therefore both correct and unavoidable —
-and still a deviation, because every script path below is written against a
-variable that expands to nothing. If you did not invoke the scripts exactly as
-written, that is a row.
-
 Print it; do not file it — the same contract as the hand-back above. This skill
 does not write, and the session that invoked it owns what happens next.
