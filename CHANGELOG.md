@@ -11,6 +11,132 @@ patch.
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-08-20
+
+An audit that works around a defect in **this plugin** reports nothing about it,
+and the report's silence reads as compliance. `fpga-board-sim` #363 ran to a
+complete, well-formed report under 0.22.1 while `SKILL.md` had never loaded at
+all: every row in it was true, and the procedure that produced them was not this
+procedure. Phase 8 could not have asked — its scope was a landmine in the
+*audited* repo or a portable trap in an ecosystem, and a defect in the plugin's
+own machinery is neither. Minor rather than patch: it changes what Phase 8 hands
+back and what the report asserts.
+
+### Added
+
+- **Phase 8 hands back the audit's own deviations**, separately from what it
+  found about the PR: every shell command run that `SKILL.md` did not specify,
+  quoted with the gap it filled, and every plugin file read directly rather than
+  invoked as written. Each classified **plugin defect**, **prose gap**, or
+  **correct**; printed, never filed, on the same contract as the landmine
+  hand-back above it.
+
+  The two categories are the two commands from the #363 transcript, and the pair
+  is load-bearing: a clause asking only about surprising commands misses the
+  `cat SKILL.md`, and one asking only about plugin files misses the invented
+  `export CLAUDE_PLUGIN_ROOT=…`.
+
+  `correct` is a real answer and the common one. The goal is not to suppress
+  improvisation — no procedure enumerates every repo it will meet — but to stop
+  it being invisible, because the workaround that *works* is precisely the one
+  nobody reports. That is how the shadowing shipped in 0.2.1 and survived to
+  0.23.0.
+
+- **Phase 7 discloses a deviation in the report itself**, in one line, and
+  `references/report-template.md` carries the matching slot so the instruction
+  has somewhere to land.
+
+  Stated in Phase 7's **own** terms — "a command this procedure did not specify,
+  or a plugin file read by hand" — rather than by deferring to Phase 8's
+  classification. Phase 8 runs *after* Phase 7, and a phase that consumes what a
+  later phase produces is the forward-reference defect `test_skill_prose.py`
+  already guards twice.
+
+### The replay
+
+Two rounds, `fpga-board-sim` #363 — the PR that motivated the change — audited
+end to end against the working tree via `claude -p --plugin-dir`, in a fresh
+context each time, with the deviation list checked afterwards against the
+session transcript's actual `Bash` calls. The transcript is the independent
+record; the model's recollection is not, and the two disagreed.
+
+**Round one, the clause exactly as proposed.** The hand-back appeared
+**unprompted** and was substantive: three `gh api` calls correctly identified as
+outside the procedure, two of them classified a **prose gap** with a portable
+addition proposed for `references/actions.md` — the release notes for
+`setup-uv` v10.0.0 name three events for the `enable-cache: auto` change while
+`action.yml` and `src/utils/inputs.ts` name four, so a scope grep built from the
+notes checks three triggers and misses one.
+
+**And it missed the row it was written for.** From the same transcript, neither
+reported:
+
+```
+ls .../skills/dependabot-audit/scripts/ .../references/
+D="/home/rick/Projects/dependabot-audit/skills/dependabot-audit/scripts/discover.py"
+```
+
+Every `${CLAUDE_PLUGIN_ROOT}/scripts/…` in this file was silently replaced by an
+absolute path — the same question #363 improvised on, *where is this plugin?*,
+answered by hand and handed back by neither run. The clause was general, and the
+general form did not reach its own motivating case.
+
+**Round two, after naming path resolution explicitly**, reported the
+substitution as its **first** row — "exactly the row SKILL.md predicts goes
+unreported" — plus three more, all four verified true against that transcript:
+orientation commands before Phase 0, `git ls-tree` to enumerate workflows at a
+ref (a genuine `actions.md` prose gap), and re-sourcing `phase0.env` per call
+because shell state does not persist between tool calls. Phase 7's line fired
+correctly and narrowly: *"This audit did not have to improvise on procedure —
+every phase ran as written. It did substitute one absolute path."*
+
+Residual, stated rather than smoothed over: round two folded the `ls` that
+*discovered* the path into the substitution row instead of itemising it. The
+substantive half is reported; the reconnaissance half still is not.
+
+### Measured
+
+- **`CLAUDE_PLUGIN_ROOT` is empty even when the skill loads correctly.** 0.23.0
+  recorded that the shadowed #363 run measured `CLAUDE_PLUGIN_ROOT=[]` and noted
+  that *"whether a correctly loaded skill is given it has never been measured"*,
+  deferring it. Measured now, Claude Code 2.1.238, skill loaded and confirmed by
+  reading back its own final heading:
+
+  | Load path | `printf 'ROOT=[%s]' "$CLAUDE_PLUGIN_ROOT"` |
+  |---|---|
+  | marketplace install, 0.23.0 | `ROOT=[]` |
+  | `--plugin-dir` on the working tree | `ROOT=[]` |
+
+  In both the harness supplies the skill's absolute directory *alongside the
+  instructions*, which is where every recorded run has actually got the path
+  from. So every `${CLAUDE_PLUGIN_ROOT}/scripts/…` in `SKILL.md` is written
+  against a variable that expands to nothing, and each audit silently
+  substitutes — correct, unavoidable, and until now unreported. **Not fixed
+  here**, deliberately: 0.23.0 called it a separate change and it still is. This
+  release makes it *visible*, which is the whole point of the clause.
+
+### Tests
+
+- **Seven guards in `tests/test_skill_prose.py`**, one class, all seven
+  mutation-checked against the prose that preceded them.
+
+  The seventh had to be rewritten before it counted. As first written it
+  asserted that the clause **names** `CLAUDE_PLUGIN_ROOT`, and it **passed
+  against prose carrying no path-resolution clause at all** — the narrative
+  above it already quotes the #363 `export`. Rewritten to assert the
+  *measurement*, that the variable is empty, it fails against the earlier text
+  as a guard should. Written from the fix it
+  would have shipped green and meaningless; CONTRIBUTING's rule about the
+  direction the writing flows from, caught by running it.
+
+### Not done, deliberately
+
+- **The `${CLAUDE_PLUGIN_ROOT}` paths are unchanged.** See **Measured**.
+- **Two candidates the replay raised** stay out: enumerating workflows at a ref
+  in `references/actions.md`, and Phase 7's cleanup block leading with the
+  two-worktree case so the actions exception reads as a parenthetical. Both are
+  real, neither is this change.
+
 ## [0.23.0] — 2026-08-19
 
 A skill and a command are not in separate namespaces. Both are addressed as
@@ -2230,7 +2356,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.21.1...v0.22.0

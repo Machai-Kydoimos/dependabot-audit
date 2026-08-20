@@ -859,6 +859,15 @@ evidence table, reasoning, what would change the verdict, and the **un-run** mer
 command. Lead with evidence; the recommendation is a conclusion drawn from it,
 not a headline it decorates.
 
+**If this audit had to improvise, the report says so.** One line, wherever it ran
+a command this procedure did not specify or read a plugin file by hand instead of
+invoking it — the evidence rows were then produced by a procedure working around
+its own tooling, and nothing else in the report can tell the reader that. Do not
+wait on Phase 8's classification: that hand-back is written for this plugin's
+maintainer and comes *after* this phase, while what the reader here needs is one
+sentence and the PR. On `fpga-board-sim` #363 the table read identically either
+way.
+
 **Mark each row's provenance**, and reuse only where it is legitimate. What
 invalidates a row is not how old it is but what it depends on:
 
@@ -1016,3 +1025,55 @@ section.
 A generally portable trap belongs in this plugin rather than in one project's
 memory — in the phase it applies to if it is a rule, or in that ecosystem's
 reference if it is a recipe. Say which you are proposing, and why.
+
+### Hand back the deviations too
+
+Everything above hands back what the audit learned about the **repo**. This hands
+back what it learned about **itself**, and it is a separate question.
+
+The report asserts *"I followed this procedure"* by silence, and on 2026-08-19
+that assertion was false with nothing anywhere to catch it. `fpga-board-sim` #363
+ran to a complete, well-formed report under 0.22.1 while this file had never
+loaded at all: a `commands/` entry shadowed the skill at the same
+`<plugin>:<name>` address, so `SKILL.md` was unloadable and `disallowed-tools`
+never applied. Every evidence row in that report was true. The procedure that
+produced them was not this one — the audit had reached them by running two
+commands that appear nowhere here, an invented `CLAUDE_PLUGIN_ROOT` export and a
+`cat` of the procedure it should have been handed — and the report mentioned
+neither.
+
+So, separately from what the audit found about the PR, hand back:
+
+- **every shell command run that this file did not specify** — quoted, with the
+  gap it filled;
+- **every plugin file read directly rather than invoked as written.**
+
+Classify each as **plugin defect**, **prose gap**, or **correct**. All three are
+real answers and `correct` is the common one: no procedure enumerates every repo
+it will meet, and improvising is usually the right call. The goal is not to
+suppress the improvisation but to stop it being invisible — a workaround that
+*works* is precisely the one nobody reports, which is how the shadowing shipped
+in 0.2.1 and survived to 0.23.0.
+
+Read it off what you actually ran. Reconstructing the list from the phase
+headings returns a clean sheet every time, because the headings are what you
+*meant* to run; the deviation least likely to be recalled is the small one that
+felt too obvious to mention, and that is the shape both #363 commands had.
+
+**Path resolution counts, and it is the row most likely to go missing.** Both
+recorded runs improvised on the same question — *where is this plugin?* — and
+neither volunteered it. #363 invented the `export`. The first audit run under this
+clause, `fpga-board-sim` #363 replayed on 2026-08-20, listed `scripts/` and
+`references/` and then substituted an absolute path for `${CLAUDE_PLUGIN_ROOT}` in
+every invocation; it reported three other deviations accurately and not that one.
+
+Measured the same day on Claude Code 2.1.238, from a marketplace install and
+under `--plugin-dir` alike: `CLAUDE_PLUGIN_ROOT` is **empty** in the Bash tool's
+environment, while the harness supplies this skill's absolute directory alongside
+these instructions. Substituting it is therefore both correct and unavoidable —
+and still a deviation, because every script path below is written against a
+variable that expands to nothing. If you did not invoke the scripts exactly as
+written, that is a row.
+
+Print it; do not file it — the same contract as the hand-back above. This skill
+does not write, and the session that invoked it owns what happens next.

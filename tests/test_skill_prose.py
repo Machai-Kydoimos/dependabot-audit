@@ -1380,5 +1380,159 @@ class TestFrontmatter(SkillHarness):
         self.assertEqual(self._frontmatter()["name"], PLUGIN.name)
 
 
+class TestTheAuditHandsBackItsOwnDeviations(SkillHarness):
+    """The report asserted "I followed the procedure" by silence, and was wrong.
+
+    On 2026-08-19 `fpga-board-sim` #363 ran to a complete, well-formed report
+    under 0.22.1 while `SKILL.md` had never loaded at all: `commands/` shadowed
+    the skill at the same `<plugin>:<name>` address, so the procedure was
+    unloadable and `disallowed-tools` never applied (#48, 0.23.0). Every evidence
+    row in that report was true. What produced them was not this procedure.
+
+    The shadowing is fixed. The part that is not is that the audit **routed
+    around it silently**. Two commands from that session's transcript, neither of
+    which appears anywhere in this file:
+
+        export CLAUDE_PLUGIN_ROOT=/home/rick/.claude/plugins/cache/.../0.22.1
+        cd .../skills/dependabot-audit && cat SKILL.md
+
+    The first invents a variable the prose assumes is supplied; the second
+    fetches by hand the procedure that should have been handed over. The report
+    mentioned neither, and Phase 8 as written could not have asked for them — its
+    scope was a landmine in the *audited* repo or a portable trap in an ecosystem,
+    and a defect in the plugin's own machinery is neither.
+
+    **These two cases are the assertions below, and that is deliberate.** They
+    come from the transcript, not from the clause written to answer it — a guard
+    derived from its own fix can only ever agree with it, which is how a Phase 6
+    guard in 0.10.0 asserted the property that *was* the defect. A clause that
+    asked only for surprising commands would still miss the `cat`; one that asked
+    only about plugin files would still miss the `export`.
+
+    What this cannot check is whether the model *does* it. That is behavioral,
+    belongs in `claude plugin eval` (#32, still refused on this account), and
+    until then rests on the replay in CONTRIBUTING: run an audit, ask for the
+    deviation list, and check it against the transcript's actual `Bash` calls.
+    """
+
+    def _deviation_section(self) -> str:
+        """The Phase 8 subsection that asks for deviations, not all of Phase 8.
+
+        Anchored to the subsection so "these words appear somewhere in Phase 8"
+        cannot satisfy the guards: the landmine hand-back above it already talks
+        about evidence, handing back, and not creating files.
+        """
+        phase8 = dict(self.phases)[8]
+        parts = re.split(r"^### ", phase8, flags=re.MULTILINE)
+        for part in parts:
+            if re.search(r"deviat", part, re.IGNORECASE):
+                return part
+        self.fail("Phase 8 has no subsection asking for deviations from the procedure")
+
+    def test_it_asks_for_commands_the_procedure_did_not_specify(self):
+        """The `export` half: a command run to fill a gap in the prose."""
+        self.assertRegex(
+            self._deviation_section(),
+            re.compile(
+                r"command.{0,120}(did not specify|this file does not)", re.IGNORECASE | re.DOTALL
+            ),
+            "a deviation list that does not ask for unspecified commands misses the "
+            "invented CLAUDE_PLUGIN_ROOT export, which is half the #363 evidence",
+        )
+
+    def test_it_asks_for_plugin_files_read_instead_of_invoked(self):
+        """The `cat SKILL.md` half: the procedure fetched by hand."""
+        self.assertRegex(
+            self._deviation_section(),
+            re.compile(r"read directly|read by hand|rather than invoked", re.IGNORECASE),
+            "asking only for surprising commands still reads as satisfied by an audit "
+            "that quietly cat'd the procedure it was supposed to be handed",
+        )
+
+    def test_each_deviation_is_classified_rather_than_only_listed(self):
+        """A list without the verdict column is a diary, not a hand-back.
+
+        `plugin defect` is the class that reached the report in #363 and the one
+        Phase 7 pairs with; `correct` has to be available or the clause reads as
+        an instruction not to improvise, which would be the wrong lesson.
+        """
+        section = self._deviation_section().lower()
+        for label in ("plugin defect", "prose gap", "correct"):
+            self.assertIn(
+                label,
+                section,
+                f"a deviation classified as neither {label!r} nor anything else is "
+                f"handed back with its meaning left to the reader",
+            )
+
+    def test_the_deviation_list_is_handed_back_rather_than_filed(self):
+        """Same contract as the landmine above: this skill does not write.
+
+        `disallowed-tools` withholds Edit, Write and NotebookEdit, and the
+        landmine hand-back is careful to say the invoking session owns the
+        decision. A clause that told the audit to open an issue would ask for a
+        capability the frontmatter removes.
+        """
+        self.assertRegex(
+            self._deviation_section(),
+            re.compile(r"print|hand (it|them|the list) back", re.IGNORECASE),
+            "the deviation list has no home unless the phase says where it goes",
+        )
+
+    def test_it_names_path_resolution_as_the_row_that_goes_missing(self):
+        """Two for two, and the replay of this very clause was the second.
+
+        Both recorded runs improvised on *where is this plugin?* and neither
+        reported it. #363 invented `export CLAUDE_PLUGIN_ROOT=...`; the first
+        audit run under this clause listed the plugin's `scripts/` and
+        `references/` directories and then substituted an absolute path for
+        `${CLAUDE_PLUGIN_ROOT}` in every invocation, handing back three other
+        deviations and not that one.
+
+        The clause is general and the general form did not reach it, so the case
+        is named. Written from the measurement rather than from the clause:
+        `CLAUDE_PLUGIN_ROOT` is empty in the Bash tool's environment on Claude
+        Code 2.1.238, under a marketplace install and `--plugin-dir` alike.
+        """
+        self.assertRegex(
+            self._deviation_section(),
+            re.compile(
+                r"CLAUDE_PLUGIN_ROOT.{0,400}?(is \*\*empty\*\*|expands to nothing)",
+                re.IGNORECASE | re.DOTALL,
+            ),
+            "naming the variable is not enough — the narrative above already does, and "
+            "that version of this guard passed against prose with no path-resolution "
+            "clause at all. What the clause has to carry is the measurement: the "
+            "variable is empty, so substituting it is unavoidable *and* a deviation",
+        )
+
+    def test_phase_7_puts_a_plugin_defect_in_the_report(self):
+        """Phase 8 is the maintainer's; the PR's reader needs one line of it.
+
+        Without this the split loses the case that motivated it: an audit that
+        worked around a defect in its own tooling produced every row in that
+        table, and the reader of the report cannot tell that run from an
+        unremarkable one.
+        """
+        phase7 = dict(self.phases)[7]
+        self.assertRegex(
+            phase7,
+            re.compile(r"improvis|deviat|work(ed)? around", re.IGNORECASE),
+            "Phase 7 writes the report and never mentions that the run may not have "
+            "followed the procedure; compliance stays implied, which is the defect",
+        )
+
+    def test_the_report_template_carries_the_same_disclosure(self):
+        """Phase 7 telling the writer something the shape has no room for is how
+        the verdict table and Phase 2's prose drifted apart in 0.10.0."""
+        template = (PLUGIN / "references/report-template.md").read_text(encoding="utf-8").lower()
+        self.assertRegex(
+            template,
+            re.compile(r"improvis|deviat|work(ed)? around", re.IGNORECASE),
+            "the report shape has nowhere to say the audit improvised, so Phase 7's "
+            "instruction lands on a template that does not ask for it",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
