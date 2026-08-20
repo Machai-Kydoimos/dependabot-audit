@@ -72,6 +72,53 @@ not distort the audit it rides on.
 unreported item: an `ls` of the plugin's own `scripts/` and `references/`, run to
 get bearings before Phase 0.
 
+### The round that replayed what ships
+
+The clause above, reverted to #50's form, replayed against #363 once more —
+because the second round had tested prose that is not shipping. Third run, fresh
+context, and the first one whose subject is the released text.
+
+**It found a plugin defect.** `references/actions.md` § Phase 1 documents:
+
+```bash
+gh api repos/<owner>/<repo>/git/refs/tags/<tag> --jq '.object.type, .object.sha'
+```
+
+That recipe has three outcomes, not two, and the middle one is the case Phase 2
+actually asks about — *does a moving major tag exist?* Reproduced by hand,
+independently of the run:
+
+| Tag asked for | Result |
+|---|---|
+| `v10.0.1` — exact | `commit`, `20cfd1bf9…`, exit 0 |
+| **`v10` — a prefix of existing tags** | **`expected an object but got: array ([{…`, exit 1** |
+| `v999` — absent, not a prefix | clean `404 Not Found` |
+
+GitHub's refs endpoint returns an **array** for a namespace prefix, so asking
+whether `v10` exists — against a repo publishing `v10.0.0` and `v10.0.1` — kills
+the documented `--jq` with what reads like an API fault. The array *is* the
+answer: it lists the tags that do exist and thereby says no `v10` ref does. The
+recipe crashes precisely when it has the data. Filed separately; not fixed here.
+
+**And a prose gap.** Phase 0's `SCRATCH=${SCRATCH:-$(mktemp -d)}` assumes one
+persistent shell. Each `Bash` call is a fresh shell, so `mktemp -d` yields a new
+directory per invocation and the next call's `. "$SCRATCH/phase0.env"` reads a
+path that does not exist. Two of the three rounds worked around it by pinning a
+fixed path; nothing in `SKILL.md` says the scratch path must be *stable*, only
+that it must be outside the repo. Filed separately.
+
+Both were handed back classified, with the gap each filled, alongside a third row
+of ordinary judgement marked **correct** — including the `ls` of the plugin's own
+`scripts/` that round one omitted. The run also stated the contrast this whole
+release exists for, unprompted:
+
+> this time the skill loaded, `disallowed-tools` applied, and no
+> `CLAUDE_PLUGIN_ROOT` export or `cat` of the procedure was needed. **The
+> evidence table came out the same, which is exactly what made the original
+> failure invisible.**
+
+Verdict unchanged across all three rounds: **merge as-is, high confidence**.
+
 ### The second round, and why it is not in this release
 
 A second round ran against an amended clause that named *path resolution* as the
