@@ -104,3 +104,10 @@ does so before the audit knows whether it will reach Phase 5, so an audit that
 stopped at Phase 1's gate has exactly the same litter as one that ran to the end.
 Phase 7 removes them. If they were kept deliberately, name them here with their
 cleanup commands; never leave one registered in the user's repo unannounced.
+
+**Say if the audit had to improvise.** One line where this run worked around the
+plugin itself — a command the procedure does not specify, or a plugin file read
+by hand rather than invoked. The full deviation list belongs to Phase 8 and is
+written for this plugin's maintainer; what belongs *here* is the single fact that
+the evidence above came from a procedure that had to deviate, which no other row
+in this shape discloses.
