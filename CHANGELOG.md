@@ -11,6 +11,76 @@ patch.
 
 ## [Unreleased]
 
+## [0.26.1] — 2026-08-21
+
+Phase 6 declared a requirement the handoff has never carried:
+
+> *Requires from Phase 0: `$HEAD_SHA`, `$BASE_SHA`, `$OWNER`, `$NAME`, `$PERMS`.*
+
+`discover.py --shell` does not write `$PERMS`. It prints it in the
+human-readable report and writes only the derived `MAY_EXECUTE` to `phase0.env`,
+so a phase that sourced the handoff and read `$PERMS` would get the empty string.
+The Phase 0 outputs table listed it too, under a heading saying *every later phase
+consumes these and nothing else*.
+
+**Patch rather than minor**, unlike the two fixes before it. Nothing was broken in
+execution: no shell block reads `$PERMS`, so the empty value never reached a
+command, and Phase 6 behaves exactly as it did. This only makes an existing claim
+true, which is this file's own definition of a patch.
+
+### Fixed
+
+- **Phase 6's requires-line drops `$PERMS`**, and the direction of the fix is
+  settled by the phase it was attached to rather than by convenience: Phase 0
+  says the required-checks question "moved to Phase 6, which asks it per-PR in a
+  form readable at `pull`". Needing no permission tier is the whole point of that
+  design, so `$PERMS` in its contract contradicted it.
+
+- **The outputs table lists only what crosses.** `$PERMS` comes off the row —
+  it is read from the report *in Phase 0*, where the execution gate and the
+  actionability question both use it, and the handoff carries `MAY_EXECUTE`
+  instead, which is the decision `$PERMS` was consulted to make. The reason it
+  cannot cross is now stated: `$PERMS` is a set of flags, `$PERMS.push` is how
+  the gate addresses it, and there is no shell form of that.
+
+- **`$BRANCH_POINT` goes on**, which the drift ran the other way. It is emitted,
+  and Phase 1 reads it, and it was missing from the table that claims to be
+  complete.
+
+### Tests
+
+Two guards, closing the class rather than the instance, as the issue that filed
+it proposed: every name in a *Requires from Phase 0* line, and every `$VAR` row in
+the outputs table, must be something Phase 0 actually produces — from
+`discover.py`'s emitter or from Phase 0's own shell.
+
+The emitter's names are read from the script's **source**, since the suite is
+offline and `discover.py` needs `gh`. It is located by the header it prints
+rather than by its function name: found by name, a rename would silently empty
+the set and every guard would pass by matching nothing. The second half of
+`_produced()` is not padding either — `$SCRATCH` never passes through the script,
+so an emitter-only guard would call the most-used output of all a broken promise.
+
+Both mutation-checked against the pre-fix prose, and re-checked afterwards by
+restoring `$PERMS` to the requires-line, which fails as it should. 242 tests.
+
+### Measured
+
+Replayed against `fpga-board-sim` #363 as two calls, sourcing a real
+`phase0.env`. Phase 6's four remaining requirements resolve —
+`9cea0a0e9647`, `bddcc474b732`, `Machai-Kydoimos`, `fpga-board-sim` — while
+`$PERMS` is empty exactly as the corrected table now says, `$BRANCH_POINT=ok` is
+carried, and `$MAY_EXECUTE=yes` is what crosses in its place.
+
+The drift was **bidirectional**, which the issue did not catch and the guards now
+do: the table promised `$PERMS` and `$SCRATCH` while the emitter writes ten names
+including `BASE_REF`, `BRANCH_POINT` and `MAY_EXECUTE`. `$SCRATCH` is legitimate —
+Phase 0's shell assigns it directly — and `BASE_REF` is Phase 0's own cross-check
+that no later phase consumes, so the completeness rule runs one way only: the
+table may omit an output nothing downstream reads, but it may not promise one
+that does not exist.
+
+
 ## [0.26.0] — 2026-08-21
 
 Phase 0 wrote its handoff to a directory the next call could not name. The line
@@ -2574,7 +2644,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.1...HEAD
+[0.26.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.23.0...v0.24.0

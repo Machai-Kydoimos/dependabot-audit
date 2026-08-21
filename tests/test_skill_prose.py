@@ -1746,5 +1746,113 @@ class TestTheScratchDirectorySurvivesTheNextCall(SkillHarness):
         )
 
 
+def _emitted_by_discover() -> set[str]:
+    """The variable names `discover.py --shell` writes, read from its source.
+
+    Static rather than executed: the suite is offline and stdlib-only, and the
+    script needs `gh`. The emitter is located by the **header it prints** rather
+    than by its function name, so renaming the function cannot silently empty
+    this set — which would make every guard below pass by matching nothing.
+    """
+    src = (PLUGIN / "scripts/discover.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        body = ast.unparse(node)
+        if "Phase 0 outputs. Sourced, not transcribed." not in body:
+            continue
+        # `("DEFAULT", ...)` and `{"BOT_COMMITS": ...}` are bare constants;
+        # `f"BRANCH_POINT={...}"` puts the name straight against an `=`.
+        names = {
+            c.value
+            for c in ast.walk(node)
+            if isinstance(c, ast.Constant)
+            and isinstance(c.value, str)
+            and re.fullmatch(r"[A-Z][A-Z0-9_]*", c.value)
+        }
+        return names | set(re.findall(r"\b([A-Z_][A-Z0-9_]*)=", body))
+    raise AssertionError("discover.py has no function printing the Phase 0 shell header")
+
+
+class TestPhase0PromisesOnlyWhatItProduces(SkillHarness):
+    """Phase 6 declared a requirement the handoff has never carried.
+
+    Its contract line read:
+
+        *Requires from Phase 0: `$HEAD_SHA`, `$BASE_SHA`, `$OWNER`, `$NAME`, `$PERMS`.*
+
+    and the Phase 0 outputs table listed `$PERMS` under a heading saying *every
+    later phase consumes these and nothing else*. `discover.py --shell` does not
+    write it. Measured against a real `phase0.env` from `fpga-board-sim` #363:
+
+        DEFAULT HEAD_SHA BASE_REF BASE_SHA OWNER NAME BRANCH_POINT
+        MAY_EXECUTE BOT_COMMITS HUMAN_COMMITS
+
+    Ten names, no `PERMS`. The script prints `$PERMS` in its **human-readable
+    report** and writes only the derived `MAY_EXECUTE` to the shell output, so a
+    phase that sourced the handoff and read `$PERMS` would get the empty string.
+
+    Nothing broke, which is why it survived: no shell block reads `$PERMS`, so
+    the empty value never reached a command, and the forward-reference guard —
+    which scans shell, not prose — was right to stay quiet. The contract was
+    still false, and a requires-line is exactly the sentence someone trusts when
+    adding a step that branches on permissions.
+
+    **Phase 6 does not want it anyway**, which is what settles the direction of
+    the fix. Phase 0 says the required-checks question "moved to Phase 6, which
+    asks it per-PR in a form readable at `pull`" — the whole point of that design
+    is that Phase 6 needs no permission tier at all. `$PERMS` in its requires-line
+    contradicted the phase it was attached to.
+
+    Guarded as a class rather than as the instance, per the issue that filed it:
+    a name in a requires-line, or a row in the outputs table, must be something
+    Phase 0 actually produces — from the script's emitter or from its own shell.
+    """
+
+    REQUIRES = re.compile(r"Requires from Phase 0:(.*)", re.IGNORECASE)
+
+    def _produced(self) -> set[str]:
+        """What a later phase can actually receive: the emitter, plus Phase 0's shell.
+
+        The second half is not padding — `$SCRATCH` is assigned by Phase 0
+        directly and never passes through `discover.py`, so a guard reading only
+        the emitter would call the most-used output of all a broken promise.
+        """
+        return _emitted_by_discover() | set(ASSIGNED.findall(self.shell[0]))
+
+    def test_every_requires_line_names_something_phase_0_produces(self):
+        produced = self._produced()
+        seen = 0
+        for number, body in self.phases:
+            for line in body.splitlines():
+                found = self.REQUIRES.search(line)
+                if not found:
+                    continue
+                seen += 1
+                for name in re.findall(r"\$([A-Z_][A-Z0-9_]*)", found.group(1)):
+                    self.assertIn(
+                        name,
+                        produced,
+                        f"Phase {number} requires ${name} from Phase 0, which neither "
+                        f"discover.py --shell writes nor Phase 0's shell assigns; a phase "
+                        f"sourcing the handoff and reading it gets the empty string",
+                    )
+        self.assertGreater(seen, 0, "no phase states what it requires from Phase 0")
+
+    def test_the_outputs_table_lists_only_real_outputs(self):
+        """The table says later phases consume these *and nothing else*."""
+        produced = self._produced()
+        rows = re.findall(r"^\|\s*`\$([A-Z_][A-Z0-9_]*)`", dict(self.phases)[0], re.MULTILINE)
+        self.assertTrue(rows, "Phase 0 has no outputs table")
+        for name in rows:
+            self.assertIn(
+                name,
+                produced,
+                f"the Phase 0 outputs table promises ${name}, which nothing in Phase 0 "
+                f"writes into the handoff; the table is what later phases are told they "
+                f"may consume",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
