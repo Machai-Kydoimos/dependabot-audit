@@ -1854,5 +1854,97 @@ class TestPhase0PromisesOnlyWhatItProduces(SkillHarness):
             )
 
 
+class TestPhase4ReadsTheActionsInterfaceNotOnlyItsNotes(SkillHarness):
+    """The release notes understated the change, and the method had no second source.
+
+    `references/actions.md` § Phase 4 said: read the notes for every version in
+    the gap, then grep this repo's workflows for what they name. An action cannot
+    be run locally at two versions, so reading is the method rather than the
+    shortcut — which makes it load-bearing that what is read is complete.
+
+    It is not. Measured on `fpga-board-sim` #363, `astral-sh/setup-uv`
+    9.0.0 → 10.0.1, where v10.0.0 disables the cache under `enable-cache: auto`:
+
+        release notes      3 conditions — pull_request_target, workflow_run, release
+        action.yml         5 — "GitHub-hosted runners except for release, tag push,
+                               pull_request_target, and workflow_run"
+        src/utils/inputs.ts 5 — isTagPush checked FIRST, its own branch, its own
+                               log line, then the three-event `||` chain
+
+    The word *tag* does not appear anywhere in the notes body. The notes were
+    written from the second `if` and missed the first.
+
+    **Two things the diff shows that no reading of the notes does.** `default:
+    "auto"` is **unchanged** across the bump — what changed is what `auto` means,
+    so a check asking "did a default flip?" correctly answers no while the
+    behaviour changed underneath it. And the only place the fourth condition
+    surfaced at all was **description prose**, which is why a description-only
+    diff is a finding rather than a clean bill.
+
+    **The trigger is not an event name, which is why the grep row missed it.**
+    Tag push is `eventName === "push"` *and* `GITHUB_REF` starting `refs/tags/`.
+    Grepping a workflow for `pull_request_target:` and `workflow_run:` finds
+    nothing; grepping for `push:` matches nearly every workflow ever written.
+    Neither answers the question. The check is `push:` carrying a `tags:` key.
+
+    On #363 the verdict was "inert here" and was right — that repo triggers on
+    `push: branches: [main]` and `pull_request:` only. It was right by luck: the
+    same procedure on a repo with `push: tags:` reports inert about a change that
+    is live. Per CONTRIBUTING's fifth row, a defect on a path no reachable PR
+    exercises survives the replay gate, and this one did until the notes were
+    checked against the source.
+    """
+
+    def _phase4(self) -> str:
+        for name, section in self._handoffs(4):
+            if name == "actions.md":
+                return section
+        self.fail("Phase 4 does not hand off to actions.md")
+
+    def test_the_interface_is_read_at_both_pins(self):
+        """`action.yml` ships in the action's own repo, so it is readable at any pin."""
+        self.assertIn(
+            "action.yml",
+            self._phase4(),
+            "Phase 4 for actions reads only the release notes, which are prose written "
+            "by the releaser; action.yml is the interface the runner actually loads and "
+            "it is fetchable at both SHAs",
+        )
+
+    def test_it_is_a_command_rather_than_an_instruction_to_look(self):
+        """A phase that says 'check the interface' and hands over no query is a wish."""
+        blocks = "\n".join(bash_blocks(self._phase4()))
+        self.assertRegex(
+            blocks,
+            re.compile(r"action\.yml"),
+            "Phase 4 for actions must carry the query that fetches the interface at "
+            "both pins, not only the advice to compare them",
+        )
+
+    def test_a_description_only_diff_is_not_a_clean_bill(self):
+        """`default: "auto"` never changed; the meaning of `auto` did.
+
+        From the measurement rather than the fix: the fourth condition existed
+        *only* in description prose, so a reader who treats description churn as
+        cosmetic discards the one place the change was visible.
+        """
+        self.assertRegex(
+            self._phase4(),
+            re.compile(r"description", re.IGNORECASE),
+            "the diff's description-only case has to be called out, or it reads as "
+            "the clean result it looks like — which is how the fourth condition hid",
+        )
+
+    def test_the_tag_push_shape_is_named_rather_than_the_event_list(self):
+        """`push:` + `tags:` — grepping the three event names cannot find it."""
+        self.assertIn(
+            "tags:",
+            self._phase4(),
+            "the trigger row greps for event names, and tag push is not one: it is "
+            "`push` plus a refs/tags ref, so the three-name grep returns nothing and "
+            "reports inert on a repo that publishes tags",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
