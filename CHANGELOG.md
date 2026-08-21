@@ -11,6 +11,66 @@ patch.
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-08-21
+
+Five findings the procedure instructs you to report had no row in Phase 7's
+verdict table, so each fell through to *"Everything derived, nothing above
+matched → **Merge as-is**"* and arrived there by exhaustion. Minor: it changes
+what the report asserts.
+
+The table exists for exactly one reason, which it states:
+
+> Every row above is a finding; the verdict is a function of them, and leaving
+> that function implicit is how two audits with the same evidence reach different
+> recommendations.
+
+A finding that lands on the fall-through is, in the report, indistinguishable
+from no finding at all.
+
+### Fixed
+
+Five rows, in the **not a Hold on this bump** register the `pre-existing` row
+already uses:
+
+| Finding | Why it had to be named |
+|---|---|
+| a red required check labelled **underivable** | the worst of the five. `ci_state.py` has three labels and the table had two, so a red *required* check whose cause could not be established resolved to **Merge as-is** on a PR that cannot merge |
+| an actions pin that is **not a 40-hex SHA** | `actions.md` calls it "a repo whose pins are not evidence", and without a row *we verified the pin* and *the pins are not evidence* produced the same verdict |
+| `BRANCH_POINT=rewritten` | a fact about the branch, not the dependency — but the substitutions it forces belong in the report |
+| `BRANCH_POINT=suspect` | corroboration without the authority; the commits get read and reported, and the base is not substituted on it alone |
+| `BRANCH_POINT=underivable` | not `ok`, and it caps confidence rather than deciding the verdict |
+
+- **The top-down rule now admits that some rows do not end the read.** "Take the
+  first row that matches" and a row saying *not a Hold, take the verdict from the
+  remaining evidence* were already in tension — the `pre-existing` row has worked
+  that way since 0.20.0. Reporting rows are now named as a category.
+
+- **`report-template.md` carries the obligation**, since the template is what
+  gets copied and a rule only in `SKILL.md` drifts.
+
+### Tests
+
+Three guards, and the label vocabularies are read from the **scripts' source**
+rather than typed — `attribute()`'s `label` and `branch_point()`'s `verdict` —
+so adding a fourth label to either script fails until the table names it.
+
+Two rounds of narrowing, both driven by mutation rather than by review:
+
+1. The first extractor took every lower-case string constant in the function and
+   returned `compared`, `basis`, `login`, `sha` — dict keys and API field names.
+   It would have demanded verdict rows for things that are not labels.
+2. The first *assertion* asked whether the label appeared anywhere in Phase 7.
+   Deleting the `underivable` attribution row left it green, because the word
+   also appears in the confidence table and in the `BRANCH_POINT` row two lines
+   below. A label now has to be found in a row that is **about** it — matched on
+   the label *and* on `check` or `branch_point`.
+
+Seven mutations, each one verified to have landed before its result was read:
+every new row deleted in turn, the `pre-existing` row deleted, and a new
+`branch_point` label added with no row. All seven caught. 261 tests.
+
+Closes #65.
+
 ## [0.30.0] — 2026-08-21
 
 Phase 2 required an input the handoff never carried, and `audit.py` computed the

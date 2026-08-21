@@ -2215,5 +2215,152 @@ class TestTheExecutionGateIsReadWhereExecutionHappens(SkillHarness):
         self.assertGreater(seen, 0, "no block gates on MAY_EXECUTE")
 
 
+def _label_values(script: str, function: str, key: str) -> set[str]:
+    """Every value one function can put in `key` — its label vocabulary.
+
+    Read from the script's source rather than typed, for the reason the
+    required-context guard is: a typed list is a second copy, and it drifts
+    silently because the guard keeps passing against its own stale copy.
+
+    Narrow on purpose. A first version collected every lower-case string
+    constant in the function and came back with `compared`, `basis`, `login`
+    and `sha` — dict keys and API field names — which would have demanded rows
+    in Phase 7 for things that are not labels at all. Only two shapes carry a
+    label: a `"key": value` entry, and an assignment to a variable of that name.
+    Module-level constants (`UNDERIVABLE = "underivable"`) are resolved.
+    """
+    src = (PLUGIN / "scripts" / script).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    consts = {
+        t.id: n.value.value
+        for n in tree.body
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+        for t in n.targets
+        if isinstance(t, ast.Name) and isinstance(n.value.value, str)
+    }
+
+    def literal(node: ast.AST) -> set[str]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, ast.Name) and node.id in consts:
+            return {consts[node.id]}
+        if isinstance(node, ast.IfExp):
+            return literal(node.body) | literal(node.orelse)
+        return set()
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == function):
+            continue
+        found: set[str] = set()
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Dict):
+                for k, v in zip(inner.keys, inner.values, strict=True):
+                    if isinstance(k, ast.Constant) and k.value == key:
+                        found |= literal(v)
+            elif isinstance(inner, ast.Assign):
+                names = [t.id for t in inner.targets if isinstance(t, ast.Name)]
+                if key in names:
+                    found |= literal(inner.value)
+                for tgt in inner.targets:
+                    if isinstance(tgt, ast.Tuple) and isinstance(inner.value, ast.Tuple):
+                        for t, v in zip(tgt.elts, inner.value.elts, strict=False):
+                            if isinstance(t, ast.Name) and t.id == key:
+                                found |= literal(v)
+        if not found:
+            raise AssertionError(f"{script}:{function} sets no `{key}` this guard can read")
+        return found
+    raise AssertionError(f"{script} has no function {function}")
+
+
+class TestEveryDerivedLabelLandsInTheVerdictTable(SkillHarness):
+    """Phase 7's table is the reason two audits on the same evidence agree.
+
+        Every row above is a finding; the verdict is a function of them, and
+        leaving that function implicit is how two audits with the same evidence
+        reach different recommendations.
+
+    A label the mechanised phases can print and the table does not name falls
+    through to the last row — *"Everything derived, nothing above matched →
+    Merge as-is"* — and arrives there by exhaustion, which reads in the report
+    exactly like arriving there because nothing was wrong.
+
+    Three were in that state. `attributable` and `pre-existing` had rows;
+    **`underivable` did not**, so a red *required* check whose cause could not be
+    established fell through to `Merge as-is` on a PR that cannot merge. And
+    `discover.py` reports `rewritten` and `suspect` as findings, with no row for
+    either.
+
+    The table already handles the fourth case of this shape explicitly —
+    `$HUMAN_COMMITS` is "a **finding to report**, never a Hold" — which is the
+    pattern: where a finding must not carry the verdict, the procedure says so
+    rather than trusting the reader to reach the fall-through and read it right.
+    """
+
+    def _phase7(self) -> str:
+        return dict(self.phases)[7].lower()
+
+    def _verdict_rows(self) -> list[str]:
+        """Rows of the table headed `| Evidence | Verdict |`, lower-cased.
+
+        The whole phase is the wrong haystack, and mutation said so: deleting the
+        `underivable` attribution row left the guard green, because the word also
+        appears in the confidence table and in the `BRANCH_POINT` row two lines
+        down. A label has to be found in a row that is *about* it.
+        """
+        for rows in tables(dict(self.phases)[7]):
+            if rows and "verdict" in rows[0].lower() and "evidence" in rows[0].lower():
+                return [r.lower() for r in rows[2:]]
+        raise AssertionError("Phase 7 has no `| Evidence | Verdict |` table")
+
+    def _assert_row(self, label: str, about: str, why: str) -> None:
+        """A row naming both the label and what it is a label *of*."""
+        self.assertTrue(
+            any(label.lower() in r and about.lower() in r for r in self._verdict_rows()), why
+        )
+
+    def test_every_attribution_label_has_a_verdict_row(self):
+        labels = _label_values("ci_state.py", "attribute", "label")
+        self.assertIn("underivable", labels, "the three-state label set moved")
+        for label in sorted(labels):
+            self._assert_row(
+                label,
+                "check",
+                f"ci_state.py can label a red context `{label}` and no verdict row "
+                f"names that label against a check, so a red required check carrying "
+                f"it falls through to Merge as-is",
+            )
+
+    def test_every_branch_point_finding_has_a_verdict_row(self):
+        """`ok` is the no-finding case; the rest are what `analyse()` reports."""
+        verdicts = _label_values("discover.py", "branch_point", "verdict") - {"ok"}
+        self.assertEqual(
+            verdicts,
+            {"rewritten", "suspect", "underivable"},
+            "branch_point's verdict vocabulary moved; the table has to move with it",
+        )
+        for verdict in sorted(verdicts):
+            self._assert_row(
+                verdict,
+                "branch_point",
+                f"discover.py reports `{verdict}` as a finding and no verdict row "
+                f"names it against BRANCH_POINT; the reader reaches the fall-through",
+            )
+
+    def test_a_pin_that_is_not_a_sha_has_a_verdict_row(self):
+        """The instance, and it is the one that costs most to leave out.
+
+        `references/actions.md`: a tag or branch pin is "a **promise someone else
+        can revoke**", and "a repo whose pins are not evidence". Without a row,
+        *we verified the pin* and *this repo's pins are not evidence* produce the
+        same verdict and the report has nothing that separates them.
+        """
+        self.assertRegex(
+            self._phase7(),
+            re.compile(r"not a 40-hex sha|not sha-pinned|tag or branch"),
+            "actions.md makes a mutable pin a finding and the verdict table has no "
+            "row for it, so it lands on Merge as-is by exhaustion",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

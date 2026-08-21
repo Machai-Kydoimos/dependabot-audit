@@ -1023,7 +1023,13 @@ Verdicts are one of:
 
 Every row above is a finding; the verdict is a function of them, and leaving that
 function implicit is how two audits with the same evidence reach different
-recommendations. Read the table top-down and take the **first** row that matches:
+recommendations. Read the table top-down and take the **first** row that matches.
+
+Some rows say **not a Hold on this bump** rather than naming a verdict. Those are
+*reporting* rows: they settle that a real finding does not carry the verdict, and
+the read continues past them. They exist because the alternative is the reader
+reaching the fall-through — *"nothing above matched"* — and a finding that lands
+there by exhaustion is indistinguishable in the report from no finding at all.
 
 | Evidence | Verdict |
 |---|---|
@@ -1037,6 +1043,11 @@ recommendations. Read the table top-down and take the **first** row that matches
 | Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
 | A red **required** check labelled **attributable** | **Hold** — the PR cannot merge either way. But read the failing step's log at **both commits** before the report says the bump *caused* it: green-then-red is consistent with the bump, not proof, and the wider the interval the weaker the claim |
 | A red required check labelled **pre-existing** | **Not a Hold on this bump.** Report it as its own finding, take the verdict from the remaining evidence, and say the PR is unmergeable until someone fixes it |
+| A red required check labelled **underivable** | **Not a Hold on this bump** — nothing established the cause, and a Hold that rests on an unattributed red row is correct only by accident. Report the red check *and* that the comparison could not be made; the PR is unmergeable until it is fixed. If this row would decide the verdict, confidence is **low** |
+| Actions: the pin is a tag or branch, **not a 40-hex SHA** | **Not a Hold on this bump** — the pin was mutable before this PR and the bump did not make it so. Report that what was audited is what runs *today*, so this repo's pins are not evidence, and take the verdict from the rest |
+| `BRANCH_POINT=rewritten` — the base branch was rewritten under this PR | **Not a Hold on this bump.** A fact about the branch, not the dependency. Report it with both substitutions Phase 0 named, and say that the scope diff and Phase 4's tree came from the substituted sources |
+| `BRANCH_POINT=suspect` — non-bot commits above the base, no force-push event | **Not a Hold.** Corroboration without the authority: read the commits, report what they changed, and say the base was *not* substituted on it alone |
+| `BRANCH_POINT=underivable` — the event list could not be read | **Not a Hold**, and not `ok` either. Report that the merge base was never proved to be the branch point, which caps confidence at **medium** — or **low** where the scope diff is what the verdict turns on |
 | Phase 4: base differs, PR agrees — real and already absorbed | **Merge as-is**, naming what the PR absorbed and how |
 | `mergeStateStatus: BLOCKED` with every check green | **Merge as-is** on the bump's merits; name what blocks it, usually `reviewDecision` |
 | Actions: the workflow file is generated (`DO NOT EDIT`) | **Merge as-is, then follow up** on the generator — this bump is transient without it |
