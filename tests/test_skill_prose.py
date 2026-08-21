@@ -47,7 +47,11 @@ PLUGIN = ROOT / "skills/dependabot-audit"
 SKILL = PLUGIN / "SKILL.md"
 
 # Names the skill is entitled to use without defining: the harness supplies them.
-EXTERNAL = {"CLAUDE_PLUGIN_ROOT", "HOME", "PATH", "IFS"}
+# Supplied by the environment, never by a phase, so the forward-reference guard
+# must not read them as outputs one phase owes another. `TMPDIR` joined them in
+# 0.26.0: Phase 0 derives `$SCRATCH` under `${TMPDIR:-/tmp}` so the path is the
+# same on every call, and macOS sets TMPDIR where Linux leaves it unset.
+EXTERNAL = {"CLAUDE_PLUGIN_ROOT", "HOME", "PATH", "IFS", "TMPDIR"}
 
 PHASE_HEADING = re.compile(r"^## Phase (\d+)\b", re.MULTILINE)
 FENCE = re.compile(r"^```(\w*)\n(.*?)^```", re.MULTILINE | re.DOTALL)
@@ -1631,6 +1635,114 @@ class TestTheTagRecipeSurvivesAPrefixMatch(SkillHarness):
             "the outcome table must say the exact ref wins even when other refs "
             "share the prefix, or the array row reads as covering the moving major "
             "tag it is the negative answer about",
+        )
+
+
+class TestTheScratchDirectorySurvivesTheNextCall(SkillHarness):
+    """Phase 0 wrote its handoff to a directory the next call could not name.
+
+    The line was `SCRATCH=${SCRATCH:-$(mktemp -d)}`, commented "any directory
+    OUTSIDE the repo" — which says what the directory must *be* and never that it
+    must be the *same one* next time. Everything downstream depends on the second
+    property: `$SCRATCH/phase0.env` is written by one call and sourced by another,
+    and both worktrees are addressed across calls.
+
+    Measured against this harness on 2026-08-21, two separate `Bash` calls:
+
+        call 1  export PROBE_VAR=...   pid 3634427   cd .../skills
+        call 2  PROBE_VAR=<UNSET>      pid 3634720   pwd=.../skills
+
+    Environment variables and shell functions do **not** cross the boundary — each
+    call is a new shell process. So `${SCRATCH:-...}` finds `SCRATCH` unset every
+    time and `mktemp -d` hands back a different directory, after which
+    `. "$SCRATCH/phase0.env"` sources a path that does not exist and `$BASE_SHA`,
+    `$HEAD_SHA`, `$BOT_COMMITS` and `$DEFAULT` are all empty downstream. Run as
+    the two calls above:
+
+        new form: SCRATCH=/tmp/dbaudit-<owner>-<name>-<N> in both -> sourced OK
+        old form: /tmp/tmp.wqlEPyTVGA in call 2 -> phase0.env absent, outputs empty
+
+    **The working directory does cross it, and is still not a way out.** `pwd`
+    persisted into call 2 above — but a call that ends outside the project has its
+    cwd *reset* (measured: `cd /tmp` came back to the project root), and `$SCRATCH`
+    is required to be outside the repo. So no ambient state reaches the next call,
+    and the only thing that can is a path every call can **recompute** from inputs
+    it already has.
+
+    Found by 0.24.0's deviation clause during the #51 replays and classified by
+    the run as a prose gap (#55): two of three rounds hit it and repaired it
+    unprompted, one by pinning `export SCRATCH=/tmp/tmp.5tGlKz9N3s` after the
+    fact and re-sourcing at the top of every later call. Both reached correct
+    results, which is the point — the workaround that works is the one nobody
+    reports.
+    """
+
+    def _scratch_assignment(self) -> str:
+        """The line in Phase 0's shell that sets `SCRATCH`.
+
+        Anchored to the assignment, not the phase: `$SCRATCH` is used all over
+        Phase 0, and "the phase mentions mktemp somewhere" would be satisfied by
+        the paragraph that discusses it.
+        """
+        for line in self.shell[0].splitlines():
+            if re.match(r"\s*SCRATCH=", line):
+                return line
+        self.fail("Phase 0 has no line assigning SCRATCH")
+
+    def test_the_scratch_directory_does_not_change_between_calls(self):
+        """`mktemp -d` is a new directory per call, and the handoff is per audit."""
+        self.assertNotIn(
+            "mktemp",
+            self._scratch_assignment(),
+            "Phase 0 assigns SCRATCH from mktemp, which hands back a different "
+            "directory on every Bash call; the next call then sources a phase0.env "
+            "that is not there and every Phase 0 output is empty downstream",
+        )
+
+    def test_the_scratch_path_is_derived_rather_than_remembered(self):
+        """No ambient state survives, so the path has to be recomputable.
+
+        From the measurement rather than from the fix: env vars die, functions
+        die, and cwd is reset the moment a call ends outside the project. What is
+        left is deriving the name from inputs every call already has.
+        """
+        self.assertRegex(
+            self._scratch_assignment(),
+            re.compile(r"\$\{?REPO|\$\{?OWNER|<N>"),
+            "SCRATCH must be derived from the repo and the PR number so any call "
+            "can recompute it; a value that has to be carried is a value that is "
+            "lost at the next call boundary",
+        )
+
+    def _scratch_rule(self) -> str:
+        """Every paragraph of Phase 0 that says what the scratch directory must be.
+
+        Anchored to paragraphs naming it. The first version of this guard scanned
+        all of Phase 0 and went green on the *caching* paragraph — "persist the
+        answers to these ... Deriving costs one call" — which is about not caching
+        a profile and has nothing to do with where the handoff is written. A guard
+        that matches anything anywhere stops discriminating.
+        """
+        chunks = [
+            chunk
+            for chunk in re.split(r"\n\s*\n", self.material(0))
+            if re.search(r"scratch", chunk, re.IGNORECASE)
+        ]
+        if not chunks:
+            self.fail("Phase 0 says nothing about the scratch directory")
+        return "\n\n".join(chunks)
+
+    def test_the_rule_says_stable_and_not_merely_outside_the_repo(self):
+        """The old comment gave one of the two properties, and not the load-bearing one."""
+        self.assertRegex(
+            self._scratch_rule(),
+            re.compile(
+                r"(stable|same directory|same place|survive|recompute)",
+                re.IGNORECASE,
+            ),
+            "the scratch rule states only that the directory sits outside the repo; "
+            "the property phase0.env and both worktrees actually depend on is that "
+            "the next call resolves it to the same place",
         )
 
 
