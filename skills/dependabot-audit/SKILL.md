@@ -216,9 +216,21 @@ If either check fails, `git worktree remove` it and re-add.
 | `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below. Same exception |
 | the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
-| `$PERMS` | this account's permissions on the repo — `admin`, `maintain`, `push`, `triage`, `pull` |
+| `$BRANCH_POINT` | `ok`, `rewritten`, `suspect` or `underivable` — **Phase 1 reads it**, and the table below says what each one means |
 | `$BOT_COMMITS` | the bot's own commits above the base. **Phase 1's scope gate takes its diff from these**, because that is the invariant the gate is about |
 | `$HUMAN_COMMITS` | every non-bot commit on the branch, merges included. Its files are a **finding to report**, never a Hold |
+
+**`$PERMS` is not on that list, and the distinction is the point.** It is read off
+`discover.py`'s report *here in Phase 0*, where the execution gate and the
+actionability question both use it. It is **not** written to `phase0.env`: the
+shell handoff carries `MAY_EXECUTE`, which is the decision `$PERMS` was consulted
+to make. So a later phase that sources the handoff and reads `$PERMS` gets the
+empty string, and the table above is the list that crosses — anything else is
+Phase 0's own working state.
+
+The reason is that `$PERMS` is a set of flags rather than a value: `$PERMS.push`
+is how the gate below addresses it, and there is no shell form of that. Reducing
+it to the one bit later phases actually branch on is what `MAY_EXECUTE` is.
 
 If a later phase needs something not on this list, it belongs here rather than
 there. A phase that consumes what a later phase creates cannot be run in order,
@@ -652,7 +664,7 @@ tidy up after itself.
 
 ## Phase 6 — CI verification
 
-*Requires from Phase 0: `$HEAD_SHA`, `$BASE_SHA`, `$OWNER`, `$NAME`, `$PERMS`.*
+*Requires from Phase 0: `$HEAD_SHA`, `$BASE_SHA`, `$OWNER`, `$NAME`.*
 
 Confirm the green you are trusting belongs to **this** commit, **and that it
 exercised the change**. Those are two questions, and an actions bump routinely
