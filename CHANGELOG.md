@@ -11,6 +11,92 @@ patch.
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-08-21
+
+Phase 0 wrote its handoff to a directory the next call could not name. The line
+was `SCRATCH=${SCRATCH:-$(mktemp -d)}`, commented *"any directory OUTSIDE the
+repo"* — which says what the directory must **be** and never that it must be the
+**same one** next time. Everything downstream depends on the second property:
+`$SCRATCH/phase0.env` is written by one call and sourced by another, and both
+worktrees are addressed across calls. Minor rather than patch: it changes what
+Phase 0 can hand to the phases after it.
+
+Found by 0.24.0's deviation clause during the #51 replays and classified by the
+run itself as a prose gap (#55). Two of three rounds hit it and repaired it
+unprompted — one pinned `export SCRATCH=/tmp/tmp.5tGlKz9N3s` after the fact and
+re-sourced at the top of every later call. Both reached correct results, which is
+the point: the workaround that works is the one nobody reports.
+
+### Fixed
+
+- **`$SCRATCH` is derived rather than remembered**, so any call can recompute it:
+
+  ```bash
+  SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"; mkdir -p "$SCRATCH"
+  ```
+
+  `REPO` moves above it, since the name is derived from it. A harness-provided
+  `SCRATCH` still wins, and now for a stated reason: if one is exported into every
+  call's environment it is stable by definition, and the derived default is what
+  applies when it is not.
+
+### Measured
+
+Against this harness, two separate `Bash` calls — the claim the issue flagged as
+worth checking rather than assuming:
+
+| Carried across a call boundary? | |
+|---|---|
+| environment variables | **no** — `export PROBE_VAR=…` in call 1 is unset in call 2 |
+| shell functions | **no** — each call is a new shell process (pid 3634427 → 3634720) |
+| working directory | **yes**, while it stays inside the project — but a call that ends outside has its cwd **reset** back |
+
+So nothing ambient crosses the boundary, and the one thing that appeared to —
+cwd — is unusable here precisely because `$SCRATCH` is required to be *outside*
+the repo. What is left is a path each call can recompute from what it already
+has, which is the repo and `<N>`.
+
+Replayed with the real `discover.py` against `fpga-board-sim` #363, the PR the
+deviation was found on, as two separate calls:
+
+| | Call 2 resolves `$SCRATCH` to | `phase0.env` | Outputs downstream |
+|---|---|---|---|
+| old | `/tmp/tmp.WxRwlYLFeq` — a new directory | absent | `$DEFAULT`, `$HEAD_SHA`, `$BASE_SHA`, `$BOT_COMMITS` all **silently empty** |
+| new | `/tmp/dbaudit-Machai-Kydoimos-fpga-board-sim-363` | sourced | `main`, `9cea0a0e9647`, `bddcc474b732`, `9cea0a0e9647` |
+
+Silently empty rather than erroring is what made it survive: a truncated
+`$HEAD_SHA` matches no CI run and reads exactly like *CI never ran*.
+
+### Added
+
+- **The scratch rule now states both requirements**, not just the one about
+  location, and says why the second exists. The Phase 0 outputs table row says it
+  too, since that table is what later phases are told they may consume.
+- **`TMPDIR` joins `EXTERNAL`** in `tests/test_skill_prose.py` — the allowlist of
+  variables supplied by the environment rather than by a phase. Without it the
+  forward-reference guard reads `${TMPDIR:-/tmp}` as an output one phase owes
+  another. It caught exactly that on the first run of the fix, which is the guard
+  working.
+
+### Tests
+
+Three guards, all mutation-checked against the pre-fix prose. The third needed a
+second attempt and is the more interesting one: scanning all of Phase 0 for
+stability language went **green on the pre-fix file**, matching the *caching*
+paragraph — "persist the answers to these … Deriving costs one call" — which has
+nothing to do with where the handoff is written. Re-anchored to the paragraphs
+that name the scratch directory, it fails as it should. A guard that matches
+anything anywhere stops discriminating. 240 tests.
+
+### Not done, deliberately
+
+`$PERMS` is listed in the Phase 0 outputs table and named in Phase 6's *Requires
+from Phase 0* line, and `discover.py --shell` **does not emit it** — it prints
+`$PERMS` in the human-readable report and writes only `MAY_EXECUTE` to
+`phase0.env`. Same class as this fix, different cause, and the remedy is a choice
+between two designs rather than a correction. Filed separately.
+
+
 ## [0.25.0] — 2026-08-21
 
 Phase 2 asks whether a moving major tag exists, and the recipe it used to ask
@@ -2488,7 +2574,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.22.1...v0.23.0

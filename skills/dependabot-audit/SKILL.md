@@ -102,8 +102,9 @@ contract is "reports, never merges" should keep them.
 
 ```bash
 D="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/discover.py"
-SCRATCH=${SCRATCH:-$(mktemp -d)}          # any directory OUTSIDE the repo
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+# OUTSIDE the repo, and the SAME directory on every later call — derived, not remembered
+SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"; mkdir -p "$SCRATCH"
 
 python3 "$D" --repo "$REPO" --number <N>                              # the report
 python3 "$D" --repo "$REPO" --number <N> --shell > "$SCRATCH/phase0.env"
@@ -207,7 +208,7 @@ If either check fails, `git worktree remove` it and re-add.
 | | |
 |---|---|
 | `$DEFAULT` | the repo's default branch, derived |
-| `$SCRATCH` | scratch directory, outside the repo |
+| `$SCRATCH` | scratch directory, outside the repo — and **derived, so every later call resolves it to the same place**. Nothing else here survives a call boundary |
 | `$HEAD_SHA` | the full 40-character commit under audit |
 | `$BASE_SHA` | the merge base, from GitHub's own `compare` endpoint — never a local `git merge-base` against `$DEFAULT`, which collapses onto the head once the PR lands. **And whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
@@ -286,10 +287,36 @@ from the PR — it just quietly reports no changes. That holds for the repo's
 above at a ref for exactly this reason, and they were the last two reads here that
 were not.
 
-Use a harness-provided scratch directory for `SCRATCH` if you have one; otherwise
-`mktemp -d`. **Never place it inside the repo under audit** — it pollutes
-`git status`, and a gate that walks the tree (a linter, a formatter, a test
-collector) will descend into a full second copy of the project and report on it.
+**`SCRATCH` has two requirements, and only one of them is about where it is.**
+Never place it inside the repo under audit — it pollutes `git status`, and a gate
+that walks the tree (a linter, a formatter, a test collector) will descend into a
+full second copy of the project and report on it. And it must resolve to the
+**same directory on every later call**, because `$SCRATCH/phase0.env` is written
+by one call and sourced by another, and both worktrees are addressed the same way.
+
+`SCRATCH=${SCRATCH:-$(mktemp -d)}` satisfied the first and failed the second, and
+that is why the line above derives the name instead. Measured against this
+harness, two separate calls: an `export` in the first is **unset** in the second,
+shell functions likewise, and each call is a new shell process. So `${SCRATCH:-…}`
+found `SCRATCH` unset every time, `mktemp -d` returned a new directory, and the
+next call sourced a `phase0.env` that was not there — leaving `$BASE_SHA`,
+`$HEAD_SHA`, `$BOT_COMMITS` and `$DEFAULT` silently empty downstream rather than
+erroring.
+
+**The working directory does survive, and is still not a way out.** It carried
+between calls when it stayed inside the project; a call that ends outside has its
+cwd reset back. `SCRATCH` is required to be outside the repo, so it can never be
+reached that way. Nothing ambient crosses the boundary — only a path each call
+can recompute from what it already has, which is the repo and `<N>`.
+
+A harness-provided `SCRATCH` still wins, and now for a reason: if one is exported
+into every call's environment it is stable by definition. The derived default is
+what applies when it is not.
+
+Re-running the same audit reuses the directory rather than littering a new one,
+so Phase 7's cleanup is addressable from any call — but a stale worktree from an
+interrupted run is then in the way, which is a thing to remove rather than to
+work around.
 
 **Why the base comes from `compare` and not from `git merge-base`.** Once a PR
 has landed its head *is* an ancestor of the default branch, so the merge base of
