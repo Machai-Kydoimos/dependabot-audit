@@ -11,7 +11,7 @@ patch.
 
 ## [Unreleased]
 
-## [0.28.0] — 2026-08-21
+## [0.28.0] — 2026-08-22
 
 One sprint, one release: a producer/consumer sweep of the plugin — for every
 value a phase produces, who consumes it; for every value a phase consumes, who
