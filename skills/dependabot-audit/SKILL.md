@@ -124,6 +124,7 @@ defines:
 #   BASE_SHA=<40 hex>      the merge base, from GitHub's compare endpoint
 #   OWNER=<owner>          for Phase 6's GraphQL variables
 #   NAME=<name>
+#   CREATED_AT=<iso8601>   when the PR was opened — Phase 2's cooldown test
 #   BRANCH_POINT=<ok|rewritten|suspect|underivable>
 #   MAY_EXECUTE=<yes|no>   whether Phases 4 and 5 are authorised
 #   BOT_COMMITS=<shas>     the bot's own commits above the base — Phase 1's gate
@@ -228,6 +229,7 @@ If either check fails, `git worktree remove` it and re-add.
 | `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below. Same exception |
 | the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
+| `$CREATED_AT` | when the PR was opened, ISO-8601. **Phase 2 compares release publish times against it** — the cooldown asks whether a release was three days old *then*, not now |
 | `$BRANCH_POINT` | `ok`, `rewritten`, `suspect` or `underivable` — **Phase 1 reads it**, and the table below says what each one means |
 | `$MAY_EXECUTE` | `yes` or `no` — **Phases 4 and 5 gate on it**, and the gate tests for `yes` so an unset value refuses. The classification below is what sets it |
 | `$BOT_COMMITS` | the bot's own commits above the base. **Phase 1's scope gate takes its diff from these**, because that is the invariant the gate is about |
@@ -580,7 +582,7 @@ Phase 6's CI state established, and name plainly what was not checked.
 
 ## Phase 2 — Currency
 
-*Requires: the Phase 1 script output, and the PR's `createdAt` from Phase 0.*
+*Requires from Phase 0: `$CREATED_AT`. Plus the Phase 1 script output.*
 
 **A bot's proposal is not evidence of "current".** Ask the registry what the
 latest version actually is, and compare publish timestamps against the PR's
@@ -609,6 +611,24 @@ phase reads for next: a `Security` entry or a destructive-fix bug in the gap. Th
 cooldown exempts Dependabot's *security updates* — the advisory-driven kind — and
 not a version update whose changelog happens to carry a privately disclosed fix,
 which is exactly the case below.
+
+**The cooldown boundary is a subtraction, so do it rather than eyeball it.** The
+window is measured from when the **PR opened**, not from now, so the same gap
+moves in and out of it as the audit ages — which is the failure Phase 7's table
+calls out in itself:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+python3 -c 'import datetime,sys; t=datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")); print("cooldown boundary:", (t-datetime.timedelta(days=3)).isoformat())' "$CREATED_AT"
+```
+
+A gap release published **after** that boundary was inside the window when the
+bot decided; one published before it was not, and the bot is behind rather than
+waiting. `python3` rather than `date -d`, which is GNU-only — every script here
+already requires 3.11.
 
 **A bot's ignore state is not always in a config file.** `@dependabot ignore this
 major version` records the hold in the *PR*, not the repo, so a dependency can be

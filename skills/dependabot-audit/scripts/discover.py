@@ -431,6 +431,12 @@ def shell(report: dict[str, Any]) -> None:
         ("BASE_SHA", report["base_sha"]),
         ("OWNER", report["owner"]),
         ("NAME", report["name"]),
+        # Phase 2's other half. The cooldown question is whether the release was
+        # less than three days old *when the bot opened the PR*, so it needs the
+        # PR's own timestamp and not only the release's. It was rendered in the
+        # report and never emitted, which made it an input that crossed by being
+        # on screen.
+        ("CREATED_AT", report["created_at"]),
     ]
     print("# Phase 0 outputs. Sourced, not transcribed.")
     for key, value in pairs:
