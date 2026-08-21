@@ -11,6 +11,96 @@ patch.
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-08-21
+
+Phase 2 asks whether a moving major tag exists, and the recipe it used to ask
+with **crashed on the answer**. `git/refs/tags/<tag>` is *get all references in a
+namespace*: given a name that is a prefix rather than a ref it returns the array
+of everything matching, and `.object.type` against an array is a jq type error at
+exit 1. The names Phase 2 asks with — `v1`, `v4`, `v10` — are exactly the
+prefixes of the point releases beneath them, so the recipe failed on the question
+it existed to answer and worked only on the exact tags Phase 1 already had from
+the pin comment. Minor rather than patch: it changes what Phase 2 can establish.
+
+Found by 0.24.0's own deviation clause, on its first replay against the shipped
+text — the audit worked around it in one call, reached the right answer, and
+would never have mentioned it before #50.
+
+### Fixed
+
+- **The tag recipe branches on the array** instead of dying on it, and reports it
+  as what it is: `no such tag — these share the prefix: …`, enumerating the refs
+  that do exist.
+
+  **The array is the answer, not a failed call.** It arrives exactly when the
+  question is answerable, and `expected an object but got: array` reads like an
+  API fault — inviting a retry that returns it again and a report calling
+  currency *underivable* when it was fully derivable. The same shape as
+  CONTRIBUTING's `branches/<b>/protection` table: a confident-looking error about
+  the wrong thing.
+
+  The singular `git/ref/tags/<tag>` was rejected, and the reason is recorded: it
+  does not crash, and it is worse. It answers a bare `404` to both "no such tag,
+  and here is what does exist" and "nothing here at all", discarding the half
+  Phase 2 needs. Not crashing is not the same as answering.
+
+### Added
+
+- **The three outcomes, as a table in `references/actions.md` § Phase 1** — object,
+  array, `404` — measured rather than described. The first row is the one that
+  keeps the fix honest: `actions/checkout@v5` returns the **object** although
+  `v5.0.0`, `v5.0.1` and `v5.1.0` all sit under the same prefix. An exact ref
+  wins. Without that row, "an array means no such tag" generalises to "a moving
+  major tag returns an array", which is false and inverts the answer for every
+  action that publishes one.
+
+- **Phase 2 checks the tag line exists before reasoning about it.** The rule that
+  a newer patch is not a gap holds only where a moving major tag exists — and one
+  that existed can be discontinued.
+
+  Measured on `astral-sh/setup-uv` 2026-08-21: `v1` through `v7` are refs; `v8`,
+  `v9` and `v10` are not. The moving tag stopped at v8 (2026-03-29) and every
+  release since stands alone, so above v7 a newer patch **is** a gap and reads
+  like a registry currency gap; at v7 and below it does not. One repository
+  answers both ways depending on the major under audit, which is why it is asked
+  per bump rather than settled once per action.
+
+### The replay
+
+Both branches, on two merged PRs in a repo this account controls — the fifth-row
+lesson in CONTRIBUTING, which is that a defect on a path no reachable PR
+exercises survives this gate:
+
+| Replayed | Phase 2 asks | Old | New |
+|---|---|---|---|
+| `fpga-board-sim` #363 — `astral-sh/setup-uv` 9.0.0 → 10.0.1 | `v10`, `v9` | `expected an object but got: array`, **exit 1** | `no such tag — these share the prefix: refs/tags/v10.0.0, refs/tags/v10.0.1`, exit 0 |
+| `fpga-board-sim` #332 — `actions/checkout` 7.0.0 → 7.0.1 | `v7` | `commit 3d3c42e5…`, exit 0 | `commit 3d3c42e5…`, exit 0 — byte-identical |
+
+Phase 1's exact tags (`v10.0.1`, `v9.0.0`, `v7.0.1`) agree under both recipes, so
+the change is non-regressive on the case that already worked. The absent case
+still exits 1 with a `404`, keeping the three outcomes distinguishable.
+
+**The exit codes above were re-measured without a pipe.** The first run of this
+replay read them through `| tr`, which reports `tr`'s status and showed the
+crashing case as exit 0 — the trap CONTRIBUTING already records against
+`claude plugin eval | head`, hit again in the harness written to verify the fix.
+
+### Tests
+
+Four guards in `tests/test_skill_prose.py`, anchored to the recipe block and to
+the outcome table rather than to the phase, since Phase 1 hands off to two
+ecosystem files and "the word appears somewhere in Phase 1" would be satisfied by
+any of it. All four mutation-checked: verified failing against the pre-fix prose
+before the fix was written. 237 tests.
+
+### Measured
+
+`astral-sh/setup-uv` moving-major refs, and `actions/checkout` as the control —
+both publish `v1`–`v7`; only checkout still publishes one above that. The claim
+that `setup-uv` publishes no moving major tag was **false and was corrected
+before it reached the prose**: it publishes seven and discontinued the eighth.
+
+
 ## [0.24.0] — 2026-08-20
 
 An audit that works around a defect in **this plugin** reports nothing about it,
@@ -2398,7 +2488,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.22.0...v0.22.1

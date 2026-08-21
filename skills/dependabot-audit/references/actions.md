@@ -60,15 +60,40 @@ check, and note that a bump leaving the comment unchanged — `# v1` on both sid
 means the bot is tracking a **moving** tag.
 
 ```bash
-gh api repos/<owner>/<repo>/git/refs/tags/<tag> --jq '.object.type, .object.sha'
+gh api "repos/<owner>/<repo>/git/refs/tags/<tag>" \
+  --jq 'if type == "array"
+        then "no such tag — these share the prefix: \([.[].ref] | join(", "))"
+        else "\(.object.type) \(.object.sha)" end'
 # if type == "tag" (annotated), dereference — the ref gives you the *tag object*:
-gh api repos/<owner>/<repo>/git/tags/<sha> --jq '.object.sha'
+gh api "repos/<owner>/<repo>/git/tags/<sha>" --jq '.object.sha'
 ```
 
 The dereference step is mandatory for annotated tags and a no-op for lightweight
 ones. Skipping it compares a tag object against a commit and reports a false
 mismatch. Verified live on `nickg/setup-nvc@v1`: annotated, and the undereferenced
 SHA matches nothing.
+
+**That endpoint is *get all references in a namespace*, so it answers in three
+shapes, and the middle one is the case Phase 2 asks about.** Measured 2026-08-21:
+
+| Asked for | Answer | Meaning |
+|---|---|---|
+| `actions/checkout@v5` — an **exact** ref, with `v5.0.0`, `v5.0.1` and `v5.1.0` under the same prefix | object: `commit fbc6f399` | the tag exists. An exact ref wins, and siblings under the prefix do not change that |
+| `astral-sh/setup-uv@v10` — no such ref | **array**: `refs/tags/v10.0.0`, `refs/tags/v10.0.1` | **no such tag** — and the array names what does exist instead |
+| `astral-sh/setup-uv@v999` — nothing matches | `404 Not Found`, exit 1 | no tag, and nothing beneath it either |
+
+**The array is the answer, not a failed call.** It enumerates the refs that exist
+and thereby settles that the one asked for does not, so it arrives exactly when
+the question is answerable — and `.object.type` against it dies with `expected an
+object but got: array` at exit 1. That message reads like an API fault, which
+invites a retry that returns it again and a report calling currency *underivable*
+when it was fully derivable. The same trap as `branches/<b>/protection` in
+CONTRIBUTING: a confident-looking error about the wrong thing.
+
+The singular `git/ref/tags/<tag>` does not crash, and is worse. It answers a bare
+`404` to both of the last two rows, collapsing "no such tag, and here is what does
+exist" into "nothing here" — so it discards the half Phase 2 needs. Not crashing
+is not the same as answering.
 
 **A workflow file can be generated, and then the bot's edit does not stick.**
 Compilers that emit workflows own the `uses:` pins they write — `gh-aw` generates
@@ -98,6 +123,19 @@ trigger.
 picks up new releases on its own, so a newer patch is not a gap. What matters is
 whether the *major* being adopted is still the newest one, and whether the tag
 still points where the PR proposed.
+
+**Check the tag line exists before reasoning about it.** The paragraph above
+assumes a moving major tag. Not every action publishes one, and one that did can
+stop — so ask Phase 1's recipe for the bare major and read an array as *no*.
+
+Measured on `astral-sh/setup-uv` 2026-08-21: `v1` through `v7` are refs; `v8`,
+`v9` and `v10` are not. The moving tag was discontinued at v8 (2026-03-29) and
+every release since stands alone, so above v7 there is nothing to pick up a new
+release, a newer patch **is** a gap, and it reads exactly like a registry currency
+gap. At v7 and below, it does not. One repository answers both ways depending on
+the major under audit, which is why this is asked per bump rather than settled
+once per action — and a bump that crosses the boundary changes what the pin
+comment promises, which no bot PR mentions.
 
 **When the tag does not point at the proposed SHA, that is a question, not a
 verdict.** Ask which way it moved:
