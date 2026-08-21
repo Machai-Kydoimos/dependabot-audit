@@ -1809,7 +1809,13 @@ class TestPhase0PromisesOnlyWhatItProduces(SkillHarness):
     Phase 0 actually produces — from the script's emitter or from its own shell.
     """
 
-    REQUIRES = re.compile(r"Requires from Phase 0:(.*)", re.IGNORECASE)
+    # `Requires:` as well as `Requires from Phase 0:`. Phase 2 used the shorter
+    # form and named its input in prose — `the PR's ``createdAt`` from Phase 0` —
+    # so it slipped this guard on punctuation, twice over: the phrase did not
+    # match, and the name was neither `$`-prefixed nor upper-case.
+    REQUIRES = re.compile(r"\*Requires(?: from Phase 0)?:(.*)", re.IGNORECASE)
+    # A bare backticked identifier in a requires-line: the shape `createdAt` had.
+    BARE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
 
     def _produced(self) -> set[str]:
         """What a later phase can actually receive: the emitter, plus Phase 0's shell.
@@ -1818,7 +1824,18 @@ class TestPhase0PromisesOnlyWhatItProduces(SkillHarness):
         directly and never passes through `discover.py`, so a guard reading only
         the emitter would call the most-used output of all a broken promise.
         """
-        return _emitted_by_discover() | set(ASSIGNED.findall(self.shell[0]))
+        # Comment lines stripped, and that is load-bearing rather than tidy.
+        # Phase 0 documents the whole handoff in a bash fence of `#   NAME=<...>`
+        # lines, so an un-stripped scan lets a requires-line be satisfied by the
+        # very key list it is meant to be checked against. Caught by mutation:
+        # deleting `CREATED_AT` from the emitter left every guard green, because
+        # the comment describing it was still there. Same failure `_code_only`
+        # exists for one file over — a rule must not be satisfiable by a comment
+        # claiming it.
+        executable = "\n".join(
+            line for line in self.shell[0].splitlines() if not line.lstrip().startswith("#")
+        )
+        return _emitted_by_discover() | set(ASSIGNED.findall(executable))
 
     def test_every_requires_line_names_something_phase_0_produces(self):
         produced = self._produced()
@@ -1838,6 +1855,26 @@ class TestPhase0PromisesOnlyWhatItProduces(SkillHarness):
                         f"sourcing the handoff and reading it gets the empty string",
                     )
         self.assertGreater(seen, 0, "no phase states what it requires from Phase 0")
+
+    def test_no_requires_line_names_an_input_in_prose_instead_of_as_a_variable(self):
+        """The convention is the shell name, because that is what has to exist.
+
+        Phase 2's line read *"the PR's `createdAt` from Phase 0"*. `discover.py`
+        renders `createdAt` in its human-readable report and the emitter never
+        wrote it, so the input crossed by being on screen. Naming the variable is
+        what puts a requires-line under the guard above at all.
+        """
+        for number, body in self.phases:
+            for line in body.splitlines():
+                found = self.REQUIRES.search(line)
+                if not found:
+                    continue
+                for name in self.BARE.findall(found.group(1)):
+                    self.fail(
+                        f"Phase {number} requires `{name}`, named as prose rather than "
+                        f"as the variable the handoff carries. A name without a `$` is "
+                        f"one no guard can check and no block can source"
+                    )
 
     def test_the_outputs_table_lists_only_real_outputs(self):
         """The table says later phases consume these *and nothing else*."""

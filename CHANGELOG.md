@@ -11,6 +11,87 @@ patch.
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-08-21
+
+Phase 2 required an input the handoff never carried, and `audit.py` computed the
+other half of Phase 2's comparison and printed neither end. Minor: the currency
+row now asserts something it did not.
+
+Phase 2's contract read:
+
+> *Requires: the Phase 1 script output, and the PR's `createdAt` from Phase 0.*
+
+`discover.py` renders `createdAt` and the emitter never wrote it, so the input
+crossed by being on screen. It is the class 0.26.1 closed for `$PERMS`, and it
+slipped that guard twice over on punctuation: the phrase is `Requires:` rather
+than `Requires from Phase 0:`, and the name is neither `$`-prefixed nor
+upper-case.
+
+### Fixed
+
+- **`CREATED_AT` is emitted, tabled, and read.** Phase 2 computes the cooldown
+  boundary from it rather than subtracting three days by eye — and the window is
+  measured from when the **PR opened**, not from now, which is the drift Phase 7's
+  table already calls out in itself. `python3` rather than `date -d`, which is
+  GNU-only.
+
+- **The pin's own publish date reaches the report.** `locked_published` was
+  computed and rendered nowhere, so the currency block could say when the newer
+  release landed and never when the current one did. Both ends of the comparison
+  are the comparison. On `fpga-board-sim`'s live lockfile:
+
+  ```
+  === pytest: locked 9.1.1 (published 2026-06-19T10:58:31Z) IS the latest
+  === ruff: locked 0.16.3 (published 2026-08-13T15:16:27Z), registry latest 0.16.4  <-- NOT CURRENT
+        0.16.4       published 2026-08-20T17:43:16Z
+  ```
+
+- **A requires-line names the variable, never the field.** `createdAt` was prose;
+  `$CREATED_AT` is something a block can source and a guard can check.
+
+### Fixed — in the guard itself
+
+Found by mutation, and the more useful half of this release. Deleting the
+`CREATED_AT` emit left **every test green**. `_produced()` unions the emitter's
+names with `ASSIGNED.findall(self.shell[0])`, and Phase 0 documents the entire
+handoff in a bash fence of `#   NAME=<...>` comment lines — so a requires-line
+could be satisfied by the very key list it is meant to be checked against.
+
+Comments are now stripped before that scan. It is the same failure `_code_only`
+exists for one file over — *a rule must not be satisfiable by a comment claiming
+it* — and it had been sitting under 0.26.1's two guards since they were written.
+`$SCRATCH` still resolves, from the real assignment rather than from its
+description.
+
+### The replay
+
+`fpga-board-sim` #363, two deliberately separate calls:
+
+```
+call 1:  CREATED_AT=2026-08-17T13:07:54Z          # emitted
+call 2:  cooldown boundary: 2026-08-14T13:07:54+00:00   # sourced, computed
+```
+
+And `audit.py` against that repo's real `uv.lock`, 0.29.0 beside 0.30.0:
+
+```
+0.29.0:  === ruff: locked 0.16.3, registry latest 0.16.4  <-- NOT CURRENT
+0.30.0:  === ruff: locked 0.16.3 (published 2026-08-13T15:16:27Z), registry latest 0.16.4
+```
+
+`latest_published` stays unrendered and is now redundant rather than dropped: the
+latest version is the last row of the gap, which already carries its date, and
+when the pin *is* current the gap is empty and the two coincide.
+
+### Tests
+
+Three guards, mutation-checked. The requires-line guard is widened to `Requires:`
+and paired with a new one refusing a bare backticked name in such a line — the
+exact shape `createdAt` had, so the hole is closed as a class rather than at the
+instance. 258 tests.
+
+Closes #64.
+
 ## [0.29.0] — 2026-08-21
 
 Phase 0 decided whether the PR may run, and the phases that run it never asked.
