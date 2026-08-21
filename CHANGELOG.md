@@ -11,6 +11,102 @@ patch.
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-08-21
+
+Phase 0 decided whether the PR may run, and the phases that run it never asked.
+Minor: Phases 4 and 5 now require `MAY_EXECUTE=yes`, which is a change to what
+they verify before executing.
+
+`discover.py` derives the classification — a fork PR, a non-bot author, or an
+account without `push` — and reduces it to one bit. Phase 0's prose said why:
+
+> Reducing it to the one bit later phases actually branch on is what
+> `MAY_EXECUTE` is.
+
+No phase branched on it. Every occurrence in the plugin was the emit, the
+key-list comment, and two sentences explaining its purpose. The gate itself lived
+only in Phase 0's own table, six phases before the phases that execute, as advice
+to *run `--no-execute`*.
+
+### Fixed
+
+- **Phases 4 and 5 gate on it, in the blocks that run the audited repo's code.**
+  Both `uv-lock.md` blocks — `gate_diff.py`, and the frozen `uv sync` pair — open
+  with the test, and both phases' contract lines say so.
+
+- **The test is for `yes`, never against `no`.** Measured across the three states
+  a block can see:
+
+  | | `= yes` | `!= no` |
+  |---|---|---|
+  | `MAY_EXECUTE=yes` | proceeds | proceeds |
+  | `MAY_EXECUTE=no` | refuses, exit 2 | refuses, exit 2 |
+  | **unset** | **refuses, exit 2** | **proceeds** |
+
+  A block whose handoff did not load sees the empty string, and the negative form
+  passes it. The one direction this must never fail in is open.
+
+- **`BRANCH_POINT` was the same defect, found by the guard written for
+  `MAY_EXECUTE`.** It is emitted, Phase 1 was said to read it, and no block did —
+  the rewritten-base substitution was prose telling the reader to use a different
+  range. It is now a conditional in Phase 1's fallback, which is the one path
+  where it still decides anything: with `$BOT_COMMITS` derivable the bot's own
+  commits are the bump wherever the base moved to, and only the underivable
+  fallback has a range to choose.
+
+- **`BASE_REF` is declared a diagnostic**, in Phase 0, in the line the new guard
+  reads. 0.26.1 settled that it is deliberately unconsumed; the exemption is now
+  written down instead of inferred from nobody having used it.
+
+### The replay
+
+**The execution gate**, derived live against four real PRs:
+
+| Repo | `push` | Author | `MAY_EXECUTE` |
+|---|---|---|---|
+| `fpga-board-sim` #363 | true | `dependabot[bot]` | **yes** |
+| `dependabot-audit` #60 | true | human | no |
+| `BIRSAx2/mdcat` #6 | false | — | no |
+| `cli/cli` #14147 | false | — | no |
+
+The second row is the one worth reading: full `admin` on a repo this account
+owns, and still `no`, because the classification is two questions and only one of
+them is about permissions.
+
+**The `BRANCH_POINT` substitution** needed a base that had actually been
+rewritten, and no reachable PR is in that state — CONTRIBUTING's fifth row. Built
+one instead: a root commit, a commit vendoring a `supply-chain` tree, a third
+commit, a PR branching from the third and adding `manifest.txt`, then the base
+rewritten so the shared ancestor falls back past the vendored tree.
+
+```
+BRANCH_POINT=ok         -> 7 file(s): manifest.txt src.py vendor-{a..e}.txt
+BRANCH_POINT=rewritten  -> 1 file(s): manifest.txt
+```
+
+Without the conditional the fallback gates on seven files, including a vendored
+tree the bump never touched, and Holds a one-file manifest bump for reaching
+beyond the manifest. That is the shape `SKILL.md` records from a real Cargo bump:
+14 files and 3,682 deletions on a two-file PR.
+
+A first attempt at this construction force-pushed *forward* rather than rewriting,
+so both ranges returned one file and agreed. Agreement there would have read as
+"the conditional is unnecessary" — a replay that quietly proves nothing, which is
+the failure mode the gate itself exists against.
+
+### Tests
+
+Four guards, each mutation-checked, in five directions — dropping the gate,
+flipping it to the negative form, emptying the diagnostics line, exempting a name
+the emitter does not write, and reverting the `BRANCH_POINT` substitution.
+
+The completeness rule now runs **both** ways. 0.26.1's guards ask that every
+promised name is produced; these ask that every produced name is consumed or
+named inert. The drift was already bidirectional when 0.26.1 shipped — its own
+changelog says so — and only one direction had a guard. 256 tests.
+
+Closes #63.
+
 ## [0.28.1] — 2026-08-21
 
 `ci_state.py` made five API calls on a green PR and read one of them. Patch:

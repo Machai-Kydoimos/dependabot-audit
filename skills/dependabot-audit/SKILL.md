@@ -217,6 +217,7 @@ If either check fails, `git worktree remove` it and re-add.
 | the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
 | `$BRANCH_POINT` | `ok`, `rewritten`, `suspect` or `underivable` — **Phase 1 reads it**, and the table below says what each one means |
+| `$MAY_EXECUTE` | `yes` or `no` — **Phases 4 and 5 gate on it**, and the gate tests for `yes` so an unset value refuses. The classification below is what sets it |
 | `$BOT_COMMITS` | the bot's own commits above the base. **Phase 1's scope gate takes its diff from these**, because that is the invariant the gate is about |
 | `$HUMAN_COMMITS` | every non-bot commit on the branch, merges included. Its files are a **finding to report**, never a Hold |
 
@@ -231,6 +232,22 @@ Phase 0's own working state.
 The reason is that `$PERMS` is a set of flags rather than a value: `$PERMS.push`
 is how the gate below addresses it, and there is no shell form of that. Reducing
 it to the one bit later phases actually branch on is what `MAY_EXECUTE` is.
+
+**And they branch on it, rather than being trusted to remember this table.** The
+blocks in Phases 4 and 5 that run the audited repo's code open with
+
+```bash
+[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
+```
+
+Tested **for** `yes`, never against `no`, and the difference is the whole guard:
+a block whose handoff did not load sees the empty string, and `!= no` is true of
+it. The one direction this must never fail in is open.
+
+**Diagnostics — emitted, deliberately unread:** `BASE_REF`. It is Phase 0's own
+cross-check on the `compare` call and no later phase consumes it. Every *other*
+name the emitter writes is read by a block; that is the rule, and an exemption is
+a decision written down here rather than a name nobody happened to use.
 
 If a later phase needs something not on this list, it belongs here rather than
 there. A phase that consumes what a later phase creates cannot be run in order,
@@ -463,8 +480,12 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 # Unset is Phase 0's third state, and an unset list iterates zero times: the
 # fallback has to fire here, or the gate passes on an empty diff.
 if [ -z "${BOT_COMMITS+set}" ]; then
-  echo "BOT_COMMITS underivable — gating on the whole \$BASE_SHA..pr-<N> diff" >&2
-  git diff --name-only "$BASE_SHA" "pr-<N>" | sort -u
+  # No split to gate on, so the range matters — and a rewritten base makes the
+  # merge-base range the whole divergence. Phase 0 already decided which; reading
+  # it here is what stops the substitution being something to remember.
+  [ "$BRANCH_POINT" = rewritten ] && RANGE="pr-<N>^..pr-<N>" || RANGE="$BASE_SHA..pr-<N>"
+  echo "BOT_COMMITS underivable — gating on the whole $RANGE diff" >&2
+  git diff --name-only $RANGE | sort -u
 else
   for c in $BOT_COMMITS; do git show --name-only --format= "$c"; done | sort -u
 fi
@@ -627,8 +648,8 @@ form returns zero.
 
 *Requires from Phase 0: the `$SCRATCH/base-<N>` worktree — or `$SCRATCH/tip-<N>`
 if Phase 0 found the base rewritten — and the repo's own gates.*
-*Executes code from the PR. Skipped under `--no-execute`; skip it if Phase 1
-found anything.*
+*Executes code from the PR. Requires `MAY_EXECUTE=yes`. Skipped under
+`--no-execute`; skip it if Phase 1 found anything.*
 
 **The question: does this change what runs here, or what this repo's gates
 accept?** Not "is it safe". For `uv.lock` you can measure it, and you must —
@@ -664,8 +685,8 @@ working; reaching it by not looking is the failure.
 ## Phase 5 — Independent reproduction
 
 *Requires from Phase 0: the `$SCRATCH/pr-<N>` worktree, `$HEAD_SHA`, `pr-<N>`.*
-*Executes code from the PR — the most of any phase. Skipped under
-`--no-execute`; skip it if Phase 1 found anything.*
+*Executes code from the PR — the most of any phase. Requires `MAY_EXECUTE=yes`.
+Skipped under `--no-execute`; skip it if Phase 1 found anything.*
 
 **The question: has this been shown to work, independently of the bot saying so?**
 For `uv.lock` you answer it by building and running the thing. For GitHub Actions
