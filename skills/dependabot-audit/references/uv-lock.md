@@ -27,6 +27,10 @@ Both lockfiles come out of git at the ref Phase 0 pinned, never off the working
 tree:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 S="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py"
 
 git show "pr-<N>:uv.lock"    > "$SCRATCH/pr.uv.lock"
@@ -153,6 +157,10 @@ environment is the reliable path.
 between finding the change and missing it, and the wrong choice fails silently:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 G="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/gate_diff.py"
 
 python3 "$G" --tree "$SCRATCH/base-<N>" \

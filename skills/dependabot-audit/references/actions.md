@@ -226,6 +226,10 @@ releaser; `action.yml` is what the runner loads, it ships in the action's own
 repo, and it is therefore readable at both pins:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 for R in <old-sha> <new-sha>; do
   gh api "repos/<owner>/<action>/contents/action.yml?ref=$R" --jq .content \
     | base64 -d > "$SCRATCH/action-$R.yml"

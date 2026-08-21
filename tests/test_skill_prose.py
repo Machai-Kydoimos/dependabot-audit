@@ -1946,5 +1946,138 @@ class TestPhase4ReadsTheActionsInterfaceNotOnlyItsNotes(SkillHarness):
         )
 
 
+def _every_block() -> list[tuple[str, int, str]]:
+    """(file, phase, code) for every bash block in the skill and its references.
+
+    `SkillHarness.shell` concatenates a phase's blocks into one string, which is
+    right for the ordering guards and wrong here: the question below is asked of
+    each block *as a unit*, because a block is what a reader runs in one call.
+    Two blocks joined would let Phase 0's own reload satisfy a later phase's.
+    """
+    found: list[tuple[str, int, str]] = []
+    for path in (SKILL, PLUGIN / "references/uv-lock.md", PLUGIN / "references/actions.md"):
+        for number, body in phases(path.read_text(encoding="utf-8")):
+            found.extend((path.name, number, code) for code in bash_blocks(body))
+    return found
+
+
+class TestEveryConsumerReloadsTheHandoff(SkillHarness):
+    """Phase 0's handoff was written once, sourced once, and read by seven blocks.
+
+    `SKILL.md` states the measurement that makes this fatal, in its own Phase 0:
+
+        Measured against this harness, two separate calls: an `export` in the
+        first is **unset** in the second, shell functions likewise, and each call
+        is a new shell process.
+
+    Re-measured 2026-08-21 across two Bash calls in one session: `PROBE_VAR` set
+    and exported in the first reads `<UNSET>` in the second, a function defined
+    in the first is `not found`, and the pids differ.
+
+    0.26.0 fixed `$SCRATCH`'s *derivation* so the next call could name the
+    directory. The consequence — that the next call must then actually re-derive
+    it and re-source the file — never reached the phases that consume it, so
+    `. "$SCRATCH/phase0.env"` appeared exactly once in the plugin, inside the
+    phase that writes it.
+
+    Measured cost, running each consuming block in a fresh shell with nothing
+    sourced: Phases 1 (uv.lock), 4, 6 and 7 fail loudly — `Permission denied`,
+    two exit 2s, and exit 128 — while Phase 1's authorship gate **passes
+    silently**, because `for c in $BOT_COMMITS` over an unset variable iterates
+    zero times and the gate's file list is empty. `SKILL.md` names that outcome
+    "the one outcome worse than a false Hold".
+    """
+
+    def _handoff_names(self) -> set[str]:
+        """What the handoff carries: the emitter's names, plus `SCRATCH` itself.
+
+        `SCRATCH` never passes through `discover.py` — Phase 0's shell assigns it
+        — but it is lost across a call boundary exactly like the rest, and it is
+        the one every other value is reached *through*.
+        """
+        return _emitted_by_discover() | {"SCRATCH"}
+
+    def test_every_block_reading_a_handoff_value_reloads_it(self):
+        names = self._handoff_names()
+        for file, number, code in _every_block():
+            # Only the block that *writes* the handoff is exempt, not the whole
+            # phase. Phase 0's later blocks run in their own calls like any
+            # other, and the exemption being phase-wide left the sharpest case
+            # of all still open: `git show "$BASE_SHA:.github/workflows/ci.yml"`
+            # with $BASE_SHA empty exits **0** and serves 17,623 bytes from the
+            # index — the user's working tree — which is the exact failure
+            # Phase 0's "read every one of them at a ref" rule exists to prevent.
+            if "--shell >" in code:
+                continue
+            used = sorted(n for n in USED.findall(code) if n in names)
+            if not used:
+                continue
+            self.assertIn(
+                "phase0.env",
+                code,
+                f"{file} Phase {number} reads {used} in a block that never sources "
+                f"the handoff. Shell state does not cross a Bash call, so every one "
+                f"of those is the empty string when the block runs on its own",
+            )
+
+    def test_the_scratch_derivation_is_stated_identically_wherever_it_appears(self):
+        """Seven copies of a formula is seven places for it to drift.
+
+        The failure this guards is not hypothetical in shape: 0.26.0 changed the
+        derivation once already, and a copy left on the old `mktemp` form would
+        point a later phase at a directory the handoff is not in — which is the
+        same silent-empty outcome, reached through a different door.
+        """
+        # The assignment alone, not the line it sits on: Phase 0 appends
+        # `mkdir -p` to its copy and a later block has nothing to create.
+        forms = {
+            found for _, _, code in _every_block() for found in re.findall(r'SCRATCH="[^"]*"', code)
+        }
+        self.assertEqual(
+            len(forms),
+            1,
+            f"the $SCRATCH derivation appears in {len(forms)} different forms; every "
+            f"call has to resolve it to the same directory, so they must be one "
+            f"string: {sorted(forms)}",
+        )
+
+    def test_a_declared_unset_fallback_is_implemented_where_the_block_gates(self):
+        """The measured silent failure, stated as the document's own broken promise.
+
+        `for c in $BOT_COMMITS` over an unset variable iterates zero times and the
+        gate passes with an empty file list. `SKILL.md` already knows this and
+        says what to do instead — *"Where `$BOT_COMMITS` is unset, gate on the
+        whole `$BASE_SHA..pr-<N>` diff"* — but the fallback lived only in prose,
+        so the runnable block did the silent thing.
+
+        Keyed on the prose declaring a fallback rather than on a name: that is
+        what separates `$BOT_COMMITS`, which gates, from `$HUMAN_COMMITS`, which
+        is reported and where iterating zero times is the truthful answer. Any
+        future output whose absence the prose promises to handle is covered.
+        """
+        loop = re.compile(r"for\s+\w+\s+in\s+\$\{?([A-Z_][A-Z0-9_]*)\}?")
+        names = self._handoff_names()
+        bodies = dict(self.phases)
+        seen = 0
+        for file, number, code in _every_block():
+            if file != SKILL.name:
+                continue
+            for name in loop.findall(code):
+                if name not in names:
+                    continue
+                # Does this phase promise to handle the value being unset?
+                if not re.search(rf"\${name}[^\n]*is unset", bodies.get(number, "")):
+                    continue
+                seen += 1
+                self.assertRegex(
+                    code,
+                    re.compile(rf"\$\{{{name}[+:-]|-z\s+\"?\${name}|-n\s+\"?\${name}"),
+                    f"{file} Phase {number} promises a fallback for an unset ${name} "
+                    f"and then iterates it anyway; unset it iterates zero times and "
+                    f"the gate passes silently, which is worse than a false Hold",
+                )
+        self.assertGreater(seen, 0, "no phase declares an unset-fallback for a value it gates on")
+
+
 if __name__ == "__main__":
     unittest.main()

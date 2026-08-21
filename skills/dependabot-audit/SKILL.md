@@ -146,6 +146,10 @@ next section.
 Then the part that changes state, which is yours:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
@@ -170,6 +174,10 @@ these were not — they ran in the user's checkout, so the answers came from
 whatever branch happened to be there:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git show "pr-<N>:.github/dependabot.yml" 2>/dev/null || git show "pr-<N>:renovate.json"
 git show "pr-<N>:.github/workflows/<ci>.yml"       # the gates Phase 5 reproduces
 git show "pr-<N>:.pre-commit-config.yaml"
@@ -197,6 +205,10 @@ stale worktree silently audits the wrong commit and every result downstream is
 wrong. Compare against the pinned SHA rather than eyeballing a log line:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 test "$(git -C "$SCRATCH/pr-<N>" rev-parse HEAD)" = "$HEAD_SHA"
 git -C "$SCRATCH/pr-<N>" status --porcelain                       # must be empty
 ```
@@ -208,7 +220,7 @@ If either check fails, `git worktree remove` it and re-add.
 | | |
 |---|---|
 | `$DEFAULT` | the repo's default branch, derived |
-| `$SCRATCH` | scratch directory, outside the repo — and **derived, so every later call resolves it to the same place**. Nothing else here survives a call boundary |
+| `$SCRATCH` | scratch directory, outside the repo — and **derived, so every later call resolves it to the same place**. Nothing else here survives a call boundary, so every consuming block re-derives this and re-sources `phase0.env` before reading any row below |
 | `$HEAD_SHA` | the full 40-character commit under audit |
 | `$BASE_SHA` | the merge base, from GitHub's own `compare` endpoint — never a local `git merge-base` against `$DEFAULT`, which collapses onto the head once the PR lands. **And whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
@@ -321,6 +333,35 @@ cwd reset back. `SCRATCH` is required to be outside the repo, so it can never be
 reached that way. Nothing ambient crosses the boundary — only a path each call
 can recompute from what it already has, which is the repo and `<N>`.
 
+**Recomputable is not recomputed, and that distinction shipped as a defect.**
+Deriving `$SCRATCH` made the handoff *findable* from a later call; it did not make
+any later call go and find it. So every block below that consumes a Phase 0 output
+opens with the same three lines, and they are not decoration:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+```
+
+Repeated rather than stated once, because a step that is merely implied is one
+that gets skipped — the same argument that put the gate list at a ref. The `||`
+is the load-bearing half: a `.` on a missing file returns 1 and keeps going, so
+without it the block runs on with every output empty, which is the state this
+whole phase exists to make impossible.
+
+**What that empties, measured**, running each consuming block in a fresh call with
+nothing sourced: Phase 1's lockfile read, Phase 4, Phase 6 and Phase 7's cleanup
+all fail loudly — a `Permission denied`, two exit 2s, an exit 128 — and Phase 1's
+**authorship gate passes silently**, because `for c in $BOT_COMMITS` over an unset
+variable iterates zero times and hands the gate an empty file list. That is why
+the block below tests the variable rather than trusting it: the fallback belongs
+in the shell, not only in the paragraph that describes it.
+
+`git` state is the exception and needs no reload. The `pr-<N>` ref Phase 0 fetches
+is in the repository, so `git show "pr-<N>:…"` works from any call. Only the shell
+handoff is lost.
+
 A harness-provided `SCRATCH` still wins, and now for a reason: if one is exported
 into every call's environment it is stable by definition. The derived default is
 what applies when it is not.
@@ -362,6 +403,10 @@ The substitutions, when `rewritten` fires:
   because the tree this PR would land on is the default branch's tip.
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git fetch origin "$DEFAULT"
 git worktree add --detach "$SCRATCH/tip-<N>" "origin/$DEFAULT"
 ```
@@ -426,10 +471,21 @@ Phase 0 derived both halves, so take the gate's diff from the bot's commits and
 report the human's separately:
 
 ```bash
-# what the bump itself changed — this is what the gate is about
-for c in $BOT_COMMITS;   do git show --name-only --format= "$c"; done | sort -u
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# what the bump itself changed — this is what the gate is about.
+# Unset is Phase 0's third state, and an unset list iterates zero times: the
+# fallback has to fire here, or the gate passes on an empty diff.
+if [ -z "${BOT_COMMITS+set}" ]; then
+  echo "BOT_COMMITS underivable — gating on the whole \$BASE_SHA..pr-<N> diff" >&2
+  git diff --name-only "$BASE_SHA" "pr-<N>" | sort -u
+else
+  for c in $BOT_COMMITS; do git show --name-only --format= "$c"; done | sort -u
+fi
 # a maintainer's commit on the bot's branch: read it, report it, do not Hold on it
-for c in $HUMAN_COMMITS; do git show --name-only --format= "$c"; done | sort -u
+for c in $HUMAN_COMMITS;   do git show --name-only --format= "$c"; done | sort -u
 ```
 
 A merge commit is in the second list and normally prints nothing — its content
@@ -693,6 +749,10 @@ in this file were here — each of them a real endpoint asked the wrong question
 answering in a well-formed way. A hand-run query cannot be regression-tested.
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 C="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/ci_state.py"
 PARENT=$(git rev-parse "pr-<N>^")
 
@@ -888,6 +948,10 @@ commit that no longer exists while Phase 6 reports on the new one — and the ta
 silently asserts that they agree:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 test "$(gh pr view <N> --json headRefOid --jq .headRefOid)" = "$HEAD_SHA"
 ```
 
@@ -1033,6 +1097,10 @@ stop, and the one that used to litter every time. Phase 7 is the only phase ever
 audit reaches, including the one that ends at the gate.
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git worktree remove "$SCRATCH/pr-<N>"
 git worktree remove "$SCRATCH/base-<N>"
 git branch -D "pr-<N>"

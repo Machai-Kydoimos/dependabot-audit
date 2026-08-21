@@ -11,6 +11,91 @@ patch.
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-08-21
+
+One sprint, one release: a producer/consumer sweep of the plugin — for every
+value a phase produces, who consumes it; for every value a phase consumes, who
+reliably produces it. Six defects, each with its own commit below. Minor: several
+of them change what a phase verifies or what the report asserts.
+
+### Phase 0's handoff was sourced once, in Phase 0
+
+`discover.py --shell` writes `$SCRATCH/phase0.env` and Phase 0 sources it. That
+was the only `. "$SCRATCH/phase0.env"` in the plugin, and eleven blocks across
+`SKILL.md` and both references read what it carries.
+
+`SKILL.md` has stated the mechanism since 0.26.0, in its own Phase 0:
+
+> Measured against this harness, two separate calls: an `export` in the first is
+> **unset** in the second, shell functions likewise, and each call is a new shell
+> process.
+
+Re-measured across two Bash calls in one session: a variable exported in the
+first reads `<UNSET>` in the second, a function defined in the first is `not
+found`, the pids differ. 0.26.0 fixed `$SCRATCH`'s **derivation** so the next
+call could name the directory. **Recomputable is not recomputed** — nothing told
+the next call to go and find it.
+
+Each consuming block, run alone with nothing sourced:
+
+| Block | Result |
+|---|---|
+| Phase 1, `uv.lock` | `/base.uv.lock: Permission denied` — loud |
+| Phase 4, `gate_diff.py` | `error: /base-1 is not a git worktree`, exit 2 — loud |
+| Phase 6, `ci_state.py` | `Could not resolve to a Repository with the name '/'`, exit 2 — loud |
+| Phase 7, cleanup | `fatal: '/pr-1' is not a working tree`, exit 128 — loud, worktrees left registered |
+| Phase 0, the gate read | **exit 0, 17,623 bytes from the INDEX** |
+| **Phase 1, the authorship gate** | **silent** |
+
+Two of those are silent, and both are the failure this procedure is most explicit
+about. `for c in $BOT_COMMITS` over an unset variable iterates zero times, so the
+gate's file list is empty and it passes — *"the one outcome worse than a false
+Hold"*, in `SKILL.md`'s own words. And `git show ":path"` with an empty rev is
+the **index**, so Phase 0's gate list came from the user's working tree — the
+exact failure its *"read every one of them at a ref"* rule exists to prevent,
+reached through an empty variable rather than a forgotten ref.
+
+**Fixed.** Every block that consumes a Phase 0 output opens with three lines that
+re-derive `$SCRATCH` and re-source the handoff, `Phase 0's own later blocks
+included` — the exemption is the block that *writes* the handoff, keyed on
+`--shell >`, not the phase it sits in. Repeated in all eleven rather than stated
+once, because a step merely implied is one that gets skipped. The `||` is the
+load-bearing half: a `.` on a missing file returns 1 and keeps going.
+
+Phase 1's underivable fallback moved out of the prose and into the shell too:
+Phase 0 already emits `# BOT_COMMITS is absent` commented out so the variable
+stays unset, and the prose already said to gate on the whole diff instead. The
+block did not implement it.
+
+`git` state is the exception and now says so. The `pr-<N>` ref lives in the
+repository, so `git show "pr-<N>:…"` works from any call; only the shell handoff
+is lost, and conflating the two is what made the reload look unnecessary.
+
+**Replayed** two deliberately separate calls against two PRs, for the two
+branches of the gate. `fpga-board-sim` #363 (bot PR, `BOT_COMMITS` set): call 2
+opened with `SCRATCH` and `BASE_SHA` unset, re-derived, re-sourced, gated
+correctly on `.github/workflows/ci.yml`. `dependabot-audit` #60 (human PR, split
+absent) is the discriminating one — same handoff, both blocks:
+
+```
+OLD:  (empty)  0 files. The gate passes.
+NEW:  BOT_COMMITS underivable — gating on the whole $BASE_SHA..pr-60 diff
+      CHANGELOG.md
+      .claude-plugin/plugin.json
+      skills/dependabot-audit/references/actions.md
+      tests/test_skill_prose.py
+```
+
+Four files, one inside the plugin's own `references/`, reported as a clean scope
+by the shipped gate.
+
+**Tests.** Three guards, each mutation-checked: every block reading a handoff
+value sources it; the `$SCRATCH` derivation exists in exactly one form; a value
+the prose promises to handle when unset is tested rather than iterated. The
+second mutation was run twice — the first attempt used a malformed `sed` that
+never landed, and the guard passed. A mutation that does not mutate reads exactly
+like a guard that discriminates.
+
 ## [0.27.0] — 2026-08-21
 
 Phase 4 for actions had one source and no way to check it. An action cannot be
