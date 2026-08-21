@@ -2369,5 +2369,107 @@ class TestEveryDerivedLabelLandsInTheVerdictTable(SkillHarness):
         )
 
 
+class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
+    """The gate read its file list through a pipe, so a failing git passed it.
+
+    A pipeline's exit status is its **last** stage. `sort` succeeds on empty
+    input, so a `git` that fails yields an empty file list at exit 0 — and an
+    empty file list is exactly what the gate reads as *nothing outside the
+    manifest and lockfile*. Measured in a real clone:
+
+        out=$(for c in deadbeefdeadbeef; do git show --name-only --format= "$c" \
+              2>/dev/null; done | sort -u)
+        pipeline exit=0  files=[]
+
+    Both branches had it, the fallback added in 0.28.0 included — so that release
+    put a second door on the room it had just locked. Hit by accident on a
+    scratch clone where `pr-363` had been deleted: `fatal: ambiguous argument`,
+    and exit 0.
+
+    The plugin already states the rule, in Phase 5 and in `uv-lock.md` § Phase 5:
+    *"Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing
+    suite sails through."* Phase 1's gate is the highest-stakes command in the
+    procedure — it is what stops the audit before Phases 4 and 5 execute the PR's
+    code — and it was the one place the rule was not followed.
+    """
+
+    # A non-comment statement that runs git and pipes onward — the shape that
+    # discards git's status, whether the pipe hangs off the command itself or off
+    # the `done` of a loop containing it. Both were present.
+    # A single `|`, never `||`: the logical-or is how the fixed form *checks*
+    # the status, so a guard that counts it as a pipe fires on the fix.
+    PIPED = re.compile(r"^(?!\s*#)[^\n]*\b(?:git|gh)\s[^\n]*(?<!\|)\|(?!\|)", re.MULTILINE)
+    # Quoted spans come out first. `--jq '.[] | "\(.x)"'` is jq's pipe inside a
+    # single-quoted argument, not a shell pipeline, and four blocks use it.
+    QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+    def _gate_block(self) -> str:
+        """The block that *uses* the split, not the one that documents it.
+
+        `"BOT_COMMITS" in code` picked Phase 0's key-list fence — `#   BOT_COMMITS
+        =<shas>` — where there is no git and no pipe, so the pipe guard passed
+        against a comment. Requiring a `$` is what separates a use from a mention,
+        the same discriminator the MAY_EXECUTE guard needs.
+        """
+        found = [c for _, _, c in _every_block() if re.search(r"\$\{?BOT_COMMITS", c)]
+        self.assertTrue(found, "no block gates on $BOT_COMMITS")
+        self.assertEqual(len(found), 1, f"expected one gate block, found {len(found)}")
+        return found[0]
+
+    def test_no_block_reads_git_or_gh_output_through_a_pipe(self):
+        """Class-wide, because the gate was one of three.
+
+        Measured, each in a real clone:
+
+            Phase 1 gate            exit 0, empty file list  -> "clean scope"
+            Phase 6 trigger read    exit 0, empty output     -> "no PR trigger"
+            actions.md Phase 4      two empty files, diff 0  -> "no interface change"
+
+        Every one lands on the reassuring answer, which is what makes the class
+        worth a guard rather than three fixes.
+        """
+        for file, number, code in _every_block():
+            # Line continuations joined first. `actions.md` wrote the fetch as
+            # `gh api … \` / `  | base64 -d > file` — two physical lines, one
+            # statement — and a per-line regex misses it, which is how the guard
+            # went green against the very instance it was widened for.
+            joined = re.sub(r"\\\n\s*", " ", code)
+            stripped = self.QUOTED.sub("''", joined)
+            for hit in self.PIPED.findall(stripped):
+                self.fail(
+                    f"{file} Phase {number} pipes git/gh output onward, so the "
+                    f"pipeline reports the LAST stage's status and a failure "
+                    f"yields empty output at exit 0: {hit.strip()[:70]}"
+                )
+
+    # `NAME=$(… git …)` and whatever follows the closing paren.
+    CAPTURE = re.compile(r"([A-Z_]+)=\$\((?P<body>(?:[^()]|\([^()]*\))*)\)(?P<after>[^\n]*)")
+
+    def test_every_capture_of_git_output_is_checked(self):
+        """Capturing is not enough on its own; something has to act on it.
+
+        Asserted per capture rather than once per block: the block opens with the
+        handoff preamble, whose own `|| … exit 2` satisfied a block-wide search
+        while the gate's two captures went unchecked. A guard that can be
+        satisfied by a *different* line than the one it is about is the same
+        failure as one satisfied by a comment.
+        """
+        block = self._gate_block()
+        seen = 0
+        for found in self.CAPTURE.finditer(block):
+            if "git " not in found.group("body"):
+                continue
+            seen += 1
+            tail = found.group("after") + block[found.end() : found.end() + 120]
+            self.assertRegex(
+                tail,
+                re.compile(r"\|\|\s*(?:\\\n\s*)?\{[^}]*exit 2"),
+                f"`{found.group(1)}` captures git output and nothing checks it. "
+                f"Exit 2 is this plugin's `could not run`, and it is the honest "
+                f"answer: no evidence is not evidence of nothing",
+            )
+        self.assertGreaterEqual(seen, 2, "the gate should capture both halves of the split")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -505,12 +505,20 @@ if [ -z "${BOT_COMMITS+set}" ]; then
   # it here is what stops the substitution being something to remember.
   [ "$BRANCH_POINT" = rewritten ] && RANGE="pr-<N>^..pr-<N>" || RANGE="$BASE_SHA..pr-<N>"
   echo "BOT_COMMITS underivable — gating on the whole $RANGE diff" >&2
-  git diff --name-only $RANGE | sort -u
+  SCOPE=$(git diff --name-only $RANGE) || { echo "cannot diff $RANGE" >&2; exit 2; }
 else
-  for c in $BOT_COMMITS; do git show --name-only --format= "$c"; done | sort -u
+  SCOPE=$(for c in $BOT_COMMITS; do git show --name-only --format= "$c" || exit 1; done) \
+    || { echo "cannot read a commit in \$BOT_COMMITS" >&2; exit 2; }
 fi
+# Captured and checked, never piped: a pipeline reports its LAST stage, and
+# `sort` succeeds on empty input — so a failing git hands the gate an empty file
+# list at exit 0, which reads as a clean scope. Exit 2 is the honest answer; no
+# evidence is not evidence of nothing.
+printf '%s\n' "$SCOPE" | sort -u
 # a maintainer's commit on the bot's branch: read it, report it, do not Hold on it
-for c in $HUMAN_COMMITS;   do git show --name-only --format= "$c"; done | sort -u
+HUMANS=$(for c in $HUMAN_COMMITS; do git show --name-only --format= "$c" || exit 1; done) \
+  || { echo "cannot read a commit in \$HUMAN_COMMITS" >&2; exit 2; }
+printf '%s\n' "$HUMANS" | sort -u
 ```
 
 A merge commit is in the second list and normally prints nothing — its content
@@ -775,8 +783,12 @@ triggered only by `push: tags:` or `schedule:` never runs on a PR, so every chec
 on it comes from *other* workflows and none of them execute the changed line:
 
 ```bash
-# for each workflow the diff touched, read its triggers
-git show "pr-<N>:.github/workflows/<changed>.yml" | sed -n '/^on:/,/^[a-z]/p'
+# for each workflow the diff touched, read its triggers. Captured, not piped:
+# `sed` succeeds on empty input, so a failed read prints nothing at exit 0 and
+# reads as "this workflow has no pull_request trigger" — the reassuring answer.
+TRIGGERS=$(git show "pr-<N>:.github/workflows/<changed>.yml") \
+  || { echo "cannot read <changed>.yml at pr-<N>" >&2; exit 2; }
+printf '%s\n' "$TRIGGERS" | sed -n '/^on:/,/^[a-z]/p'
 ```
 
 If the intersection of "workflows the diff touched" and "workflows a
@@ -797,7 +809,8 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
 C="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/ci_state.py"
-PARENT=$(git rev-parse "pr-<N>^")
+PARENT=$(git rev-parse "pr-<N>^") \
+  || { echo "cannot resolve pr-<N>^ — was the ref fetched?" >&2; exit 2; }
 
 python3 "$C" --owner "$OWNER" --name "$NAME" --number <N> \
   --head-sha "$HEAD_SHA" --parent "$PARENT" --base-sha "$BASE_SHA"

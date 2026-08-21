@@ -151,6 +151,32 @@ execution deliberately for that run and say so in the commit body, because the
 audit will otherwise report those rows as *not run* and the gate will read as
 satisfied when it was not.
 
+**Run the block as written, and read its exit status.** Both halves are the
+gate; neither is optional, and skipping either is how three replays of the same
+change came back clean while the defect stood.
+
+*As written* means extracted from the file, not retyped. A retyped approximation
+is a paraphrase of what you believe the block says, so it tests your reading
+rather than the file — and it silently drops whatever you were going to get
+wrong.
+
+*Its exit status* means `$?`, not the output. Reading only the output is the
+trap this repo documents in Phase 5 — `cmd | tail && next` gates on `tail` — and
+it was committed here while measuring the plugin that documents it: a
+`git worktree add` that had just printed `fatal: invalid reference:` was recorded
+as `exit=0`, because the measurement piped it into `head`. Measured shapes that
+look identical to success:
+
+| Shape | What it prints | `$?` |
+|---|---|---|
+| `git … \| sort -u` with a failing git | nothing | **0** |
+| `git show "$EMPTY:path"` | the file **from the index** | **0** |
+| a mutation applied by a `sed` that matched nothing | the guard passes | 0 |
+
+The third is the one that generalises: **verify the mutation landed before you
+read the result.** A mutation that does not mutate is indistinguishable from a
+guard that discriminates, and it fails in the reassuring direction.
+
 **This is a checklist item, and checklists are visibly skippable.** The box lives
 in `.github/PULL_REQUEST_TEMPLATE.md`, and it asks for what the replay showed
 rather than for a tick — a tick is an assertion, the pasted output is evidence,
