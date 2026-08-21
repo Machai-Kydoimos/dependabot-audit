@@ -96,6 +96,48 @@ second mutation was run twice — the first attempt used a malformed `sed` that
 never landed, and the guard passed. A mutation that does not mutate reads exactly
 like a guard that discriminates.
 
+### `ci_state.py` made five API calls on a green PR and read one
+
+Measured with a logging passthrough around `gh`, on `fpga-board-sim` #363:
+
+```
+CALL: api graphql <rollup>                                  <- the answer
+CALL: api repos/…/commits/bddcc474b7/check-runs --paginate  <- never read
+CALL: api repos/…/commits/bddcc474b7/status                 <- never read
+CALL: api repos/…/commits/bddcc474b7/check-runs --paginate  <- never read
+CALL: api repos/…/commits/bddcc474b7/status                 <- never read
+```
+
+Note the SHA. `pr-<N>^` and `$BASE_SHA` are the same commit on a genuine
+one-commit bot PR — `SKILL.md` says so and calls it the ordinary case — so the
+ordinary case fetched **the same two endpoints twice** and consulted neither.
+
+Every consumer is gated on red: `attribute()` runs once per red context, and
+`parent_names` renders only under `if report["red"] and …`. `conclusions_at()`
+ran before `analyse()` had computed `report["red"]`, so it could not know. The
+script already applied this reasoning one rung lower — *"Only worth two calls
+when there is a red row for them to qualify"*, on `committed_at` — and had never
+applied it to the pair above it, which is twice the calls and paginates.
+
+**Fixed.** `analyse()` hoisted above the comparison reads, both gated on
+`report["red"]`, and the merge base fetched only when the parent has no runs —
+the single branch `attribute()` reads it in. `committed_at` follows the dict it
+qualifies.
+
+**Replayed** live through the same tap, on the two PRs this phase's prose cites:
+`fpga-board-sim` #363 (green) **5 → 1** calls, verdict unchanged; `BIRSAx2/mdcat`
+#6 (red) **7 → 4**, verdict unchanged at `PRE-EXISTING — red at b1b0dd4c1
+(pr-<N>^) too`. The second is the one that had to be checked: it is the case the
+attribution comparison exists for, and the saving must not reach it. It does not.
+
+**Tests.** Three guards on the *shape of the work* rather than its output, each
+mutation-checked. The third — *a red PR with no runs at the parent still falls
+back to the base* — was written first, as the control: a saving that also removes
+a fallback is not a saving.
+
+`--json` now reports `parent_names: []` on a PR with nothing red. Nothing reads
+it there and no phase consumes `--json`, but it is visible.
+
 ## [0.27.0] — 2026-08-21
 
 Phase 4 for actions had one source and no way to check it. An action cannot be
