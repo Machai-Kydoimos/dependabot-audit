@@ -1507,5 +1507,132 @@ class TestTheAuditHandsBackItsOwnDeviations(SkillHarness):
         )
 
 
+class TestTheTagRecipeSurvivesAPrefixMatch(SkillHarness):
+    """`git/refs/tags/<tag>` is *get all references in a namespace*, and it crashed.
+
+    Found by the #50 deviation clause on its first replay against the shipped
+    text, and reproduced by hand afterwards (#54). Measured 2026-08-21:
+
+        actions/checkout    v5     -> object, commit fbc6f399  (three siblings share the prefix)
+        actions/checkout    v5.1   -> array(1): refs/tags/v5.1.0
+        astral-sh/setup-uv  v10    -> array(2): refs/tags/v10.0.0, refs/tags/v10.0.1
+        astral-sh/setup-uv  v999   -> 404 Not Found, exit 1
+
+    The rule the four measurements give: an exact ref returns an **object even
+    when siblings share the prefix**; with no exact ref the endpoint returns the
+    **array** of everything matching; with nothing matching at all, a **404**.
+    `.object.type` against the array is a jq type error — `expected an object but
+    got: array` — at exit 1.
+
+    Phase 2 asks *does a moving major tag exist* with names like `v1`, `v4`,
+    `v10`, which are prefixes of the point releases beneath them, so the recipe
+    failed on the question it exists to answer and worked only on the exact tags
+    Phase 1 already had from the pin comment.
+
+    **The array is the answer, which is why a crash is the wrong shape.** It
+    enumerates the refs that do exist and thereby settles that no `v10` does. The
+    recipe died exactly when it held the data, and `expected an object but got:
+    array` reads like an API fault rather than "no such tag" — so an auditor may
+    treat it as transient, retry, get the same error, and report as underivable a
+    question that is fully derivable. Same shape as CONTRIBUTING's
+    `branches/<b>/protection` table: a confident-looking error about the wrong
+    thing.
+
+    **The singular `git/ref/tags/<tag>` does not crash and is worse.** Measured
+    the same day, it answers a bare `404` to both `v5.1` and `v999` — collapsing
+    "no such tag, and here is what does exist" into "nothing here", which is the
+    half Phase 2 needs. Not crashing is not the same as answering.
+
+    The assertions below come from those four measurements rather than from the
+    recipe written to satisfy them: the fourth exists because "a moving major tag
+    returns an array" is the natural reading of the fix and is **false**, and
+    believing it inverts the answer for every action that does publish one.
+    """
+
+    def _tag_recipe(self) -> str:
+        """The actions.md § Phase 1 bash that asks where a tag points.
+
+        Anchored to the block, not the phase: Phase 1 hands off to two ecosystem
+        files and carries its own shell, and "the word array appears somewhere in
+        Phase 1" would be satisfied by any of it.
+        """
+        for name, section in self._handoffs(1):
+            if name != "actions.md":
+                continue
+            for block in bash_blocks(section):
+                if "git/refs/tags" in block:
+                    return block
+        self.fail("actions.md § Phase 1 has no bash block asking where a tag points")
+
+    def _outcome_table(self) -> list[str]:
+        """The actions.md § Phase 1 table with a row per outcome of that query.
+
+        Anchored the same way. Phase 1 already carries a two-row table about the
+        pin, and a guard reading "some table in this phase" would score against
+        it.
+        """
+        for name, section in self._handoffs(1):
+            if name != "actions.md":
+                continue
+            for table in tables(section):
+                joined = "\n".join(table).lower()
+                if "array" in joined and "404" in joined:
+                    return table
+        self.fail("actions.md § Phase 1 has no table separating the tag query's outcomes")
+
+    def test_the_recipe_branches_on_the_array(self):
+        """The defect itself: `.object.type` against an array is a type error."""
+        self.assertIn(
+            "array",
+            self._tag_recipe(),
+            "the tag query returns an array whenever the name is a prefix rather than "
+            "a ref, which is the case Phase 2 asks about; a recipe that does not "
+            "branch on the type dies at exit 1 on the ordinary question",
+        )
+
+    def test_the_query_has_three_outcomes_not_two(self):
+        """Object, array and 404 — and the middle one is the common case."""
+        rows = [row for row in self._outcome_table() if set(row) - set("|- :")]
+        self.assertGreaterEqual(
+            len(rows) - 1,
+            3,
+            "the tag query has three outcomes; a table with two lets the reader "
+            "collapse the array into the 404 and read a prefix match as absence",
+        )
+
+    def test_the_array_is_a_negative_answer_rather_than_a_failure(self):
+        """`expected an object but got: array` reads like an API fault. It is not.
+
+        Written from the failure mode rather than from the recipe: an auditor who
+        reads the array as an error retries it, and reports underivable a
+        currency question the array had already answered.
+        """
+        self.assertRegex(
+            self.material(1),
+            re.compile(
+                r"array.{0,600}(no such tag|does not exist|no .{0,20}ref)",
+                re.IGNORECASE | re.DOTALL,
+            ),
+            "the array has to be named as the negative answer to *does this tag "
+            "exist*; left as a crash or an error it reads as a failed call",
+        )
+
+    def test_a_shared_prefix_does_not_mean_the_tag_is_missing(self):
+        """`actions/checkout@v5` has three siblings under it and still returns the object.
+
+        Without this measurement the fix's own reading — array means no such tag —
+        generalises to "a moving major tag returns an array", which is false and
+        inverts the answer on every action that publishes one.
+        """
+        table = "\n".join(self._outcome_table()).lower()
+        self.assertIn(
+            "exact",
+            table,
+            "the outcome table must say the exact ref wins even when other refs "
+            "share the prefix, or the array row reads as covering the moving major "
+            "tag it is the negative answer about",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
