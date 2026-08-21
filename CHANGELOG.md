@@ -11,6 +11,113 @@ patch.
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-08-21
+
+Phase 0's handoff was written once, sourced once, and read by seven blocks that
+never reloaded it. Minor: Phase 1's scope gate now gates where it previously
+passed silently, which is a change to what a phase verifies.
+
+`SKILL.md` has stated the mechanism since 0.26.0, in its own Phase 0:
+
+> Measured against this harness, two separate calls: an `export` in the first is
+> **unset** in the second, shell functions likewise, and each call is a new shell
+> process.
+
+Re-measured across two Bash calls in one session: a variable exported in the
+first reads `<UNSET>` in the second, a function defined in the first is `not
+found`, and the pids differ. 0.26.0 fixed `$SCRATCH`'s **derivation** so the next
+call could name the directory. **Recomputable is not recomputed** — nothing told
+the next call to go and find it, so `. "$SCRATCH/phase0.env"` appeared exactly
+once in the plugin, inside the phase that writes it, while Phase 1, Phase 4,
+Phase 6, Phase 7 and both ecosystem references read what it carries.
+
+Running each consuming block in a fresh call with nothing sourced:
+
+| Block | Result |
+|---|---|
+| Phase 1, `uv.lock` | `/base.uv.lock: Permission denied` — loud |
+| Phase 4, `gate_diff.py` | `error: /base-1 is not a git worktree`, exit 2 — loud |
+| Phase 6, `ci_state.py` | `Could not resolve to a Repository with the name '/'`, exit 2 — loud |
+| Phase 7, cleanup | `fatal: '/pr-1' is not a working tree`, exit 128 — loud, and both worktrees stay registered in the user's repo |
+| **Phase 1, the authorship gate** | **silent** |
+
+`for c in $BOT_COMMITS` over an unset variable iterates zero times, so the gate's
+file list is empty and it passes. `SKILL.md` names that outcome itself — *"the one
+outcome worse than a false Hold"*. On an actions bump nothing fails loudly ahead
+of it: `references/actions.md` § Phase 1 makes no `$SCRATCH` writes at all.
+
+### Fixed
+
+- **Every block that consumes a Phase 0 output reloads it first.** Three lines,
+  repeated in all seven rather than stated once, because a step that is merely
+  implied is one that gets skipped — the same argument that put the gate list at
+  a ref. The `||` is the load-bearing half: a `.` on a missing file returns 1 and
+  keeps going, so without it the block runs on with every output empty.
+
+- **Phase 1's underivable fallback moved out of the prose and into the shell.**
+  Phase 0 already emits `# BOT_COMMITS is absent` commented out, precisely so the
+  variable stays unset, and Phase 0's third state already said what to do
+  instead — *"Where `$BOT_COMMITS` is unset, gate on the whole
+  `$BASE_SHA..pr-<N>` diff"*. The block did not implement it. Both doors to the
+  silent pass are now shut: the handoff is reloaded, and an unset list is tested
+  rather than iterated.
+
+- **`git` state is the exception and is now said to be.** The `pr-<N>` ref Phase
+  0 fetches lives in the repository, so `git show "pr-<N>:…"` works from any
+  call. Only the shell handoff is lost, and conflating the two is what made the
+  reload look unnecessary.
+
+### The replay
+
+Two calls, deliberately separate, against two PRs chosen to exercise both
+branches of the gate — CONTRIBUTING's fifth row again, since one target reaches
+only one:
+
+| Replayed | `BOT_COMMITS` | Outcome |
+|---|---|---|
+| `fpga-board-sim` #363 — setup-uv 9.0.0 → 10.0.1, a real bot PR | one SHA | call 2 opened with `SCRATCH` and `BASE_SHA` unset, re-derived, re-sourced, and gated correctly on `.github/workflows/ci.yml` |
+| `dependabot-audit` #60 — a human PR, so the split is absent | unset | the fallback fires |
+
+The second is the discriminating one, because the same handoff drives both
+blocks:
+
+```
+### OLD block (0.27.0):
+    ^ that is the entire output: 0 files. The gate passes.
+
+### NEW block:
+BOT_COMMITS underivable — gating on the whole $BASE_SHA..pr-60 diff
+CHANGELOG.md
+.claude-plugin/plugin.json
+skills/dependabot-audit/references/actions.md
+tests/test_skill_prose.py
+```
+
+Four files, one of them inside the plugin's own `references/`, reported as a
+clean scope by the shipped gate. A `uv.lock` bump whose diff reached that far is
+the case Phase 1 exists to stop before Phase 5 runs it.
+
+### Tests
+
+Three guards, each mutation-checked against the pre-fix prose:
+
+- **every bash block that reads a handoff value also sources the handoff**, with
+  the names read from `discover.py`'s emitter rather than typed, and Phase 0
+  exempted as the block that writes it;
+- **the `$SCRATCH` derivation appears in exactly one form**, since seven copies
+  is seven places to drift and 0.26.0 changed the formula once already;
+- **a value the prose promises to handle when unset is tested rather than
+  iterated.** Keyed on the document declaring a fallback rather than on a name,
+  which is what separates `$BOT_COMMITS`, that gates, from `$HUMAN_COMMITS`, that
+  is reported and where zero iterations is the truthful answer.
+
+The second mutation was run twice: the first attempt used a malformed `sed` that
+never landed, and the guard passed. A mutation that does not mutate reads exactly
+like a guard that discriminates — CONTRIBUTING's `__pycache__` warning, one lever
+along. 249 tests.
+
+Closes #61.
+
 ## [0.27.0] — 2026-08-21
 
 Phase 4 for actions had one source and no way to check it. An action cannot be
