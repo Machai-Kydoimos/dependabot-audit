@@ -612,5 +612,67 @@ class TestFailureIsNotAFinding(CiStateHarness):
         self.assertIn("not readable", err)
 
 
+class TestNoCallIsMadeForAnAnswerNothingReads(CiStateHarness):
+    """Four of five API calls on a green PR were fetched and never read.
+
+    Measured with an instrumented `gh` on `PATH` against an all-green rollup:
+    five calls out of the script, one of them consulted. The other four were
+    `conclusions_at()` at the parent and at the base — `check-runs` (paginated)
+    plus `status`, twice — issued before `analyse()` had computed
+    `report["red"]`.
+
+    Every consumer of those two dicts is gated on red: `attribute()` runs only
+    in `for ctx in report["red"]`, and `parent_names` renders only under
+    `if report["red"] and report["parent_names"]`. With nothing red, nothing
+    reads either.
+
+    `base` is redundant a second way, independent of the first: `attribute()`
+    reads it only in the `if not parent` branch, so a red PR whose parent has
+    runs never consults it either.
+
+    The script already applied this guard one rung lower — "Only worth two calls
+    when there is a red row for them to qualify", on `committed_at`, which is one
+    unpaginated call each. The more expensive pair was never covered.
+
+    Phase 7 requires CI rows to be re-derived on every report, *because* they are
+    cheap. That is the argument this count has to keep true.
+    """
+
+    GREEN: ClassVar = [check_run("test", "SUCCESS", required=True)]
+    RED: ClassVar = [check_run("test", "FAILURE", required=True)]
+
+    def _calls_for(self, nodes, **kw):
+        fake, calls = self._fake_gh([page(nodes)], **kw)
+        self._run(fake, ["--parent", PARENT, "--base-sha", BASE])
+        return calls
+
+    def test_a_green_pr_asks_github_once(self):
+        calls = self._calls_for(self.GREEN)
+        extra = [c for c in calls if "graphql" not in c]
+        self.assertEqual(
+            extra,
+            [],
+            f"nothing is red, so no attribution row exists to qualify; these "
+            f"{len(extra)} call(s) are fetched and never read: {extra}",
+        )
+
+    def test_a_red_pr_with_a_live_parent_never_reaches_for_the_base(self):
+        calls = self._calls_for(self.RED, runs={PARENT: [("test", "SUCCESS")]})
+        self.assertFalse(
+            [c for c in calls if BASE in c],
+            "the parent answered, and attribute() reads the base only when the "
+            "parent has no runs at all — the fallback was fetched unconditionally",
+        )
+
+    def test_a_red_pr_with_no_runs_at_the_parent_still_falls_back(self):
+        """The saving must not cost the fallback the comparison depends on."""
+        calls = self._calls_for(self.RED, runs={BASE: [("test", "FAILURE")]})
+        self.assertTrue(
+            [c for c in calls if BASE in c],
+            "with no runs at pr-<N>^ the merge base is the only comparison point "
+            "left; skipping it would mark a real pre-existing failure underivable",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

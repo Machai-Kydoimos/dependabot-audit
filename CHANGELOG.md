@@ -11,6 +11,85 @@ patch.
 
 ## [Unreleased]
 
+## [0.28.1] — 2026-08-21
+
+`ci_state.py` made five API calls on a green PR and read one of them. Patch:
+nothing Phase 6 verifies or reports changes, and every call removed was one whose
+answer nothing consulted.
+
+Measured with a logging passthrough around `gh`, on `fpga-board-sim` #363:
+
+```
+CALL: api graphql <rollup>                                  <- the answer
+CALL: api repos/…/commits/bddcc474b7/check-runs --paginate  <- never read
+CALL: api repos/…/commits/bddcc474b7/status                 <- never read
+CALL: api repos/…/commits/bddcc474b7/check-runs --paginate  <- never read
+CALL: api repos/…/commits/bddcc474b7/status                 <- never read
+```
+
+Note the SHA. `pr-<N>^` and `$BASE_SHA` are the same commit on a genuine
+one-commit bot PR — `SKILL.md` says so, and calls it the ordinary case — so the
+ordinary case fetched the *same two endpoints twice*, and consulted neither.
+
+Every consumer is gated on red: `attribute()` runs once per red context, and
+`parent_names` renders only under `if report["red"] and …`. With nothing red
+there is no row for an answer to qualify. The script already applied exactly this
+reasoning one rung lower — *"Only worth two calls when there is a red row for
+them to qualify"*, on `committed_at` — and had never applied it to the pair above
+it, which is twice the calls and paginates.
+
+### Fixed
+
+- **`analyse()` runs before the comparison reads, and both are gated on
+  `report["red"]`.** It reads only what `rollup()` already returned, so hoisting
+  it costs nothing.
+
+- **The merge base is fetched only when the parent has no runs.** `attribute()`
+  reaches for it in one branch — `if not parent` — because it answers a
+  *different*, weaker question: red before this **branch** rather than before
+  this **commit**. Fetching it while the parent can answer buys nothing, and that
+  holds on red PRs too.
+
+- **The interval reads follow the dict they qualify.** `committed_at` is called
+  for the parent only when the parent answered, and for the base only when the
+  base did.
+
+### The replay
+
+Both live, through the same `gh` tap, on the two PRs this phase's own prose cites:
+
+| Replayed | 0.27.0 | 0.28.1 | Verdict |
+|---|---|---|---|
+| `fpga-board-sim` #363 — green | 5 calls | **1** | unchanged: `CLEAN`, 0 required failing |
+| `BIRSAx2/mdcat` #6 — red | 7 calls | **4** | unchanged: `PRE-EXISTING — red at b1b0dd4c1 (pr-<N>^) too` |
+
+The second is the one that had to be checked: it is the case the attribution
+comparison exists for, and the saving must not reach it. It does not — the base
+is never touched, because the parent answered.
+
+### Tests
+
+Three guards on the *shape of the work* rather than on its output, which is the
+only kind that catches this class. Each mutation-checked:
+
+- a green PR issues one call;
+- a red PR whose parent has runs never reaches for the base;
+- **a red PR with no runs at the parent still falls back to it** — the
+  over-saving direction, and the one worth having, since skipping the base there
+  would mark a real pre-existing failure `underivable`.
+
+The third guard was written first as the control: a saving that also removes a
+fallback is not a saving, and only that case discriminates between the two.
+
+### Changed
+
+`--json` reports `parent_names: []` on a PR with nothing red, where it previously
+carried the comparison point's check names. Nothing reads it there — `render()`
+gates on `report["red"]` — and no phase consumes `--json` at all, but it is a
+visible difference and belongs in the record.
+
+Closes #62.
+
 ## [0.28.0] — 2026-08-21
 
 Phase 0's handoff was written once, sourced once, and read by seven blocks that
