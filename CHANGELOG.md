@@ -11,6 +11,84 @@ patch.
 
 ## [Unreleased]
 
+## [0.31.2] — 2026-08-21
+
+Phase 1's scope gate read its evidence through a pipe, so a failing `git` passed
+the gate. Patch: 0.28.0 already claimed the gate gates; this makes it true.
+
+Found by running the gate block **as extracted from `SKILL.md`** rather than
+retyped — the verification pass after #71 — against `fpga-board-sim` #363.
+
+A pipeline's exit status is its **last** stage, and `sort` succeeds on empty
+input. So:
+
+```
+$ out=$(for c in deadbeefdeadbeef; do git show --name-only --format= "$c" 2>/dev/null; done | sort -u)
+  pipeline exit=0  files=[]
+
+$ out=$(git diff --name-only "deadbeef..pr-363" 2>/dev/null | sort -u)
+  pipeline exit=0  files=[]
+```
+
+An empty file list is exactly what the gate reads as *nothing outside the
+manifest and lockfile*. Both branches had it — including the fallback added in
+0.28.0, so that release put a second door on the room it had just locked.
+
+It fires on nothing more exotic than an unfetched ref. Hit by accident on a
+scratch clone where `pr-363` had been deleted: `fatal: ambiguous argument`,
+followed by exit 0 and a clean gate.
+
+**The plugin already states the rule, two phases away.** `SKILL.md` § Phase 5 and
+`references/uv-lock.md` § Phase 5:
+
+> Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite
+> sails through; use `set -o pipefail` or separate calls.
+
+Phase 1's gate is the highest-stakes command in the procedure — it is what stops
+the audit before Phases 4 and 5 execute the PR's code — and it was the one place
+the rule was not followed.
+
+### Fixed
+
+- **Capture, check, then print.** Both halves of the split are captured into a
+  variable with an explicit `|| … exit 2`, and printed afterwards. Exit 2 is this
+  plugin's *could not run*, which is the honest answer: no evidence is not
+  evidence of nothing.
+- **`$HUMAN_COMMITS` too.** It is a report rather than a gate, so a failing `git`
+  there does not pass a bad bump — but it does report *no human commits on this
+  branch* when the truth is *could not tell*, which is the three-state error one
+  artifact along.
+
+Measured, the extracted block in four states:
+
+| State | Before | After |
+|---|---|---|
+| `BOT_COMMITS` set, ref present | exit 0, one file | unchanged |
+| `BOT_COMMITS` absent, ref present | exit 0, one file | unchanged |
+| fallback, **ref missing** | exit 0, **empty list** | **exit 2** |
+| `BOT_COMMITS` naming a commit that does not exist | exit 0, **empty list** | **exit 2** |
+
+### Tests
+
+Three guards, mutation-checked. Two of the three needed correcting first, both
+found by mutation rather than by reading:
+
+- **The block selector matched a mention, not a use.** `"BOT_COMMITS" in code`
+  picked Phase 0's key-list fence — `#   BOT_COMMITS=<shas>` — where there is no
+  `git` and no pipe, so the pipe guard passed against a *comment*. Requiring a
+  `$` is what separates the two, and the guard now also asserts it found exactly
+  one block.
+- **The failure-path guard was satisfied by a different line than the one it was
+  about.** Searching the block for `|| … exit 2` matched the handoff preamble
+  added in 0.28.0, while both of the gate's captures went unchecked. It now
+  asserts per capture.
+- **The pipe regex counted `||` as a pipe**, so it fired on the fix. A single
+  `|`, never the logical-or.
+
+263 tests.
+
+Closes #72.
+
 ## [0.31.1] — 2026-08-21
 
 0.28.0's guard exempted **all** of Phase 0 from the reload rule, when only the

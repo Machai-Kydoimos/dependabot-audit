@@ -505,12 +505,20 @@ if [ -z "${BOT_COMMITS+set}" ]; then
   # it here is what stops the substitution being something to remember.
   [ "$BRANCH_POINT" = rewritten ] && RANGE="pr-<N>^..pr-<N>" || RANGE="$BASE_SHA..pr-<N>"
   echo "BOT_COMMITS underivable — gating on the whole $RANGE diff" >&2
-  git diff --name-only $RANGE | sort -u
+  SCOPE=$(git diff --name-only $RANGE) || { echo "cannot diff $RANGE" >&2; exit 2; }
 else
-  for c in $BOT_COMMITS; do git show --name-only --format= "$c"; done | sort -u
+  SCOPE=$(for c in $BOT_COMMITS; do git show --name-only --format= "$c" || exit 1; done) \
+    || { echo "cannot read a commit in \$BOT_COMMITS" >&2; exit 2; }
 fi
+# Captured and checked, never piped: a pipeline reports its LAST stage, and
+# `sort` succeeds on empty input — so a failing git hands the gate an empty file
+# list at exit 0, which reads as a clean scope. Exit 2 is the honest answer; no
+# evidence is not evidence of nothing.
+printf '%s\n' "$SCOPE" | sort -u
 # a maintainer's commit on the bot's branch: read it, report it, do not Hold on it
-for c in $HUMAN_COMMITS;   do git show --name-only --format= "$c"; done | sort -u
+HUMANS=$(for c in $HUMAN_COMMITS; do git show --name-only --format= "$c" || exit 1; done) \
+  || { echo "cannot read a commit in \$HUMAN_COMMITS" >&2; exit 2; }
+printf '%s\n' "$HUMANS" | sort -u
 ```
 
 A merge commit is in the second list and normally prints nothing — its content
