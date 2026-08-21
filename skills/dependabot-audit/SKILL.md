@@ -124,6 +124,7 @@ defines:
 #   BASE_SHA=<40 hex>      the merge base, from GitHub's compare endpoint
 #   OWNER=<owner>          for Phase 6's GraphQL variables
 #   NAME=<name>
+#   CREATED_AT=<iso8601>   when the PR was opened — Phase 2's cooldown test
 #   BRANCH_POINT=<ok|rewritten|suspect|underivable>
 #   MAY_EXECUTE=<yes|no>   whether Phases 4 and 5 are authorised
 #   BOT_COMMITS=<shas>     the bot's own commits above the base — Phase 1's gate
@@ -146,6 +147,10 @@ next section.
 Then the part that changes state, which is yours:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
@@ -170,6 +175,10 @@ these were not — they ran in the user's checkout, so the answers came from
 whatever branch happened to be there:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git show "pr-<N>:.github/dependabot.yml" 2>/dev/null || git show "pr-<N>:renovate.json"
 git show "pr-<N>:.github/workflows/<ci>.yml"       # the gates Phase 5 reproduces
 git show "pr-<N>:.pre-commit-config.yaml"
@@ -197,6 +206,10 @@ stale worktree silently audits the wrong commit and every result downstream is
 wrong. Compare against the pinned SHA rather than eyeballing a log line:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 test "$(git -C "$SCRATCH/pr-<N>" rev-parse HEAD)" = "$HEAD_SHA"
 git -C "$SCRATCH/pr-<N>" status --porcelain                       # must be empty
 ```
@@ -208,7 +221,7 @@ If either check fails, `git worktree remove` it and re-add.
 | | |
 |---|---|
 | `$DEFAULT` | the repo's default branch, derived |
-| `$SCRATCH` | scratch directory, outside the repo — and **derived, so every later call resolves it to the same place**. Nothing else here survives a call boundary |
+| `$SCRATCH` | scratch directory, outside the repo — and **derived, so every later call resolves it to the same place**. Nothing else here survives a call boundary, so every consuming block re-derives this and re-sources `phase0.env` before reading any row below |
 | `$HEAD_SHA` | the full 40-character commit under audit |
 | `$BASE_SHA` | the merge base, from GitHub's own `compare` endpoint — never a local `git merge-base` against `$DEFAULT`, which collapses onto the head once the PR lands. **And whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
@@ -216,7 +229,9 @@ If either check fails, `git worktree remove` it and re-add.
 | `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below. Same exception |
 | the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
+| `$CREATED_AT` | when the PR was opened, ISO-8601. **Phase 2 compares release publish times against it** — the cooldown asks whether a release was three days old *then*, not now |
 | `$BRANCH_POINT` | `ok`, `rewritten`, `suspect` or `underivable` — **Phase 1 reads it**, and the table below says what each one means |
+| `$MAY_EXECUTE` | `yes` or `no` — **Phases 4 and 5 gate on it**, and the gate tests for `yes` so an unset value refuses. The classification below is what sets it |
 | `$BOT_COMMITS` | the bot's own commits above the base. **Phase 1's scope gate takes its diff from these**, because that is the invariant the gate is about |
 | `$HUMAN_COMMITS` | every non-bot commit on the branch, merges included. Its files are a **finding to report**, never a Hold |
 
@@ -231,6 +246,24 @@ Phase 0's own working state.
 The reason is that `$PERMS` is a set of flags rather than a value: `$PERMS.push`
 is how the gate below addresses it, and there is no shell form of that. Reducing
 it to the one bit later phases actually branch on is what `MAY_EXECUTE` is.
+
+**And they branch on it, rather than being trusted to remember this table.** The
+blocks in Phases 4 and 5 that run the audited repo's code open with
+
+    [ "${MAY_EXECUTE:-}" = yes ] || { echo "not authorised" >&2; exit 2; }
+
+quoted here as an illustration — the runnable copies live in
+`references/uv-lock.md` § Phase 4 and § Phase 5, which is where they are read
+from.
+
+Tested **for** `yes`, never against `no`, and the difference is the whole guard:
+a block whose handoff did not load sees the empty string, and `!= no` is true of
+it. The one direction this must never fail in is open.
+
+**Diagnostics — emitted, deliberately unread:** `BASE_REF`. It is Phase 0's own
+cross-check on the `compare` call and no later phase consumes it. Every *other*
+name the emitter writes is read by a block; that is the rule, and an exemption is
+a decision written down here rather than a name nobody happened to use.
 
 If a later phase needs something not on this list, it belongs here rather than
 there. A phase that consumes what a later phase creates cannot be run in order,
@@ -321,6 +354,35 @@ cwd reset back. `SCRATCH` is required to be outside the repo, so it can never be
 reached that way. Nothing ambient crosses the boundary — only a path each call
 can recompute from what it already has, which is the repo and `<N>`.
 
+**Recomputable is not recomputed, and that distinction shipped as a defect.**
+Deriving `$SCRATCH` made the handoff *findable* from a later call; it did not make
+any later call go and find it. So every block below that consumes a Phase 0 output
+opens with the same three lines, and they are not decoration:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+```
+
+Repeated rather than stated once, because a step that is merely implied is one
+that gets skipped — the same argument that put the gate list at a ref. The `||`
+is the load-bearing half: a `.` on a missing file returns 1 and keeps going, so
+without it the block runs on with every output empty, which is the state this
+whole phase exists to make impossible.
+
+**What that empties, measured**, running each consuming block in a fresh call with
+nothing sourced: Phase 1's lockfile read, Phase 4, Phase 6 and Phase 7's cleanup
+all fail loudly — a `Permission denied`, two exit 2s, an exit 128 — and Phase 1's
+**authorship gate passes silently**, because `for c in $BOT_COMMITS` over an unset
+variable iterates zero times and hands the gate an empty file list. That is why
+the block below tests the variable rather than trusting it: the fallback belongs
+in the shell, not only in the paragraph that describes it.
+
+`git` state is the exception and needs no reload. The `pr-<N>` ref Phase 0 fetches
+is in the repository, so `git show "pr-<N>:…"` works from any call. Only the shell
+handoff is lost.
+
 A harness-provided `SCRATCH` still wins, and now for a reason: if one is exported
 into every call's environment it is stable by definition. The derived default is
 what applies when it is not.
@@ -362,6 +424,10 @@ The substitutions, when `rewritten` fires:
   because the tree this PR would land on is the default branch's tip.
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git fetch origin "$DEFAULT"
 git worktree add --detach "$SCRATCH/tip-<N>" "origin/$DEFAULT"
 ```
@@ -426,10 +492,25 @@ Phase 0 derived both halves, so take the gate's diff from the bot's commits and
 report the human's separately:
 
 ```bash
-# what the bump itself changed — this is what the gate is about
-for c in $BOT_COMMITS;   do git show --name-only --format= "$c"; done | sort -u
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# what the bump itself changed — this is what the gate is about.
+# Unset is Phase 0's third state, and an unset list iterates zero times: the
+# fallback has to fire here, or the gate passes on an empty diff.
+if [ -z "${BOT_COMMITS+set}" ]; then
+  # No split to gate on, so the range matters — and a rewritten base makes the
+  # merge-base range the whole divergence. Phase 0 already decided which; reading
+  # it here is what stops the substitution being something to remember.
+  [ "$BRANCH_POINT" = rewritten ] && RANGE="pr-<N>^..pr-<N>" || RANGE="$BASE_SHA..pr-<N>"
+  echo "BOT_COMMITS underivable — gating on the whole $RANGE diff" >&2
+  git diff --name-only $RANGE | sort -u
+else
+  for c in $BOT_COMMITS; do git show --name-only --format= "$c"; done | sort -u
+fi
 # a maintainer's commit on the bot's branch: read it, report it, do not Hold on it
-for c in $HUMAN_COMMITS; do git show --name-only --format= "$c"; done | sort -u
+for c in $HUMAN_COMMITS;   do git show --name-only --format= "$c"; done | sort -u
 ```
 
 A merge commit is in the second list and normally prints nothing — its content
@@ -501,7 +582,7 @@ Phase 6's CI state established, and name plainly what was not checked.
 
 ## Phase 2 — Currency
 
-*Requires: the Phase 1 script output, and the PR's `createdAt` from Phase 0.*
+*Requires from Phase 0: `$CREATED_AT`. Plus the Phase 1 script output.*
 
 **A bot's proposal is not evidence of "current".** Ask the registry what the
 latest version actually is, and compare publish timestamps against the PR's
@@ -530,6 +611,24 @@ phase reads for next: a `Security` entry or a destructive-fix bug in the gap. Th
 cooldown exempts Dependabot's *security updates* — the advisory-driven kind — and
 not a version update whose changelog happens to carry a privately disclosed fix,
 which is exactly the case below.
+
+**The cooldown boundary is a subtraction, so do it rather than eyeball it.** The
+window is measured from when the **PR opened**, not from now, so the same gap
+moves in and out of it as the audit ages — which is the failure Phase 7's table
+calls out in itself:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+python3 -c 'import datetime,sys; t=datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")); print("cooldown boundary:", (t-datetime.timedelta(days=3)).isoformat())' "$CREATED_AT"
+```
+
+A gap release published **after** that boundary was inside the window when the
+bot decided; one published before it was not, and the bot is behind rather than
+waiting. `python3` rather than `date -d`, which is GNU-only — every script here
+already requires 3.11.
 
 **A bot's ignore state is not always in a config file.** `@dependabot ignore this
 major version` records the hold in the *PR*, not the repo, so a dependency can be
@@ -587,8 +686,8 @@ form returns zero.
 
 *Requires from Phase 0: the `$SCRATCH/base-<N>` worktree — or `$SCRATCH/tip-<N>`
 if Phase 0 found the base rewritten — and the repo's own gates.*
-*Executes code from the PR. Skipped under `--no-execute`; skip it if Phase 1
-found anything.*
+*Executes code from the PR. Requires `MAY_EXECUTE=yes`. Skipped under
+`--no-execute`; skip it if Phase 1 found anything.*
 
 **The question: does this change what runs here, or what this repo's gates
 accept?** Not "is it safe". For `uv.lock` you can measure it, and you must —
@@ -624,8 +723,8 @@ working; reaching it by not looking is the failure.
 ## Phase 5 — Independent reproduction
 
 *Requires from Phase 0: the `$SCRATCH/pr-<N>` worktree, `$HEAD_SHA`, `pr-<N>`.*
-*Executes code from the PR — the most of any phase. Skipped under
-`--no-execute`; skip it if Phase 1 found anything.*
+*Executes code from the PR — the most of any phase. Requires `MAY_EXECUTE=yes`.
+Skipped under `--no-execute`; skip it if Phase 1 found anything.*
 
 **The question: has this been shown to work, independently of the bot saying so?**
 For `uv.lock` you answer it by building and running the thing. For GitHub Actions
@@ -693,6 +792,10 @@ in this file were here — each of them a real endpoint asked the wrong question
 answering in a well-formed way. A hand-run query cannot be regression-tested.
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 C="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/ci_state.py"
 PARENT=$(git rev-parse "pr-<N>^")
 
@@ -888,6 +991,10 @@ commit that no longer exists while Phase 6 reports on the new one — and the ta
 silently asserts that they agree:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 test "$(gh pr view <N> --json headRefOid --jq .headRefOid)" = "$HEAD_SHA"
 ```
 
@@ -934,7 +1041,13 @@ Verdicts are one of:
 
 Every row above is a finding; the verdict is a function of them, and leaving that
 function implicit is how two audits with the same evidence reach different
-recommendations. Read the table top-down and take the **first** row that matches:
+recommendations. Read the table top-down and take the **first** row that matches.
+
+Some rows say **not a Hold on this bump** rather than naming a verdict. Those are
+*reporting* rows: they settle that a real finding does not carry the verdict, and
+the read continues past them. They exist because the alternative is the reader
+reaching the fall-through — *"nothing above matched"* — and a finding that lands
+there by exhaustion is indistinguishable in the report from no finding at all.
 
 | Evidence | Verdict |
 |---|---|
@@ -948,6 +1061,11 @@ recommendations. Read the table top-down and take the **first** row that matches
 | Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
 | A red **required** check labelled **attributable** | **Hold** — the PR cannot merge either way. But read the failing step's log at **both commits** before the report says the bump *caused* it: green-then-red is consistent with the bump, not proof, and the wider the interval the weaker the claim |
 | A red required check labelled **pre-existing** | **Not a Hold on this bump.** Report it as its own finding, take the verdict from the remaining evidence, and say the PR is unmergeable until someone fixes it |
+| A red required check labelled **underivable** | **Not a Hold on this bump** — nothing established the cause, and a Hold that rests on an unattributed red row is correct only by accident. Report the red check *and* that the comparison could not be made; the PR is unmergeable until it is fixed. If this row would decide the verdict, confidence is **low** |
+| Actions: the pin is a tag or branch, **not a 40-hex SHA** | **Not a Hold on this bump** — the pin was mutable before this PR and the bump did not make it so. Report that what was audited is what runs *today*, so this repo's pins are not evidence, and take the verdict from the rest |
+| `BRANCH_POINT=rewritten` — the base branch was rewritten under this PR | **Not a Hold on this bump.** A fact about the branch, not the dependency. Report it with both substitutions Phase 0 named, and say that the scope diff and Phase 4's tree came from the substituted sources |
+| `BRANCH_POINT=suspect` — non-bot commits above the base, no force-push event | **Not a Hold.** Corroboration without the authority: read the commits, report what they changed, and say the base was *not* substituted on it alone |
+| `BRANCH_POINT=underivable` — the event list could not be read | **Not a Hold**, and not `ok` either. Report that the merge base was never proved to be the branch point, which caps confidence at **medium** — or **low** where the scope diff is what the verdict turns on |
 | Phase 4: base differs, PR agrees — real and already absorbed | **Merge as-is**, naming what the PR absorbed and how |
 | `mergeStateStatus: BLOCKED` with every check green | **Merge as-is** on the bump's merits; name what blocks it, usually `reviewDecision` |
 | Actions: the workflow file is generated (`DO NOT EDIT`) | **Merge as-is, then follow up** on the generator — this bump is transient without it |
@@ -1033,6 +1151,10 @@ stop, and the one that used to litter every time. Phase 7 is the only phase ever
 audit reaches, including the one that ends at the gate.
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git worktree remove "$SCRATCH/pr-<N>"
 git worktree remove "$SCRATCH/base-<N>"
 git branch -D "pr-<N>"

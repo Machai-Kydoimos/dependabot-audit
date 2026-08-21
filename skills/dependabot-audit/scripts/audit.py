@@ -895,12 +895,16 @@ def render(report: dict[str, Any]) -> None:
         )
 
     for cur in report["currency"]:
+        # How old the pin is, alongside how old the gap is. Phase 2 compares
+        # release times against the PR's `$CREATED_AT`, and a report that names
+        # only when the *newer* release landed gives the reader one end of that.
+        since = f" (published {cur['locked_published']})" if cur["locked_published"] else ""
         if cur["current"]:
-            print(f"=== {cur['name']}: locked {cur['locked']} IS the latest\n")
+            print(f"=== {cur['name']}: locked {cur['locked']}{since} IS the latest\n")
             continue
         if cur["held_back"]:
             print(
-                f"=== {cur['name']}: locked {cur['locked']}, registry latest "
+                f"=== {cur['name']}: locked {cur['locked']}{since}, registry latest "
                 f"{cur['latest']} — HELD BACK by resolution-markers"
             )
             print(
@@ -910,7 +914,7 @@ def render(report: dict[str, Any]) -> None:
             print("      trail the registry, so not a staleness finding\n")
             continue
         print(
-            f"=== {cur['name']}: locked {cur['locked']}, "
+            f"=== {cur['name']}: locked {cur['locked']}{since}, "
             f"registry latest {cur['latest']}  <-- NOT CURRENT"
         )
         if cur["constrained"]:
@@ -924,7 +928,7 @@ def render(report: dict[str, Any]) -> None:
         for rel in cur["gap"]:
             mark = " (yanked)" if rel["yanked"] else ""
             print(f"      {rel['version']:12s} published {rel['published']}{mark}")
-        print("      earliest first; compare it against the PR's createdAt\n")
+        print("      earliest first; compare these against $CREATED_AT, the PR's own\n")
 
     # A forked package is checked in full and installed in part, and nothing in
     # the output said so. Phase 1 verifies every fork's artifacts against the

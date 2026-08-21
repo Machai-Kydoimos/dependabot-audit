@@ -874,6 +874,27 @@ class TestMainContract(_MainHarness):
         self.assertEqual(code, 2)
         self.assertNotIn("CLEAN", out)
 
+    def test_the_locked_versions_publish_date_reaches_the_report(self):
+        """Phase 2 compares two timestamps and the output carried only one.
+
+        The gap rows name when each newer release landed. How old the *pin* is
+        was computed — `locked_published` — and rendered nowhere, so the report
+        could say "the newer release landed on X" and never "and you have been
+        on a release from Y". Both halves are the comparison Phase 2 asks for.
+        """
+        _, out, _ = self._run(
+            [write_lock(self, self.LOCK), "--changed", "rumdl"],
+            meta=pypi_meta(
+                "0.2.53",
+                [pypi_file("rumdl-0.2.53-py3-none-any.whl", uploaded="2026-01-04T00:00:00Z")],
+            ),
+        )
+        self.assertIn(
+            "2026-01-04",
+            out,
+            f"the locked version's own publish date is computed and never printed:\n{out}",
+        )
+
     def test_verdict_line_carries_the_counts(self):
         code, out, _ = self._run(
             [write_lock(self, self.LOCK), "--changed", "rumdl"], meta=self._meta()

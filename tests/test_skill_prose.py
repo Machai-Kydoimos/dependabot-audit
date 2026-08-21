@@ -1809,7 +1809,13 @@ class TestPhase0PromisesOnlyWhatItProduces(SkillHarness):
     Phase 0 actually produces — from the script's emitter or from its own shell.
     """
 
-    REQUIRES = re.compile(r"Requires from Phase 0:(.*)", re.IGNORECASE)
+    # `Requires:` as well as `Requires from Phase 0:`. Phase 2 used the shorter
+    # form and named its input in prose — `the PR's ``createdAt`` from Phase 0` —
+    # so it slipped this guard on punctuation, twice over: the phrase did not
+    # match, and the name was neither `$`-prefixed nor upper-case.
+    REQUIRES = re.compile(r"\*Requires(?: from Phase 0)?:(.*)", re.IGNORECASE)
+    # A bare backticked identifier in a requires-line: the shape `createdAt` had.
+    BARE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
 
     def _produced(self) -> set[str]:
         """What a later phase can actually receive: the emitter, plus Phase 0's shell.
@@ -1818,7 +1824,18 @@ class TestPhase0PromisesOnlyWhatItProduces(SkillHarness):
         directly and never passes through `discover.py`, so a guard reading only
         the emitter would call the most-used output of all a broken promise.
         """
-        return _emitted_by_discover() | set(ASSIGNED.findall(self.shell[0]))
+        # Comment lines stripped, and that is load-bearing rather than tidy.
+        # Phase 0 documents the whole handoff in a bash fence of `#   NAME=<...>`
+        # lines, so an un-stripped scan lets a requires-line be satisfied by the
+        # very key list it is meant to be checked against. Caught by mutation:
+        # deleting `CREATED_AT` from the emitter left every guard green, because
+        # the comment describing it was still there. Same failure `_code_only`
+        # exists for one file over — a rule must not be satisfiable by a comment
+        # claiming it.
+        executable = "\n".join(
+            line for line in self.shell[0].splitlines() if not line.lstrip().startswith("#")
+        )
+        return _emitted_by_discover() | set(ASSIGNED.findall(executable))
 
     def test_every_requires_line_names_something_phase_0_produces(self):
         produced = self._produced()
@@ -1838,6 +1855,26 @@ class TestPhase0PromisesOnlyWhatItProduces(SkillHarness):
                         f"sourcing the handoff and reading it gets the empty string",
                     )
         self.assertGreater(seen, 0, "no phase states what it requires from Phase 0")
+
+    def test_no_requires_line_names_an_input_in_prose_instead_of_as_a_variable(self):
+        """The convention is the shell name, because that is what has to exist.
+
+        Phase 2's line read *"the PR's `createdAt` from Phase 0"*. `discover.py`
+        renders `createdAt` in its human-readable report and the emitter never
+        wrote it, so the input crossed by being on screen. Naming the variable is
+        what puts a requires-line under the guard above at all.
+        """
+        for number, body in self.phases:
+            for line in body.splitlines():
+                found = self.REQUIRES.search(line)
+                if not found:
+                    continue
+                for name in self.BARE.findall(found.group(1)):
+                    self.fail(
+                        f"Phase {number} requires `{name}`, named as prose rather than "
+                        f"as the variable the handoff carries. A name without a `$` is "
+                        f"one no guard can check and no block can source"
+                    )
 
     def test_the_outputs_table_lists_only_real_outputs(self):
         """The table says later phases consume these *and nothing else*."""
@@ -1943,6 +1980,392 @@ class TestPhase4ReadsTheActionsInterfaceNotOnlyItsNotes(SkillHarness):
             "the trigger row greps for event names, and tag push is not one: it is "
             "`push` plus a refs/tags ref, so the three-name grep returns nothing and "
             "reports inert on a repo that publishes tags",
+        )
+
+
+def _every_block() -> list[tuple[str, int, str]]:
+    """(file, phase, code) for every bash block in the skill and its references.
+
+    `SkillHarness.shell` concatenates a phase's blocks into one string, which is
+    right for the ordering guards and wrong here: the question below is asked of
+    each block *as a unit*, because a block is what a reader runs in one call.
+    Two blocks joined would let Phase 0's own reload satisfy a later phase's.
+    """
+    found: list[tuple[str, int, str]] = []
+    for path in (SKILL, PLUGIN / "references/uv-lock.md", PLUGIN / "references/actions.md"):
+        for number, body in phases(path.read_text(encoding="utf-8")):
+            found.extend((path.name, number, code) for code in bash_blocks(body))
+    return found
+
+
+class TestEveryConsumerReloadsTheHandoff(SkillHarness):
+    """Phase 0's handoff was written once, sourced once, and read by seven blocks.
+
+    `SKILL.md` states the measurement that makes this fatal, in its own Phase 0:
+
+        Measured against this harness, two separate calls: an `export` in the
+        first is **unset** in the second, shell functions likewise, and each call
+        is a new shell process.
+
+    Re-measured 2026-08-21 across two Bash calls in one session: `PROBE_VAR` set
+    and exported in the first reads `<UNSET>` in the second, a function defined
+    in the first is `not found`, and the pids differ.
+
+    0.26.0 fixed `$SCRATCH`'s *derivation* so the next call could name the
+    directory. The consequence — that the next call must then actually re-derive
+    it and re-source the file — never reached the phases that consume it, so
+    `. "$SCRATCH/phase0.env"` appeared exactly once in the plugin, inside the
+    phase that writes it.
+
+    Measured cost, running each consuming block in a fresh shell with nothing
+    sourced: Phases 1 (uv.lock), 4, 6 and 7 fail loudly — `Permission denied`,
+    two exit 2s, and exit 128 — while Phase 1's authorship gate **passes
+    silently**, because `for c in $BOT_COMMITS` over an unset variable iterates
+    zero times and the gate's file list is empty. `SKILL.md` names that outcome
+    "the one outcome worse than a false Hold".
+    """
+
+    def _handoff_names(self) -> set[str]:
+        """What the handoff carries: the emitter's names, plus `SCRATCH` itself.
+
+        `SCRATCH` never passes through `discover.py` — Phase 0's shell assigns it
+        — but it is lost across a call boundary exactly like the rest, and it is
+        the one every other value is reached *through*.
+        """
+        return _emitted_by_discover() | {"SCRATCH"}
+
+    def test_every_block_reading_a_handoff_value_reloads_it(self):
+        names = self._handoff_names()
+        for file, number, code in _every_block():
+            # Only the block that *writes* the handoff is exempt, not the whole
+            # phase. Phase 0's later blocks run in their own calls like any
+            # other, and the exemption being phase-wide left the sharpest case
+            # of all still open: `git show "$BASE_SHA:.github/workflows/ci.yml"`
+            # with $BASE_SHA empty exits **0** and serves 17,623 bytes from the
+            # index — the user's working tree — which is the exact failure
+            # Phase 0's "read every one of them at a ref" rule exists to prevent.
+            if "--shell >" in code:
+                continue
+            used = sorted(n for n in USED.findall(code) if n in names)
+            if not used:
+                continue
+            self.assertIn(
+                "phase0.env",
+                code,
+                f"{file} Phase {number} reads {used} in a block that never sources "
+                f"the handoff. Shell state does not cross a Bash call, so every one "
+                f"of those is the empty string when the block runs on its own",
+            )
+
+    def test_the_scratch_derivation_is_stated_identically_wherever_it_appears(self):
+        """Seven copies of a formula is seven places for it to drift.
+
+        The failure this guards is not hypothetical in shape: 0.26.0 changed the
+        derivation once already, and a copy left on the old `mktemp` form would
+        point a later phase at a directory the handoff is not in — which is the
+        same silent-empty outcome, reached through a different door.
+        """
+        # The assignment alone, not the line it sits on: Phase 0 appends
+        # `mkdir -p` to its copy and a later block has nothing to create.
+        forms = {
+            found for _, _, code in _every_block() for found in re.findall(r'SCRATCH="[^"]*"', code)
+        }
+        self.assertEqual(
+            len(forms),
+            1,
+            f"the $SCRATCH derivation appears in {len(forms)} different forms; every "
+            f"call has to resolve it to the same directory, so they must be one "
+            f"string: {sorted(forms)}",
+        )
+
+    def test_a_declared_unset_fallback_is_implemented_where_the_block_gates(self):
+        """The measured silent failure, stated as the document's own broken promise.
+
+        `for c in $BOT_COMMITS` over an unset variable iterates zero times and the
+        gate passes with an empty file list. `SKILL.md` already knows this and
+        says what to do instead — *"Where `$BOT_COMMITS` is unset, gate on the
+        whole `$BASE_SHA..pr-<N>` diff"* — but the fallback lived only in prose,
+        so the runnable block did the silent thing.
+
+        Keyed on the prose declaring a fallback rather than on a name: that is
+        what separates `$BOT_COMMITS`, which gates, from `$HUMAN_COMMITS`, which
+        is reported and where iterating zero times is the truthful answer. Any
+        future output whose absence the prose promises to handle is covered.
+        """
+        loop = re.compile(r"for\s+\w+\s+in\s+\$\{?([A-Z_][A-Z0-9_]*)\}?")
+        names = self._handoff_names()
+        bodies = dict(self.phases)
+        seen = 0
+        for file, number, code in _every_block():
+            if file != SKILL.name:
+                continue
+            for name in loop.findall(code):
+                if name not in names:
+                    continue
+                # Does this phase promise to handle the value being unset?
+                if not re.search(rf"\${name}[^\n]*is unset", bodies.get(number, "")):
+                    continue
+                seen += 1
+                self.assertRegex(
+                    code,
+                    re.compile(rf"\$\{{{name}[+:-]|-z\s+\"?\${name}|-n\s+\"?\${name}"),
+                    f"{file} Phase {number} promises a fallback for an unset ${name} "
+                    f"and then iterates it anyway; unset it iterates zero times and "
+                    f"the gate passes silently, which is worse than a false Hold",
+                )
+        self.assertGreater(seen, 0, "no phase declares an unset-fallback for a value it gates on")
+
+
+class TestEveryEmittedOutputIsConsumedOrDeclaredInert(SkillHarness):
+    """0.26.1 closed this class in one direction only.
+
+    Its two guards run table-and-requires-line -> emitter: every name a phase
+    *promises* must be one Phase 0 produces. Nothing ran the other way, and the
+    drift was already bidirectional when it shipped — the changelog says so:
+
+        the table promised `$PERMS` and `$SCRATCH` while the emitter writes ten
+        names including `BASE_REF`, `BRANCH_POINT` and `MAY_EXECUTE`.
+
+    `BASE_REF` was settled there deliberately — "Phase 0's own cross-check that
+    no later phase consumes" — and that is a fine answer. `MAY_EXECUTE` was not
+    in the same position. Phase 0's prose calls it *"the one bit later phases
+    actually branch on"*, offered as the value that crosses in `$PERMS`'s place,
+    and no phase branched on it: every occurrence in the plugin was the emit, the
+    key-list comment, and two sentences explaining why it exists.
+
+    So the completeness rule now runs both ways, with the exemption written down
+    rather than inferred: an emitted name is consumed, or it is named as a
+    diagnostic. That is what separates the two cases, and it is a decision
+    someone has to make rather than an omission nobody notices.
+    """
+
+    DIAGNOSTIC = re.compile(r"Diagnostics? —[^\n]*", re.IGNORECASE)
+
+    def _declared_inert(self) -> set[str]:
+        line = self.DIAGNOSTIC.search(dict(self.phases)[0])
+        return set(re.findall(r"`\$?([A-Z_][A-Z0-9_]*)`", line.group(0))) if line else set()
+
+    def test_every_emitted_name_is_read_somewhere_or_declared_inert(self):
+        inert = self._declared_inert()
+        read = {n for _, _, code in _every_block() for n in USED.findall(code)}
+        for name in sorted(_emitted_by_discover()):
+            if name in inert:
+                continue
+            self.assertIn(
+                name,
+                read,
+                f"discover.py --shell emits {name} and no block reads it. Either a "
+                f"phase should branch on it or Phase 0 should name it a diagnostic, "
+                f"the way BASE_REF is — an emitted value nobody reads and nobody "
+                f"exempted is a promise that quietly went false",
+            )
+
+    def test_the_diagnostics_line_names_only_things_that_are_emitted(self):
+        """The exemption must not drift into covering a name that no longer exists."""
+        emitted = _emitted_by_discover()
+        for name in sorted(self._declared_inert()):
+            self.assertIn(
+                name,
+                emitted,
+                f"Phase 0 exempts {name} as a diagnostic, but the emitter does not "
+                f"write it; a stale exemption silently widens to whatever is added next",
+            )
+
+
+class TestTheExecutionGateIsReadWhereExecutionHappens(SkillHarness):
+    """Phase 0 decided whether the PR may run, and the phases that run it never asked.
+
+    `discover.py` derives the classification — a fork PR, a non-bot author, or an
+    account without `push` — and reduces it to `MAY_EXECUTE`. The gate then lived
+    only in Phase 0's own prose table, which tells the reader to *run
+    `--no-execute`*, six phases before the phases that execute.
+
+    Measured on this plugin's handoff: `MAY_EXECUTE=yes` crosses on every audit
+    and nothing has ever read it.
+    """
+
+    def _executing(self) -> list[int]:
+        return [n for n, body in self.phases if n > 0 and "Executes code from the PR" in body]
+
+    def test_the_phases_that_execute_say_so_and_gate_on_it(self):
+        found = self._executing()
+        self.assertTrue(found, "no phase declares that it executes the PR's code")
+        for number in found:
+            self.assertIn(
+                "MAY_EXECUTE",
+                self.reachable(number),
+                f"Phase {number} declares that it executes code from the PR and never "
+                f"reads the bit Phase 0 derived to authorise it",
+            )
+
+    def test_the_gate_fails_closed_on_an_empty_value(self):
+        """An unset handoff yields the empty string, not `no`.
+
+        From the measurement rather than the fix: a block whose handoff never
+        loaded sees `MAY_EXECUTE` unset, and `!= no` is true of the empty string.
+        The test has to be *for* the authorising value, so anything that is not
+        `yes` — including nothing at all — refuses.
+        """
+        seen = 0
+        for file, number, code in _every_block():
+            # Uses it, rather than merely naming it: Phase 0's key-list block
+            # documents `MAY_EXECUTE=<yes|no>` and tests nothing.
+            if not re.search(r"\$\{?MAY_EXECUTE", code):
+                continue
+            seen += 1
+            self.assertRegex(
+                code,
+                re.compile(r"MAY_EXECUTE[^\n]*=\s*[\"']?yes"),
+                f"{file} Phase {number} tests MAY_EXECUTE without testing for `yes`; "
+                f"an unset handoff is the empty string, and a negative test passes it",
+            )
+        self.assertGreater(seen, 0, "no block gates on MAY_EXECUTE")
+
+
+def _label_values(script: str, function: str, key: str) -> set[str]:
+    """Every value one function can put in `key` — its label vocabulary.
+
+    Read from the script's source rather than typed, for the reason the
+    required-context guard is: a typed list is a second copy, and it drifts
+    silently because the guard keeps passing against its own stale copy.
+
+    Narrow on purpose. A first version collected every lower-case string
+    constant in the function and came back with `compared`, `basis`, `login`
+    and `sha` — dict keys and API field names — which would have demanded rows
+    in Phase 7 for things that are not labels at all. Only two shapes carry a
+    label: a `"key": value` entry, and an assignment to a variable of that name.
+    Module-level constants (`UNDERIVABLE = "underivable"`) are resolved.
+    """
+    src = (PLUGIN / "scripts" / script).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    consts = {
+        t.id: n.value.value
+        for n in tree.body
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+        for t in n.targets
+        if isinstance(t, ast.Name) and isinstance(n.value.value, str)
+    }
+
+    def literal(node: ast.AST) -> set[str]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, ast.Name) and node.id in consts:
+            return {consts[node.id]}
+        if isinstance(node, ast.IfExp):
+            return literal(node.body) | literal(node.orelse)
+        return set()
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == function):
+            continue
+        found: set[str] = set()
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Dict):
+                for k, v in zip(inner.keys, inner.values, strict=True):
+                    if isinstance(k, ast.Constant) and k.value == key:
+                        found |= literal(v)
+            elif isinstance(inner, ast.Assign):
+                names = [t.id for t in inner.targets if isinstance(t, ast.Name)]
+                if key in names:
+                    found |= literal(inner.value)
+                for tgt in inner.targets:
+                    if isinstance(tgt, ast.Tuple) and isinstance(inner.value, ast.Tuple):
+                        for t, v in zip(tgt.elts, inner.value.elts, strict=False):
+                            if isinstance(t, ast.Name) and t.id == key:
+                                found |= literal(v)
+        if not found:
+            raise AssertionError(f"{script}:{function} sets no `{key}` this guard can read")
+        return found
+    raise AssertionError(f"{script} has no function {function}")
+
+
+class TestEveryDerivedLabelLandsInTheVerdictTable(SkillHarness):
+    """Phase 7's table is the reason two audits on the same evidence agree.
+
+        Every row above is a finding; the verdict is a function of them, and
+        leaving that function implicit is how two audits with the same evidence
+        reach different recommendations.
+
+    A label the mechanised phases can print and the table does not name falls
+    through to the last row — *"Everything derived, nothing above matched →
+    Merge as-is"* — and arrives there by exhaustion, which reads in the report
+    exactly like arriving there because nothing was wrong.
+
+    Three were in that state. `attributable` and `pre-existing` had rows;
+    **`underivable` did not**, so a red *required* check whose cause could not be
+    established fell through to `Merge as-is` on a PR that cannot merge. And
+    `discover.py` reports `rewritten` and `suspect` as findings, with no row for
+    either.
+
+    The table already handles the fourth case of this shape explicitly —
+    `$HUMAN_COMMITS` is "a **finding to report**, never a Hold" — which is the
+    pattern: where a finding must not carry the verdict, the procedure says so
+    rather than trusting the reader to reach the fall-through and read it right.
+    """
+
+    def _phase7(self) -> str:
+        return dict(self.phases)[7].lower()
+
+    def _verdict_rows(self) -> list[str]:
+        """Rows of the table headed `| Evidence | Verdict |`, lower-cased.
+
+        The whole phase is the wrong haystack, and mutation said so: deleting the
+        `underivable` attribution row left the guard green, because the word also
+        appears in the confidence table and in the `BRANCH_POINT` row two lines
+        down. A label has to be found in a row that is *about* it.
+        """
+        for rows in tables(dict(self.phases)[7]):
+            if rows and "verdict" in rows[0].lower() and "evidence" in rows[0].lower():
+                return [r.lower() for r in rows[2:]]
+        raise AssertionError("Phase 7 has no `| Evidence | Verdict |` table")
+
+    def _assert_row(self, label: str, about: str, why: str) -> None:
+        """A row naming both the label and what it is a label *of*."""
+        self.assertTrue(
+            any(label.lower() in r and about.lower() in r for r in self._verdict_rows()), why
+        )
+
+    def test_every_attribution_label_has_a_verdict_row(self):
+        labels = _label_values("ci_state.py", "attribute", "label")
+        self.assertIn("underivable", labels, "the three-state label set moved")
+        for label in sorted(labels):
+            self._assert_row(
+                label,
+                "check",
+                f"ci_state.py can label a red context `{label}` and no verdict row "
+                f"names that label against a check, so a red required check carrying "
+                f"it falls through to Merge as-is",
+            )
+
+    def test_every_branch_point_finding_has_a_verdict_row(self):
+        """`ok` is the no-finding case; the rest are what `analyse()` reports."""
+        verdicts = _label_values("discover.py", "branch_point", "verdict") - {"ok"}
+        self.assertEqual(
+            verdicts,
+            {"rewritten", "suspect", "underivable"},
+            "branch_point's verdict vocabulary moved; the table has to move with it",
+        )
+        for verdict in sorted(verdicts):
+            self._assert_row(
+                verdict,
+                "branch_point",
+                f"discover.py reports `{verdict}` as a finding and no verdict row "
+                f"names it against BRANCH_POINT; the reader reaches the fall-through",
+            )
+
+    def test_a_pin_that_is_not_a_sha_has_a_verdict_row(self):
+        """The instance, and it is the one that costs most to leave out.
+
+        `references/actions.md`: a tag or branch pin is "a **promise someone else
+        can revoke**", and "a repo whose pins are not evidence". Without a row,
+        *we verified the pin* and *this repo's pins are not evidence* produce the
+        same verdict and the report has nothing that separates them.
+        """
+        self.assertRegex(
+            self._phase7(),
+            re.compile(r"not a 40-hex sha|not sha-pinned|tag or branch"),
+            "actions.md makes a mutable pin a finding and the verdict table has no "
+            "row for it, so it lands on Merge as-is by exhaustion",
         )
 
 

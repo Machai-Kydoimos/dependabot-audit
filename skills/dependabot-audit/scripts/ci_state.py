@@ -498,20 +498,35 @@ def main() -> int:
 
     report = rollup(args.owner, args.name, args.number)
     report["expected_head"] = args.head_sha
-
-    parent = conclusions_at(args.owner, args.name, args.parent) if args.parent else {}
-    base = conclusions_at(args.owner, args.name, args.base_sha) if args.base_sha else {}
-    report["parent_names"] = sorted(parent) or sorted(base)
-
+    # Before the reads below, because every one of them is gated on what it
+    # decides. The rollup already carries everything `analyse` needs.
     analyse(report)
-    # Only worth two calls when there is a red row for them to qualify.
-    spans = {}
+
+    # Attribution is the only consumer of any of this, and it runs once per red
+    # context — so with nothing red there is no row for an answer to qualify and
+    # no call worth making. Measured before this guard existed: five calls on an
+    # all-green PR, one of them read. The same reasoning already applied to
+    # `committed_at` below; it had never been applied to the pair above it, which
+    # is four calls rather than two and paginates.
+    parent: dict[str, str] = {}
+    base: dict[str, str] = {}
+    spans: dict[str, str] = {}
+    report["parent_names"] = []
     if report["red"]:
+        if args.parent:
+            parent = conclusions_at(args.owner, args.name, args.parent)
+        # The merge base answers a *different*, weaker question — red before this
+        # branch rather than before this commit — and `attribute` reaches for it
+        # only when the parent has no runs at all. Fetching it while the parent
+        # can answer buys nothing.
+        if not parent and args.base_sha:
+            base = conclusions_at(args.owner, args.name, args.base_sha)
+        report["parent_names"] = sorted(parent) or sorted(base)
         head_at = report["head_committed"]
-        spans = {
-            "parent": interval(head_at, committed_at(args.owner, args.name, args.parent)),
-            "base": interval(head_at, committed_at(args.owner, args.name, args.base_sha)),
-        }
+        if parent:
+            spans["parent"] = interval(head_at, committed_at(args.owner, args.name, args.parent))
+        if base:
+            spans["base"] = interval(head_at, committed_at(args.owner, args.name, args.base_sha))
     for ctx in report["red"]:
         ctx["attribution"] = attribute(ctx, parent, base, args.parent, args.base_sha, spans)
 

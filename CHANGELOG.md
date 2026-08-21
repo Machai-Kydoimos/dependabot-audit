@@ -11,6 +11,298 @@ patch.
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-08-21
+
+One sprint, one release: a producer/consumer sweep of the plugin — for every
+value a phase produces, who consumes it; for every value a phase consumes, who
+reliably produces it. Six defects, each with its own commit below. Minor: several
+of them change what a phase verifies or what the report asserts.
+
+### Phase 0's handoff was sourced once, in Phase 0
+
+`discover.py --shell` writes `$SCRATCH/phase0.env` and Phase 0 sources it. That
+was the only `. "$SCRATCH/phase0.env"` in the plugin, and eleven blocks across
+`SKILL.md` and both references read what it carries.
+
+`SKILL.md` has stated the mechanism since 0.26.0, in its own Phase 0:
+
+> Measured against this harness, two separate calls: an `export` in the first is
+> **unset** in the second, shell functions likewise, and each call is a new shell
+> process.
+
+Re-measured across two Bash calls in one session: a variable exported in the
+first reads `<UNSET>` in the second, a function defined in the first is `not
+found`, the pids differ. 0.26.0 fixed `$SCRATCH`'s **derivation** so the next
+call could name the directory. **Recomputable is not recomputed** — nothing told
+the next call to go and find it.
+
+Each consuming block, run alone with nothing sourced:
+
+| Block | Result |
+|---|---|
+| Phase 1, `uv.lock` | `/base.uv.lock: Permission denied` — loud |
+| Phase 4, `gate_diff.py` | `error: /base-1 is not a git worktree`, exit 2 — loud |
+| Phase 6, `ci_state.py` | `Could not resolve to a Repository with the name '/'`, exit 2 — loud |
+| Phase 7, cleanup | `fatal: '/pr-1' is not a working tree`, exit 128 — loud, worktrees left registered |
+| Phase 0, the gate read | **exit 0, 17,623 bytes from the INDEX** |
+| **Phase 1, the authorship gate** | **silent** |
+
+Two of those are silent, and both are the failure this procedure is most explicit
+about. `for c in $BOT_COMMITS` over an unset variable iterates zero times, so the
+gate's file list is empty and it passes — *"the one outcome worse than a false
+Hold"*, in `SKILL.md`'s own words. And `git show ":path"` with an empty rev is
+the **index**, so Phase 0's gate list came from the user's working tree — the
+exact failure its *"read every one of them at a ref"* rule exists to prevent,
+reached through an empty variable rather than a forgotten ref.
+
+**Fixed.** Every block that consumes a Phase 0 output opens with three lines that
+re-derive `$SCRATCH` and re-source the handoff, `Phase 0's own later blocks
+included` — the exemption is the block that *writes* the handoff, keyed on
+`--shell >`, not the phase it sits in. Repeated in all eleven rather than stated
+once, because a step merely implied is one that gets skipped. The `||` is the
+load-bearing half: a `.` on a missing file returns 1 and keeps going.
+
+Phase 1's underivable fallback moved out of the prose and into the shell too:
+Phase 0 already emits `# BOT_COMMITS is absent` commented out so the variable
+stays unset, and the prose already said to gate on the whole diff instead. The
+block did not implement it.
+
+`git` state is the exception and now says so. The `pr-<N>` ref lives in the
+repository, so `git show "pr-<N>:…"` works from any call; only the shell handoff
+is lost, and conflating the two is what made the reload look unnecessary.
+
+**Replayed** two deliberately separate calls against two PRs, for the two
+branches of the gate. `fpga-board-sim` #363 (bot PR, `BOT_COMMITS` set): call 2
+opened with `SCRATCH` and `BASE_SHA` unset, re-derived, re-sourced, gated
+correctly on `.github/workflows/ci.yml`. `dependabot-audit` #60 (human PR, split
+absent) is the discriminating one — same handoff, both blocks:
+
+```
+OLD:  (empty)  0 files. The gate passes.
+NEW:  BOT_COMMITS underivable — gating on the whole $BASE_SHA..pr-60 diff
+      CHANGELOG.md
+      .claude-plugin/plugin.json
+      skills/dependabot-audit/references/actions.md
+      tests/test_skill_prose.py
+```
+
+Four files, one inside the plugin's own `references/`, reported as a clean scope
+by the shipped gate.
+
+**Tests.** Three guards, each mutation-checked: every block reading a handoff
+value sources it; the `$SCRATCH` derivation exists in exactly one form; a value
+the prose promises to handle when unset is tested rather than iterated. The
+second mutation was run twice — the first attempt used a malformed `sed` that
+never landed, and the guard passed. A mutation that does not mutate reads exactly
+like a guard that discriminates.
+
+### `ci_state.py` made five API calls on a green PR and read one
+
+Measured with a logging passthrough around `gh`, on `fpga-board-sim` #363:
+
+```
+CALL: api graphql <rollup>                                  <- the answer
+CALL: api repos/…/commits/bddcc474b7/check-runs --paginate  <- never read
+CALL: api repos/…/commits/bddcc474b7/status                 <- never read
+CALL: api repos/…/commits/bddcc474b7/check-runs --paginate  <- never read
+CALL: api repos/…/commits/bddcc474b7/status                 <- never read
+```
+
+Note the SHA. `pr-<N>^` and `$BASE_SHA` are the same commit on a genuine
+one-commit bot PR — `SKILL.md` says so and calls it the ordinary case — so the
+ordinary case fetched **the same two endpoints twice** and consulted neither.
+
+Every consumer is gated on red: `attribute()` runs once per red context, and
+`parent_names` renders only under `if report["red"] and …`. `conclusions_at()`
+ran before `analyse()` had computed `report["red"]`, so it could not know. The
+script already applied this reasoning one rung lower — *"Only worth two calls
+when there is a red row for them to qualify"*, on `committed_at` — and had never
+applied it to the pair above it, which is twice the calls and paginates.
+
+**Fixed.** `analyse()` hoisted above the comparison reads, both gated on
+`report["red"]`, and the merge base fetched only when the parent has no runs —
+the single branch `attribute()` reads it in. `committed_at` follows the dict it
+qualifies.
+
+**Replayed** live through the same tap, on the two PRs this phase's prose cites:
+`fpga-board-sim` #363 (green) **5 → 1** calls, verdict unchanged; `BIRSAx2/mdcat`
+#6 (red) **7 → 4**, verdict unchanged at `PRE-EXISTING — red at b1b0dd4c1
+(pr-<N>^) too`. The second is the one that had to be checked: it is the case the
+attribution comparison exists for, and the saving must not reach it. It does not.
+
+**Tests.** Three guards on the *shape of the work* rather than its output, each
+mutation-checked. The third — *a red PR with no runs at the parent still falls
+back to the base* — was written first, as the control: a saving that also removes
+a fallback is not a saving.
+
+`--json` now reports `parent_names: []` on a PR with nothing red. Nothing reads
+it there and no phase consumes `--json`, but it is visible.
+
+### `MAY_EXECUTE` was emitted, documented as load-bearing, and read by nothing
+
+`discover.py` derives the classification — a fork PR, a non-bot author, an
+account without `push` — and reduces it to one bit. Phase 0's prose said why:
+
+> Reducing it to the one bit later phases actually branch on is what
+> `MAY_EXECUTE` is.
+
+No phase branched on it. Every occurrence in the plugin was the emit, the
+key-list comment, and two sentences explaining its purpose; the gate itself lived
+only in Phase 0's own table, six phases before the phases that execute, as advice
+to *run `--no-execute`*.
+
+**Fixed.** Both `uv-lock.md` blocks that run the audited repo's code — `gate_diff.py`,
+and the frozen `uv sync` pair — open with the test, and both phases' contract
+lines say so. The test is **for `yes`, never against `no`**, measured across the
+three states a block can see:
+
+| | `[ = yes ]` | `[ != no ]` |
+|---|---|---|
+| `MAY_EXECUTE=yes` | proceeds | proceeds |
+| `MAY_EXECUTE=no` | refuses, exit 2 | refuses, exit 2 |
+| **unset** | **refuses, exit 2** | **proceeds** |
+
+A block whose handoff did not load sees the empty string, and the negative form
+passes it. The one direction this must never fail in is open.
+
+**`BRANCH_POINT` was the same defect**, found by the guard written for
+`MAY_EXECUTE`: emitted, said to be read by Phase 1, and read by no block — the
+rewritten-base substitution was prose telling the reader to use a different
+range. It is now a conditional in Phase 1's fallback, the one path where it still
+decides anything: with `$BOT_COMMITS` derivable the bot's own commits are the
+bump wherever the base moved to.
+
+**`BASE_REF` is declared a diagnostic**, in the line the new guard reads. 0.26.1
+settled that it is deliberately unconsumed; the exemption is now written down
+instead of inferred from nobody having used it.
+
+**Replayed.** The gate, derived live against four PRs:
+
+| Repo | `push` | Author | `MAY_EXECUTE` |
+|---|---|---|---|
+| `fpga-board-sim` #363 | true | `dependabot[bot]` | **yes** |
+| `dependabot-audit` #60 | true | human | no |
+| `BIRSAx2/mdcat` #6 | false | — | no |
+| `cli/cli` #14147 | false | — | no |
+
+Row two is the one worth reading: full `admin` on a repo this account owns, and
+still `no`, because the classification is two questions and only one is about
+permissions.
+
+The `BRANCH_POINT` substitution needed a base that had actually been rewritten,
+and no reachable PR is in that state — CONTRIBUTING's fifth row. Built one: a
+root commit, a commit vendoring a `supply-chain` tree, a third commit, a PR
+branching from the third and adding `manifest.txt`, then the base rewritten so
+the shared ancestor falls back past the vendored tree.
+
+```
+BRANCH_POINT=ok         -> 7 file(s): manifest.txt src.py vendor-{a..e}.txt
+BRANCH_POINT=rewritten  -> 1 file(s): manifest.txt
+```
+
+Without the conditional the fallback gates on seven files and Holds a one-file
+manifest bump for reaching beyond the manifest — the shape `SKILL.md` records
+from a real Cargo bump at 14 files and 3,682 deletions. A first attempt at that
+construction force-pushed *forward* rather than rewriting, so both ranges
+returned one file and agreed; agreement there would have read as *the conditional
+is unnecessary*.
+
+**Tests.** Four guards, mutation-checked in five directions. The completeness
+rule now runs **both** ways: 0.26.1's guards ask that every promised name is
+produced, these ask that every produced name is consumed or named inert. The
+drift was already bidirectional when 0.26.1 shipped — its own changelog says so —
+and only one direction had a guard.
+
+### Phase 2 required an input the handoff never carried
+
+> *Requires: the Phase 1 script output, and the PR's `createdAt` from Phase 0.*
+
+`discover.py` renders `createdAt` and the emitter never wrote it, so the input
+crossed by being on screen. It is the class 0.26.1 closed for `$PERMS`, and it
+slipped that guard twice over on punctuation: the phrase is `Requires:` rather
+than `Requires from Phase 0:`, and the name is neither `$`-prefixed nor
+upper-case.
+
+**Fixed.** `CREATED_AT` is emitted, tabled, and read — Phase 2 computes the
+cooldown boundary from it rather than subtracting three days by eye, and the
+window is measured from when the **PR opened**, not from now, which is the drift
+Phase 7's table already calls out in itself. `python3` rather than `date -d`,
+which is GNU-only.
+
+**The pin's own publish date reaches the report.** `locked_published` was
+computed and rendered nowhere, so the currency block could say when the newer
+release landed and never when the current one did. On `fpga-board-sim`'s live
+lockfile:
+
+```
+=== pytest: locked 9.1.1 (published 2026-06-19T10:58:31Z) IS the latest
+=== ruff: locked 0.16.3 (published 2026-08-13T15:16:27Z), registry latest 0.16.4  <-- NOT CURRENT
+      0.16.4       published 2026-08-20T17:43:16Z
+```
+
+**And a hole in the guard itself**, which is the more useful half. Deleting the
+`CREATED_AT` emit left **every test green**. `_produced()` unions the emitter's
+names with `ASSIGNED.findall(self.shell[0])`, and Phase 0 documents the entire
+handoff in a bash fence of `#   NAME=<...>` comment lines — so a requires-line
+could be satisfied by the very key list it is meant to be checked against.
+Comments are now stripped before that scan. It is the same failure `_code_only`
+exists for one file over — *a rule must not be satisfiable by a comment claiming
+it* — and it had been sitting under 0.26.1's two guards since they were written.
+
+**Replayed.** `fpga-board-sim` #363, two deliberately separate calls:
+
+```
+call 1:  CREATED_AT=2026-08-17T13:07:54Z          # emitted
+call 2:  cooldown boundary: 2026-08-14T13:07:54+00:00   # sourced, computed
+```
+
+**Tests.** The requires-line guard is widened to `Requires:` and paired with a new
+one refusing a bare backticked name in such a line — the exact shape `createdAt`
+had, so the hole is closed as a class rather than at the instance.
+
+### Five findings had no row in Phase 7's verdict table
+
+The table exists for one reason, which it states: *"leaving that function
+implicit is how two audits with the same evidence reach different
+recommendations."* A finding that lands on the fall-through — *"Everything
+derived, nothing above matched → **Merge as-is**"* — is, in the report,
+indistinguishable from no finding at all.
+
+| Finding | Old verdict |
+|---|---|
+| a red required check labelled **underivable** | Merge as-is |
+| an actions pin that is **not a 40-hex SHA** | Merge as-is |
+| `BRANCH_POINT=rewritten` | Merge as-is |
+| `BRANCH_POINT=suspect` | Merge as-is |
+| `BRANCH_POINT=underivable` | Merge as-is |
+
+The first is the worst: `ci_state.py` has three labels and the table had two, so
+a red **required** check whose cause could not be established resolved to *Merge
+as-is* on a PR that cannot merge.
+
+**Fixed.** Five rows, in the *not a Hold on this bump* register the `pre-existing`
+row already uses. The top-down rule now admits that some rows do not end the read
+— *"take the first row that matches"* and a row saying *take the verdict from the
+remaining evidence* were already in tension, and the `pre-existing` row has worked
+that way since 0.20.0. `report-template.md` carries the reporting obligation,
+since the template is what gets copied.
+
+**Tests.** The label vocabularies are read from the **scripts' source** rather
+than typed — `attribute()`'s `label`, `branch_point()`'s `verdict` — so a fourth
+label in either script fails until the table names it. Two rounds of narrowing,
+both driven by mutation rather than by review:
+
+1. The first extractor took every lower-case string constant in the function and
+   returned `compared`, `basis`, `login`, `sha` — dict keys and API field names.
+   It would have demanded verdict rows for things that are not labels.
+2. The first *assertion* asked whether the label appeared anywhere in Phase 7.
+   Deleting the `underivable` attribution row left it **green**, because the word
+   also appears in the confidence table and in the `BRANCH_POINT` row two lines
+   below. A label now has to be found in a row that is **about** it.
+
+Seven mutations, each verified to have landed before its result was read. All
+seven caught.
+
 ## [0.27.0] — 2026-08-21
 
 Phase 4 for actions had one source and no way to check it. An action cannot be
