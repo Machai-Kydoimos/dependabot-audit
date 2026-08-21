@@ -2037,8 +2037,15 @@ class TestEveryConsumerReloadsTheHandoff(SkillHarness):
     def test_every_block_reading_a_handoff_value_reloads_it(self):
         names = self._handoff_names()
         for file, number, code in _every_block():
-            if number == 0 and file == SKILL.name:
-                continue  # Phase 0 writes it; it is the one block that need not reload
+            # Only the block that *writes* the handoff is exempt, not the whole
+            # phase. Phase 0's later blocks run in their own calls like any
+            # other, and the exemption being phase-wide left the sharpest case
+            # of all still open: `git show "$BASE_SHA:.github/workflows/ci.yml"`
+            # with $BASE_SHA empty exits **0** and serves 17,623 bytes from the
+            # index — the user's working tree — which is the exact failure
+            # Phase 0's "read every one of them at a ref" rule exists to prevent.
+            if "--shell >" in code:
+                continue
             used = sorted(n for n in USED.findall(code) if n in names)
             if not used:
                 continue

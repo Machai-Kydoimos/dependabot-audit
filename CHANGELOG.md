@@ -11,6 +11,63 @@ patch.
 
 ## [Unreleased]
 
+## [0.31.1] — 2026-08-21
+
+0.28.0's guard exempted **all** of Phase 0 from the reload rule, when only the
+block that *writes* the handoff earns the exemption. Patch: it makes 0.28.0's
+claim true rather than adding one.
+
+Found by re-running the producer/consumer ledger against the finished stack —
+the same sweep that opened #61 — which still reported five orphaned consumers,
+all of them Phase 0's own later blocks.
+
+Phase 0 has six blocks. The first writes and sources the handoff; the rest fetch
+the ref, add the worktrees, read the repo's gates at a ref, and prove a reused
+worktree still points at `$HEAD_SHA`. They run in their own calls like any other
+block, and the exemption covered them by accident of being in the same phase.
+
+Measured, each block run alone with nothing sourced:
+
+| Block | Result |
+|---|---|
+| `git worktree add "$SCRATCH/base-<N>" "$BASE_SHA"` | `fatal: invalid reference:`, exit 128 — loud |
+| `git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"` | **exit 0.** `pr-<N>` is created and the empty second refspec is ignored, so `$DEFAULT` is never fetched and the `tip-<N>` worktree has nothing to detach from |
+| `git show "$BASE_SHA:.github/workflows/<ci>.yml"` | **exit 0, 17,623 bytes** — from the **index** |
+
+The third is the one worth the patch. `:path` with an empty rev is the index, so
+the gate list came from the **user's working tree** — the exact failure Phase 0's
+*"Read every one of them at a ref"* rule exists to prevent, reached again through
+an empty variable rather than through a forgotten ref. With the preamble in place
+the same read resolves to `e414723c5` instead of `57861cb66`, and returns 17,614
+bytes rather than 17,623: it really was serving a different file.
+
+### Fixed
+
+- **Phase 0's four later blocks carry the preamble.** Same three lines as
+  everywhere else.
+- **The exemption is now the writing block, not the phase** — keyed on the block
+  containing `--shell >`, which is what makes it the writer.
+- **The `MAY_EXECUTE` illustration is no longer a `bash` fence.** It shows a line
+  that appears verbatim in two real blocks; demoting it to an indented example
+  says it is not a step, which is what the guard's subject actually is.
+
+### Measured, and worth recording
+
+The first pass at this measurement piped each command into `head` and read `$?`,
+which reported `exit=0` for the `worktree add` that had just printed
+`fatal: invalid reference:`. That is `SKILL.md`'s own Phase 5 warning —
+*"`cmd | tail && next` gates on `tail`, so a failing suite sails through"* —
+committed while measuring the plugin that documents it. The numbers above are
+from the unpiped re-run.
+
+### Tests
+
+The existing guard, tightened, and mutation-checked in both directions: reverting
+the exemption to phase-wide passes (which is why it had to be tightened), and
+dropping the preamble from any one Phase 0 block fails. 261 tests.
+
+Completes #61.
+
 ## [0.31.0] — 2026-08-21
 
 Five findings the procedure instructs you to report had no row in Phase 7's

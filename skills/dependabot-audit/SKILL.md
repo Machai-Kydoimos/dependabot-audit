@@ -147,6 +147,10 @@ next section.
 Then the part that changes state, which is yours:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
@@ -171,6 +175,10 @@ these were not — they ran in the user's checkout, so the answers came from
 whatever branch happened to be there:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git show "pr-<N>:.github/dependabot.yml" 2>/dev/null || git show "pr-<N>:renovate.json"
 git show "pr-<N>:.github/workflows/<ci>.yml"       # the gates Phase 5 reproduces
 git show "pr-<N>:.pre-commit-config.yaml"
@@ -198,6 +206,10 @@ stale worktree silently audits the wrong commit and every result downstream is
 wrong. Compare against the pinned SHA rather than eyeballing a log line:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 test "$(git -C "$SCRATCH/pr-<N>" rev-parse HEAD)" = "$HEAD_SHA"
 git -C "$SCRATCH/pr-<N>" status --porcelain                       # must be empty
 ```
@@ -238,9 +250,11 @@ it to the one bit later phases actually branch on is what `MAY_EXECUTE` is.
 **And they branch on it, rather than being trusted to remember this table.** The
 blocks in Phases 4 and 5 that run the audited repo's code open with
 
-```bash
-[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
-```
+    [ "${MAY_EXECUTE:-}" = yes ] || { echo "not authorised" >&2; exit 2; }
+
+quoted here as an illustration — the runnable copies live in
+`references/uv-lock.md` § Phase 4 and § Phase 5, which is where they are read
+from.
 
 Tested **for** `yes`, never against `no`, and the difference is the whole guard:
 a block whose handoff did not load sees the empty string, and `!= no` is true of
@@ -410,6 +424,10 @@ The substitutions, when `rewritten` fires:
   because the tree this PR would land on is the default branch's tip.
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
 git fetch origin "$DEFAULT"
 git worktree add --detach "$SCRATCH/tip-<N>" "origin/$DEFAULT"
 ```
