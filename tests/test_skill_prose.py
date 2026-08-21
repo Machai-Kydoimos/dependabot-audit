@@ -2079,5 +2079,111 @@ class TestEveryConsumerReloadsTheHandoff(SkillHarness):
         self.assertGreater(seen, 0, "no phase declares an unset-fallback for a value it gates on")
 
 
+class TestEveryEmittedOutputIsConsumedOrDeclaredInert(SkillHarness):
+    """0.26.1 closed this class in one direction only.
+
+    Its two guards run table-and-requires-line -> emitter: every name a phase
+    *promises* must be one Phase 0 produces. Nothing ran the other way, and the
+    drift was already bidirectional when it shipped — the changelog says so:
+
+        the table promised `$PERMS` and `$SCRATCH` while the emitter writes ten
+        names including `BASE_REF`, `BRANCH_POINT` and `MAY_EXECUTE`.
+
+    `BASE_REF` was settled there deliberately — "Phase 0's own cross-check that
+    no later phase consumes" — and that is a fine answer. `MAY_EXECUTE` was not
+    in the same position. Phase 0's prose calls it *"the one bit later phases
+    actually branch on"*, offered as the value that crosses in `$PERMS`'s place,
+    and no phase branched on it: every occurrence in the plugin was the emit, the
+    key-list comment, and two sentences explaining why it exists.
+
+    So the completeness rule now runs both ways, with the exemption written down
+    rather than inferred: an emitted name is consumed, or it is named as a
+    diagnostic. That is what separates the two cases, and it is a decision
+    someone has to make rather than an omission nobody notices.
+    """
+
+    DIAGNOSTIC = re.compile(r"Diagnostics? —[^\n]*", re.IGNORECASE)
+
+    def _declared_inert(self) -> set[str]:
+        line = self.DIAGNOSTIC.search(dict(self.phases)[0])
+        return set(re.findall(r"`\$?([A-Z_][A-Z0-9_]*)`", line.group(0))) if line else set()
+
+    def test_every_emitted_name_is_read_somewhere_or_declared_inert(self):
+        inert = self._declared_inert()
+        read = {n for _, _, code in _every_block() for n in USED.findall(code)}
+        for name in sorted(_emitted_by_discover()):
+            if name in inert:
+                continue
+            self.assertIn(
+                name,
+                read,
+                f"discover.py --shell emits {name} and no block reads it. Either a "
+                f"phase should branch on it or Phase 0 should name it a diagnostic, "
+                f"the way BASE_REF is — an emitted value nobody reads and nobody "
+                f"exempted is a promise that quietly went false",
+            )
+
+    def test_the_diagnostics_line_names_only_things_that_are_emitted(self):
+        """The exemption must not drift into covering a name that no longer exists."""
+        emitted = _emitted_by_discover()
+        for name in sorted(self._declared_inert()):
+            self.assertIn(
+                name,
+                emitted,
+                f"Phase 0 exempts {name} as a diagnostic, but the emitter does not "
+                f"write it; a stale exemption silently widens to whatever is added next",
+            )
+
+
+class TestTheExecutionGateIsReadWhereExecutionHappens(SkillHarness):
+    """Phase 0 decided whether the PR may run, and the phases that run it never asked.
+
+    `discover.py` derives the classification — a fork PR, a non-bot author, or an
+    account without `push` — and reduces it to `MAY_EXECUTE`. The gate then lived
+    only in Phase 0's own prose table, which tells the reader to *run
+    `--no-execute`*, six phases before the phases that execute.
+
+    Measured on this plugin's handoff: `MAY_EXECUTE=yes` crosses on every audit
+    and nothing has ever read it.
+    """
+
+    def _executing(self) -> list[int]:
+        return [n for n, body in self.phases if n > 0 and "Executes code from the PR" in body]
+
+    def test_the_phases_that_execute_say_so_and_gate_on_it(self):
+        found = self._executing()
+        self.assertTrue(found, "no phase declares that it executes the PR's code")
+        for number in found:
+            self.assertIn(
+                "MAY_EXECUTE",
+                self.reachable(number),
+                f"Phase {number} declares that it executes code from the PR and never "
+                f"reads the bit Phase 0 derived to authorise it",
+            )
+
+    def test_the_gate_fails_closed_on_an_empty_value(self):
+        """An unset handoff yields the empty string, not `no`.
+
+        From the measurement rather than the fix: a block whose handoff never
+        loaded sees `MAY_EXECUTE` unset, and `!= no` is true of the empty string.
+        The test has to be *for* the authorising value, so anything that is not
+        `yes` — including nothing at all — refuses.
+        """
+        seen = 0
+        for file, number, code in _every_block():
+            # Uses it, rather than merely naming it: Phase 0's key-list block
+            # documents `MAY_EXECUTE=<yes|no>` and tests nothing.
+            if not re.search(r"\$\{?MAY_EXECUTE", code):
+                continue
+            seen += 1
+            self.assertRegex(
+                code,
+                re.compile(r"MAY_EXECUTE[^\n]*=\s*[\"']?yes"),
+                f"{file} Phase {number} tests MAY_EXECUTE without testing for `yes`; "
+                f"an unset handoff is the empty string, and a negative test passes it",
+            )
+        self.assertGreater(seen, 0, "no block gates on MAY_EXECUTE")
+
+
 if __name__ == "__main__":
     unittest.main()
