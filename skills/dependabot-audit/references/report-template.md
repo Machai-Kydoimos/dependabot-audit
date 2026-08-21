@@ -81,6 +81,13 @@ remaining evidence, and the separate fact that the PR cannot merge until someone
 fixes a failure it did not cause. Reporting only the first reads as "merge this"
 on a PR that will not merge; reporting only the second blames the bump.
 
+**Every "not a Hold" row in Phase 7's table is a row here too.** A mutable pin, a
+rewritten base, an unattributable red check — each is a real finding that does
+not carry the verdict, and each has to appear as its own line rather than being
+absorbed into the recommendation. The verdict says what to do; these say what the
+reader is being asked to accept while doing it. A report that reaches *merge
+as-is* and mentions none of them is indistinguishable from one where none applied.
+
 ## Reasoning
 
 Why the verdict follows from the evidence. This is where a finding that no

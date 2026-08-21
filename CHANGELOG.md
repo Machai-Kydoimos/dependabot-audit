@@ -260,6 +260,49 @@ call 2:  cooldown boundary: 2026-08-14T13:07:54+00:00   # sourced, computed
 one refusing a bare backticked name in such a line — the exact shape `createdAt`
 had, so the hole is closed as a class rather than at the instance.
 
+### Five findings had no row in Phase 7's verdict table
+
+The table exists for one reason, which it states: *"leaving that function
+implicit is how two audits with the same evidence reach different
+recommendations."* A finding that lands on the fall-through — *"Everything
+derived, nothing above matched → **Merge as-is**"* — is, in the report,
+indistinguishable from no finding at all.
+
+| Finding | Old verdict |
+|---|---|
+| a red required check labelled **underivable** | Merge as-is |
+| an actions pin that is **not a 40-hex SHA** | Merge as-is |
+| `BRANCH_POINT=rewritten` | Merge as-is |
+| `BRANCH_POINT=suspect` | Merge as-is |
+| `BRANCH_POINT=underivable` | Merge as-is |
+
+The first is the worst: `ci_state.py` has three labels and the table had two, so
+a red **required** check whose cause could not be established resolved to *Merge
+as-is* on a PR that cannot merge.
+
+**Fixed.** Five rows, in the *not a Hold on this bump* register the `pre-existing`
+row already uses. The top-down rule now admits that some rows do not end the read
+— *"take the first row that matches"* and a row saying *take the verdict from the
+remaining evidence* were already in tension, and the `pre-existing` row has worked
+that way since 0.20.0. `report-template.md` carries the reporting obligation,
+since the template is what gets copied.
+
+**Tests.** The label vocabularies are read from the **scripts' source** rather
+than typed — `attribute()`'s `label`, `branch_point()`'s `verdict` — so a fourth
+label in either script fails until the table names it. Two rounds of narrowing,
+both driven by mutation rather than by review:
+
+1. The first extractor took every lower-case string constant in the function and
+   returned `compared`, `basis`, `login`, `sha` — dict keys and API field names.
+   It would have demanded verdict rows for things that are not labels.
+2. The first *assertion* asked whether the label appeared anywhere in Phase 7.
+   Deleting the `underivable` attribution row left it **green**, because the word
+   also appears in the confidence table and in the `BRANCH_POINT` row two lines
+   below. A label now has to be found in a row that is **about** it.
+
+Seven mutations, each verified to have landed before its result was read. All
+seven caught.
+
 ## [0.27.0] — 2026-08-21
 
 Phase 4 for actions had one source and no way to check it. An action cannot be
