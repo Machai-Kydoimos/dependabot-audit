@@ -11,6 +11,76 @@ patch.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-08-21
+
+Phase 4 for actions had one source and no way to check it. An action cannot be
+run locally at two versions, so reading the release notes is the method rather
+than the shortcut — which makes it load-bearing that what is read is complete.
+It is not. Minor: it changes what Phase 4 verifies.
+
+Measured on `fpga-board-sim` #363, `astral-sh/setup-uv` 9.0.0 → 10.0.1, where
+v10.0.0 disables the cache under `enable-cache: auto`:
+
+| Source | Conditions it names |
+|---|---|
+| the release notes | **3** — `pull_request_target`, `workflow_run`, `release` |
+| `action.yml` description | **5** — "GitHub-hosted runners except for release, **tag push**, `pull_request_target`, and `workflow_run`" |
+| `src/utils/inputs.ts` | **5** — `isTagPush` checked *first*, its own branch and its own log line, then the three-event `||` chain |
+
+The word *tag* appears nowhere in the notes body. They were written from the
+second `if` and missed the first.
+
+### Added
+
+- **Phase 4 reads the action's interface at both pins.** `action.yml` ships in
+  the action's own repo, so it is fetchable at any SHA, and the diff answers the
+  *a default input flips* row mechanically instead of by inference.
+
+- **A description-only diff is a finding, not a clean bill.** `default: "auto"`
+  is **unchanged** across #363 — what changed is what `auto` means — so a check
+  asking whether a default flipped correctly answers *no* while the behaviour
+  moves underneath it. The only place the fourth condition surfaced was
+  description prose.
+
+- **Where the notes and the interface disagree, the source settles it**, and it
+  ships in the same repo at the same ref.
+
+### Fixed
+
+- **The trigger row could not see a tag push.** It greps for event names, and a
+  tag push is not one: it is `push` with a `refs/tags/` ref. Grepping
+  `pull_request_target:` and `workflow_run:` finds nothing; grepping `push:`
+  matches nearly every workflow ever written. The row now names the shape —
+  `push:` carrying a `tags:` key — and `release:`, which it had also omitted.
+
+### The replay
+
+Two targets, both merged PRs on a repo this account controls, chosen to exercise
+the two branches — CONTRIBUTING's fifth row, since #363 alone reaches only one:
+
+| Replayed | `action.yml` diff | Outcome |
+|---|---|---|
+| #363 — setup-uv 9.0.0 → 10.0.1 | description text only | **discovers** — the fourth condition exists nowhere in the notes |
+| #333 — setup-uv 8.3.2 → 9.0.0 | one line: `prune-cache` `default: "true"` → `"false"` | **confirms** — v9.0.0 announces it under *🚨 Breaking changes* |
+
+The second is the one worth having: interface and notes agree, the read costs one
+call, and it returns a falsifiable *no surprises*. A method that only ever fires
+is one nobody runs. It also exercises the *default input flips* row end to end —
+`fpga-board-sim` sets `prune-cache` nowhere, so it takes the new default rather
+than pinning the old one, and the finding is real rather than inert.
+
+On #363 the original verdict of *inert here* was correct, and correct **by luck**:
+that repo triggers on `push: branches: [main]` and `pull_request:` only. The same
+procedure on a repo with `push: tags:` reports inert about a change that is live.
+
+### Tests
+
+Four guards, all mutation-checked against the pre-fix prose. One asserts the
+phase carries the **query** rather than the advice to compare — a phase that says
+"check the interface" and hands over no command is a wish, and the existing
+handoff guards would have been satisfied by the sentence alone. 246 tests.
+
+
 ## [0.26.1] — 2026-08-21
 
 Phase 6 declared a requirement the handoff has never carried:
@@ -2644,7 +2714,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.1...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.1...v0.27.0
 [0.26.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.24.0...v0.25.0

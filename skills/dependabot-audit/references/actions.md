@@ -209,7 +209,7 @@ repo's workflows that decides whether it applies:
 
 | Change | What to grep for here |
 |---|---|
-| a trigger is newly restricted | `pull_request_target:`, `workflow_run:` in this repo's workflows |
+| a trigger is newly restricted | `pull_request_target:`, `workflow_run:`, `release:` in this repo's workflows — **and `push:` carrying a `tags:` key**, because a tag push is not an event name. It is `push` with a `refs/tags/` ref, so the event-name grep cannot see it |
 | a default input flips | that input's name — an explicit setting pins the old behaviour |
 | a minimum runner or Node version | `runs-on:` — GitHub-hosted is fine, a self-hosted label is not |
 | credential or token handling | `permissions:`, `persist-credentials`, and what later steps do with the token |
@@ -220,6 +220,59 @@ this phase working; reaching it by not looking is the failure. Observed:
 `workflow_run` — a security change shipped as a plain bullet with no heading and
 no ⚠️ — and it was genuinely inert on a repo that uses neither trigger. The report
 should say so and name the greps that settled it.
+
+**Read the interface, not only the notes.** The notes are prose written by the
+releaser; `action.yml` is what the runner loads, it ships in the action's own
+repo, and it is therefore readable at both pins:
+
+```bash
+for R in <old-sha> <new-sha>; do
+  gh api "repos/<owner>/<action>/contents/action.yml?ref=$R" --jq .content \
+    | base64 -d > "$SCRATCH/action-$R.yml"
+done
+diff -u "$SCRATCH/action-<old-sha>.yml" "$SCRATCH/action-<new-sha>.yml"
+```
+
+An input added, removed, renamed, or with its `default:` changed shows up here or
+does not, which is a falsifiable answer to the *default input flips* row above
+rather than an inference from someone's summary.
+
+**A description-only diff is a finding, not a clean bill.** Measured on
+`astral-sh/setup-uv` 9.0.0 → 10.0.1, whose v10.0.0 disables the cache under
+`enable-cache: auto`:
+
+| Source | Conditions it names |
+|---|---|
+| the release notes | **3** — `pull_request_target`, `workflow_run`, `release` |
+| `action.yml` description | **5** — "GitHub-hosted runners except for release, **tag push**, `pull_request_target`, and `workflow_run`" |
+| `src/utils/inputs.ts` | **5** — `isTagPush` checked *first*, its own branch and its own log line, then the three-event `||` chain |
+
+The word *tag* appears nowhere in the notes body. They were written from the
+second `if` and missed the first. And `default: "auto"` is **unchanged** across
+the bump — what changed is what `auto` means — so a check asking whether a
+default flipped correctly answers *no* while the behaviour moves underneath it.
+The only place the fourth condition surfaced was description prose. Treat that
+prose as the signal it is.
+
+**Where the notes and the interface disagree, the source settles it**, and it
+ships in the same repo at the same ref. That is the read that turned "the
+description says four, the notes say three" into which one is true.
+
+On `fpga-board-sim` #363 the verdict was *inert here* and was correct — that repo
+triggers on `push: branches: [main]` and `pull_request:` only. It was correct by
+luck. The same procedure, on a repo with `push: tags:`, reports inert about a
+change that is live.
+
+**Most of the time the diff confirms rather than discovers, and that is the
+result you want.** Same action one release earlier — `fpga-board-sim` #333,
+setup-uv 8.3.2 → 9.0.0 — and the diff is a single clean line, `prune-cache`
+`default: "true"` → `"false"`, which v9.0.0's notes announce under *🚨 Breaking
+changes*. Interface and notes agree, so the read costs one call and returns a
+falsifiable *no surprises*. A method that only ever fires is one nobody runs.
+
+That bump is also the *default input flips* row working end to end: the repo sets
+`prune-cache` nowhere, so it takes the new default rather than pinning the old
+one, and the finding is real rather than inert.
 
 **Two signals that the notes alone will not give you.** Both were observed:
 
