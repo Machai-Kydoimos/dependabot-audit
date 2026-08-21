@@ -11,7 +11,7 @@ patch.
 
 ## [Unreleased]
 
-## [0.28.0] — 2026-08-21
+## [0.28.0] — 2026-08-22
 
 One sprint, one release: a producer/consumer sweep of the plugin — for every
 value a phase produces, who consumes it; for every value a phase consumes, who
@@ -302,6 +302,91 @@ both driven by mutation rather than by review:
 
 Seven mutations, each verified to have landed before its result was read. All
 seven caught.
+
+### The procedure never read an exit status, in three places
+
+A pipeline's exit status is its **last** stage, and `sort`, `sed` and `base64`
+all succeed on empty input. So a failing `git` or `gh` produced empty output at
+exit 0 — and in each case the empty result is the *reassuring* answer:
+
+| Block | Measured | Reads as |
+|---|---|---|
+| Phase 1's scope gate | exit 0, empty file list | **clean scope** — nothing outside the manifest |
+| Phase 6's trigger read | exit 0, empty output | **no `pull_request` trigger** → "CI is green for unrelated reasons" |
+| `actions.md` Phase 4's interface fetch | two empty files, `diff` exit 0 | **no interface change** |
+
+The third is the sharpest, because `actions.md` says of exactly this method:
+*"'Inert here' is a result, not silence. Reaching it deliberately is this phase
+working; reaching it by not looking is the failure."* The block could reach it by
+not looking.
+
+None of this is exotic to trigger: an unfetched ref is enough. Hit by accident on
+a scratch clone where `pr-363` had been deleted — `fatal: ambiguous argument`,
+then exit 0 and a clean gate.
+
+**And the plugin already states the rule, two phases away.** `SKILL.md` § Phase 5
+and `references/uv-lock.md` § Phase 5: *"Gate on exit codes. `cmd | tail && next`
+gates on `tail`, so a failing suite sails through."* Phase 1's gate is the
+highest-stakes command in the procedure — what stops the audit before Phases 4
+and 5 execute the PR's code — and it was among the places the rule was not
+followed.
+
+**Fixed** by capture-and-check in all three, plus `PARENT` in Phase 6, whose
+empty value silently weakened the attribution comparison. Exit 2 is this plugin's
+*could not run*, and it is the honest answer: no evidence is not evidence of
+nothing.
+
+**Not fixed with `set -o pipefail`, and the measurement says why.** It catches
+one of the three:
+
+| Instance | none | `pipefail` | `-eo pipefail` |
+|---|---|---|---|
+| Phase 1 gate (full block) | 0 | **0** | 128 |
+| Phase 6 trigger read | 0 | **128** ✓ | — |
+| `actions.md` fetch | 0 | **0** | 1 |
+
+It misses the gate because the failing pipeline is not the block's *last*
+statement, and misses the fetch because the status was already non-zero and was
+discarded by the control flow. Two of the three were *status unconsumed*, not
+*status wrong*, and `pipefail` only fixes the latter. It also cannot live in the
+shared preamble — the one instance it alone would catch is the block with no
+preamble — and after capture-and-check no meaningful pipes remain for it to
+guard.
+
+`set -e` catches all three and is ruled out on a different measurement: every
+script here exits **1** to mean *ran, found something*. Under `errexit` a
+`discover.py` that reports a human commit on the bot's branch kills the block,
+and Phase 7's head re-check aborts at exactly the moment the head moved.
+
+**Replayed**, each block extracted from the file rather than retyped:
+
+```
+Phase 1 gate, ref missing            exit 0, empty  ->  exit 2
+Phase 1 gate, bad commit in the list exit 0, empty  ->  exit 2
+Phase 6 triggers, workflow absent    exit 0, empty  ->  exit 2
+Phase 6 triggers, real workflow                     ->  exit 0, `on: push:`
+actions.md fetch, bad refs           exit 0, "no interface change"
+                                                    ->  exit 2, zero files written
+actions.md fetch, v9.0.0 -> v10.0.1                 ->  28 diff lines, the
+                                                       description-only change
+                                                       0.27.0 documents
+```
+
+The first attempt at that last replay reported `exit=2` for the right reason and
+the wrong cause — the preamble aborted on a missing `phase0.env` and the fetch
+never ran. Recorded because it is the trap this release is about, met while
+verifying the fix for it.
+
+**Tests.** One guard, class-wide: no block reads `git` or `gh` output through a
+pipe. jq's `|` inside a quoted `--jq` argument is stripped first, and **line
+continuations are joined** — `actions.md` wrote the fetch as `gh api … \` then
+`| base64 -d`, two physical lines and one statement, so a per-line regex went
+green against the very instance the guard was widened for. Found by mutation,
+which is the only reason it is not still green.
+
+Also in `CONTRIBUTING.md`: the replay gate now says **run the block as written,
+and read its exit status** — extracted rather than retyped, `$?` rather than
+output — with the three measured shapes that look identical to success.
 
 ## [0.27.0] — 2026-08-21
 

@@ -231,8 +231,13 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
 for R in <old-sha> <new-sha>; do
+  # Two statements, each checked. Piped into `base64` and left unchecked, a
+  # failed fetch writes an empty file — and `diff` on two empty files exits 0,
+  # reporting "no interface change", which is this method's *finding*.
   gh api "repos/<owner>/<action>/contents/action.yml?ref=$R" --jq .content \
-    | base64 -d > "$SCRATCH/action-$R.yml"
+    > "$SCRATCH/action-$R.b64" || { echo "cannot read action.yml at $R" >&2; exit 2; }
+  base64 -d < "$SCRATCH/action-$R.b64" > "$SCRATCH/action-$R.yml" \
+    || { echo "action.yml at $R is not valid base64" >&2; exit 2; }
 done
 diff -u "$SCRATCH/action-<old-sha>.yml" "$SCRATCH/action-<new-sha>.yml"
 ```
