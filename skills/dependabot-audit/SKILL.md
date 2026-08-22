@@ -127,8 +127,9 @@ defines:
 #   CREATED_AT=<iso8601>   when the PR was opened — Phase 2's cooldown test
 #   BRANCH_POINT=<ok|rewritten|suspect|underivable>
 #   MAY_EXECUTE=<yes|no>   whether Phases 4 and 5 are authorised
-#   BOT_COMMITS=<shas>     the bot's own commits above the base — Phase 1's gate
 #   HUMAN_COMMITS=<shas>   non-bot commits on the branch — a finding, not a gate
+#   ECOSYSTEM=<uv.lock|github-actions|unsupported|unknown|underivable>
+#   SCOPE_GATE=<clean|beyond|underivable>   Phase 1's gate, already decided
 ```
 
 **An underivable output is emitted commented-out, so it stays unset.** That is
@@ -230,9 +231,10 @@ If either check fails, `git worktree remove` it and re-add.
 | the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
 | `$CREATED_AT` | when the PR was opened, ISO-8601. **Phase 2 compares release publish times against it** — the cooldown asks whether a release was three days old *then*, not now |
-| `$BRANCH_POINT` | `ok`, `rewritten`, `suspect` or `underivable` — **Phase 1 reads it**, and the table below says what each one means |
+| `$BRANCH_POINT` | `ok`, `rewritten`, `suspect` or `underivable` — **the tip-worktree block below gates on it**, and the table there says what each one means |
 | `$MAY_EXECUTE` | `yes` or `no` — **Phases 4 and 5 gate on it**, and the gate tests for `yes` so an unset value refuses. The classification below is what sets it |
-| `$BOT_COMMITS` | the bot's own commits above the base. **Phase 1's scope gate takes its diff from these**, because that is the invariant the gate is about |
+| `$ECOSYSTEM` | `uv.lock`, `github-actions`, `unsupported`, `unknown` or `underivable` — **which Phase 1, 3, 4 and 5 method applies**, derived from the files the bump changed rather than inferred from the PR |
+| `$SCOPE_GATE` | `clean`, `beyond` or `underivable` — **Phase 1's gate, already decided** from the bot's own commits. That is the invariant the gate is about, and it is why `$BOT_COMMITS` does not cross: the loop that consumed it is now the script's |
 | `$HUMAN_COMMITS` | every non-bot commit on the branch, merges included. Its files are a **finding to report**, never a Hold |
 
 **`$PERMS` is not on that list, and the distinction is the point.** It is read off
@@ -345,8 +347,7 @@ harness, two separate calls: an `export` in the first is **unset** in the second
 shell functions likewise, and each call is a new shell process. So `${SCRATCH:-…}`
 found `SCRATCH` unset every time, `mktemp -d` returned a new directory, and the
 next call sourced a `phase0.env` that was not there — leaving `$BASE_SHA`,
-`$HEAD_SHA`, `$BOT_COMMITS` and `$DEFAULT` silently empty downstream rather than
-erroring.
+`$HEAD_SHA` and `$DEFAULT` silently empty downstream rather than erroring.
 
 **The working directory does survive, and is still not a way out.** It carried
 between calls when it stayed inside the project; a call that ends outside has its
@@ -374,10 +375,13 @@ whole phase exists to make impossible.
 **What that empties, measured**, running each consuming block in a fresh call with
 nothing sourced: Phase 1's lockfile read, Phase 4, Phase 6 and Phase 7's cleanup
 all fail loudly — a `Permission denied`, two exit 2s, an exit 128 — and Phase 1's
-**authorship gate passes silently**, because `for c in $BOT_COMMITS` over an unset
-variable iterates zero times and hands the gate an empty file list. That is why
-the block below tests the variable rather than trusting it: the fallback belongs
-in the shell, not only in the paragraph that describes it.
+**authorship gate passed silently**, because `for c in $BOT_COMMITS` over an unset
+variable iterates zero times and handed the gate an empty file list. The gate is
+`discover.py`'s from 0.29.0 and no longer reads that variable, but the class is
+unchanged and the handling belongs in the shell rather than only in the paragraph
+that describes it: an unset `$SCOPE_GATE` compares equal to nothing, so Phase 1's
+`[ "$SCOPE_GATE" = clean ]` fails **closed** into a stop rather than open into a
+pass.
 
 `git` state is the exception and needs no reload. The `pr-<N>` ref Phase 0 fetches
 is in the repository, so `git show "pr-<N>:…"` works from any call. Only the shell
@@ -418,8 +422,11 @@ interchangeable:
 
 The substitutions, when `rewritten` fires:
 
-- **Phase 1** takes its scope diff from `pr-<N>^..pr-<N>` rather than from the
-  merge base.
+- **Phase 1** needs no substitution: its gate reads the bot's own commits, and a
+  commit carries its own diff with no range to be wrong about. Where the
+  authorship split is *also* underivable there is nothing safe to fall back to —
+  the whole-diff range is the entire divergence — so the gate answers
+  `underivable` rather than guessing.
 - **Phase 4** measures in `$SCRATCH/tip-<N>` rather than `$SCRATCH/base-<N>`,
   because the tree this PR would land on is the default branch's tip.
 
@@ -428,6 +435,7 @@ The substitutions, when `rewritten` fires:
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
+[ "$BRANCH_POINT" = rewritten ] || { echo "base not rewritten — no tip worktree" >&2; exit 0; }
 git fetch origin "$DEFAULT"
 git worktree add --detach "$SCRATCH/tip-<N>" "origin/$DEFAULT"
 ```
@@ -473,93 +481,58 @@ them). Treat those as leads to check, not as facts — verify before repeating.
 
 ## Phase 1 — Scope and provenance
 
-*Requires from Phase 0: `$SCRATCH`, `$BASE_SHA`, `pr-<N>`.*
+*Requires from Phase 0: `$SCRATCH`, `$ECOSYSTEM`, `$SCOPE_GATE`, `$HUMAN_COMMITS`, `pr-<N>`.*
 
-**Check the branch point before you read the diff.** If Phase 0 found the base
-rewritten, a merge-base diff shows the whole divergence and the gate below will
-fire on files the bump never touched — so take the diff from `pr-<N>^..pr-<N>`
-and report the rewritten base as its own finding. Firing the gate on a stale
-base is not a safe default: it stops the audit for a reason that is not true, and
-it reads in the report exactly like a bump that reaches into source.
+**Phase 0 derived this gate; this phase acts on it.** `discover.py` reads the
+files **`$BOT_COMMITS`** changed — never the branch's, because a maintainer can
+land the fixup the bump *requires* on the bot's own branch, and gated on the
+union that produces a Hold in language that reads exactly like a bump reaching
+into source. It answers in Phase 0's three states:
 
-**Split the diff by authorship before you gate on it.** A bot PR's branch is not
-always all bot. A maintainer can land the fixup the bump *requires* on the bot's
-own branch, so a required check goes green again — and merging that is correct.
-Gated on the union of the branch's commits it produces a Hold, in language that
-reads exactly like a bump reaching into source.
+| `$SCOPE_GATE` | What it established | What this phase does |
+|---|---|---|
+| `clean` | every changed file is the manifest and the lockfile, or every changed **line** is a `uses:` pin | continue |
+| `beyond` | the diff reaches past the pin — the report output names the files or the lines | a finding. Report it and **stop before Phase 4** |
+| `underivable` | the gate could not be evaluated: a patch the API withheld, a file list at its cap, a lockfile from an ecosystem this plugin does not cover, or a rewritten base with no authorship split to fall back from | **not a clean scope.** Report what could not be established, and stop |
 
-Phase 0 derived both halves, so take the gate's diff from the bot's commits and
-report the human's separately:
+The count of files is not the invariant and never was: an action is pinned in
+every workflow that uses it, and a grouped bump moves several actions at once, so
+ordinary merged bumps touch two, three or four files. `references/actions.md` has
+the measurements, and the rule for reading the versions out of that diff rather
+than off the title.
+
+**`underivable` is not `clean`, and the asymmetry is the point.** Every way this
+gate fails quietly arrives as *no objection* rather than as an error — an unset
+`$BOT_COMMITS` iterating zero times, an empty file list, a capped page hiding
+file 301 — and it is the gate that refuses Phases 4 and 5 a shell. Where the
+split is underivable the script falls back to the whole `$BASE_SHA..pr-<N>` diff
+and prints which source it used; read that line before quoting the verdict.
 
 ```bash
 # Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
-# what the bump itself changed — this is what the gate is about.
-# Unset is Phase 0's third state, and an unset list iterates zero times: the
-# fallback has to fire here, or the gate passes on an empty diff.
-if [ -z "${BOT_COMMITS+set}" ]; then
-  # No split to gate on, so the range matters — and a rewritten base makes the
-  # merge-base range the whole divergence. Phase 0 already decided which; reading
-  # it here is what stops the substitution being something to remember.
-  [ "$BRANCH_POINT" = rewritten ] && RANGE="pr-<N>^..pr-<N>" || RANGE="$BASE_SHA..pr-<N>"
-  echo "BOT_COMMITS underivable — gating on the whole $RANGE diff" >&2
-  SCOPE=$(git diff --name-only $RANGE) || { echo "cannot diff $RANGE" >&2; exit 2; }
-else
-  SCOPE=$(for c in $BOT_COMMITS; do git show --name-only --format= "$c" || exit 1; done) \
-    || { echo "cannot read a commit in \$BOT_COMMITS" >&2; exit 2; }
-fi
-# Captured and checked, never piped: a pipeline reports its LAST stage, and
-# `sort` succeeds on empty input — so a failing git hands the gate an empty file
-# list at exit 0, which reads as a clean scope. Exit 2 is the honest answer; no
-# evidence is not evidence of nothing.
-printf '%s\n' "$SCOPE" | sort -u
+echo "ecosystem: $ECOSYSTEM"
 # a maintainer's commit on the bot's branch: read it, report it, do not Hold on it
 HUMANS=$(for c in $HUMAN_COMMITS; do git show --name-only --format= "$c" || exit 1; done) \
   || { echo "cannot read a commit in \$HUMAN_COMMITS" >&2; exit 2; }
 printf '%s\n' "$HUMANS" | sort -u
+# Last, so the half above still reports. Unset compares equal to nothing, so an
+# empty $SCOPE_GATE stops here rather than reading as clean.
+[ "$SCOPE_GATE" = clean ] \
+  || { echo "scope $SCOPE_GATE — report it, and STOP before Phase 4" >&2; exit 1; }
 ```
 
-A merge commit is in the second list and normally prints nothing — its content
-arrived from the branch it merged. What it *does* print is what the merge itself
-changed, which is the one thing worth seeing there.
+A merge commit is in that list and normally prints nothing — its content arrived
+from the branch it merged. What it *does* print is what the merge itself changed,
+which is the one thing worth seeing there.
 
-**Where `$BOT_COMMITS` is unset, gate on the whole `$BASE_SHA..pr-<N>` diff and
-say the split was underivable.** That is Phase 0's third state and the old
-behaviour: the right fallback, not the right default. Never gate on an *empty*
-list — it iterates zero times and the gate passes silently, which is the one
-outcome worse than a false Hold.
-
-**Two reasons a scope diff overshoots, and they present identically.** A moved
-base (`BRANCH_POINT=rewritten`, above) and a human fixup on the bot's branch.
-Both produce a diff far past the manifest, both read in the report as a bump
-reaching into source, and they take different fixes. Observed together on one
-PR: Phase 0 printed `HUMAN` against two of three commits above the base, and
-Phase 1 gated on all three.
-
-Getting this wrong costs more than the verdict. The gate stops the audit **before
-Phase 4** — and on that PR Phase 4 was the phase that would have measured the
-bump, `ruff` 0.15.22 → 0.16.0, this phase's own founding observation occurring
-for real. Phase 4 measures on the merge base precisely because a PR carrying the
-fixup reports no difference on its own tree; the base worktree was built, the
-measurement was available, and the gate stopped one phase short of it.
-
-**This phase is a gate, not just a step.** The diff should touch **only** the
-manifest and the lockfile — or, for an actions bump, **only `uses:` lines**, in
-however many workflow files pin that action. The count of files is not the
-invariant and never was: an action is pinned in every workflow that uses it, and
-a grouped bump moves several actions at once, so ordinary merged bumps touch
-two, three or four files. `references/actions.md` has the measurements, and
-the rule for reading the versions out of that diff rather than off the title.
-Anything else is a finding: report it, and **stop before Phase 4**. The same
-applies if provenance comes back with a discrepancy. Phases 4 and 5 execute the
-PR's code, and the whole point of running the cheap read-only checks first is that
-they can refuse to hand it a shell. Continuing anyway spends the ordering for
-nothing.
-
-Stopping here is not a failed audit. It is a complete one that reached a verdict
-early — write the report with the phases that ran and say which did not.
+A provenance discrepancy stops the audit here too. Phases 4 and 5 execute the
+PR's code, and the point of running the cheap read-only checks first is that they
+can refuse to hand it a shell; continuing anyway spends the ordering for nothing.
+Stopping here is not a failed audit but a complete one that reached a verdict
+early — write the report with the phases that ran, and say which did not.
 
 **The method is per-ecosystem; the gate above is not.** Each reference is
 sectioned by phase, so read the section for this one:
@@ -1076,7 +1049,7 @@ there by exhaustion is indistinguishable in the report from no finding at all.
 | A red required check labelled **pre-existing** | **Not a Hold on this bump.** Report it as its own finding, take the verdict from the remaining evidence, and say the PR is unmergeable until someone fixes it |
 | A red required check labelled **underivable** | **Not a Hold on this bump** — nothing established the cause, and a Hold that rests on an unattributed red row is correct only by accident. Report the red check *and* that the comparison could not be made; the PR is unmergeable until it is fixed. If this row would decide the verdict, confidence is **low** |
 | Actions: the pin is a tag or branch, **not a 40-hex SHA** | **Not a Hold on this bump** — the pin was mutable before this PR and the bump did not make it so. Report that what was audited is what runs *today*, so this repo's pins are not evidence, and take the verdict from the rest |
-| `BRANCH_POINT=rewritten` — the base branch was rewritten under this PR | **Not a Hold on this bump.** A fact about the branch, not the dependency. Report it with both substitutions Phase 0 named, and say that the scope diff and Phase 4's tree came from the substituted sources |
+| `BRANCH_POINT=rewritten` — the base branch was rewritten under this PR | **Not a Hold on this bump.** A fact about the branch, not the dependency. Report it, and say that Phase 4's tree came from `$SCRATCH/tip-<N>`. Phase 1's gate needs no substitution — it reads the bot's own commits — unless the authorship split was *also* underivable, where it answers `underivable` and that caps confidence |
 | `BRANCH_POINT=suspect` — non-bot commits above the base, no force-push event | **Not a Hold.** Corroboration without the authority: read the commits, report what they changed, and say the base was *not* substituted on it alone |
 | `BRANCH_POINT=underivable` — the event list could not be read | **Not a Hold**, and not `ok` either. Report that the merge base was never proved to be the branch point, which caps confidence at **medium** — or **low** where the scope diff is what the verdict turns on |
 | Phase 4: base differs, PR agrees — real and already absorbed | **Merge as-is**, naming what the PR absorbed and how |
