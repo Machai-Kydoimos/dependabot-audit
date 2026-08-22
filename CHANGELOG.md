@@ -89,6 +89,12 @@ the gate produced the false Hold the file-count rule exists to prevent, on two o
 the three PRs `actions.md` offers as its own measurement — and the synthetic
 patches in the first test pass could not see it.
 
+`actions.md` said *"a `uses:` line or its **trailing** version comment"*, which is
+the wording the first implementation was written from — so the reference was
+inaccurate against the very PRs it cites, and is corrected here too. It now names
+the comment half properly and points at `$SCOPE_GATE` rather than restating a rule
+the script owns.
+
 **Fixed in the same change**, not deferred: a YAML comment cannot execute, so it
 is inside the pin for a gate that asks what the diff makes *run*. Comment lines
 are counted and reported rather than ignored, because a pin manifest is how a
