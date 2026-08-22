@@ -11,6 +11,193 @@ patch.
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-08-22
+
+Phase 1's scope gate — the branch that decides whether Phases 4 and 5 get a
+shell — was the reader's. `discover.py` derives it now, and the ecosystem with
+it. Minor: it changes what Phase 1 verifies and what Phase 0 hands over.
+
+### The gate's rule was already deterministic; only its execution was not
+
+`SKILL.md` stated both halves exactly. For a lockfile bump, *"the diff should
+touch **only** the manifest and the lockfile"*. For an actions bump,
+`actions.md`'s *"every changed line across them is a `uses:` line or its trailing
+version comment. That is the invariant."* A file-set test and a line-kind test —
+and the block under them printed a sorted file list and left the decision to
+whoever read it.
+
+Three properties made it worth a script rather than a paragraph:
+
+- **It is the highest-stakes branch in the procedure.** A gate that answers
+  *clean* is what lets the audit go on to install the PR's dependencies and run
+  its test suite. Every way it goes wrong goes wrong in that direction.
+- **Its failure modes are all silent.** An unset `$BOT_COMMITS` iterates zero
+  times; an empty file list has nothing to object to; the API caps a commit's
+  `files` at 300 and says nothing about the rest; a withheld `patch` reads as no
+  lines beyond the pin. Each arrives as *no objection*.
+- **The wrong heuristic is the reachable one.** `SKILL.md` warns that *"the count
+  of files is not the invariant and never was"*, which is a warning precisely
+  because a four-file diff invites the count.
+
+### Measured on the PRs the rule was written from
+
+`fpga-board-sim` #334 is the case 0.28.0 named and could not close. Its branch
+carries the bot's bump, a maintainer's `style: reformat docs for ruff 0.16`
+fixup, and a merge of `main`; gated on the union it reported eight files as
+*"this bump reaches beyond the manifest and lockfile"* and stopped **before Phase
+4** — the phase that would have measured `ruff` 0.15.22 → 0.16.0, this plugin's
+founding Phase 4 observation, occurring for real. 0.28.0 emitted the authorship
+split; the loop that consumed it stayed in the shell and the judgement stayed
+with the reader.
+
+Now, unchanged inputs:
+
+```
+=== scope: CLEAN  [uv.lock]
+    every changed file is the manifest or the lockfile
+    read from the bot's own commits
+      pyproject.toml
+      uv.lock
+```
+
+Every documented case, live:
+
+| PR | Result |
+|---|---|
+| `fpga-board-sim` #363 — `setup-uv` 9.0.0 → 10.0.1 | `CLEAN [github-actions]` |
+| `fpga-board-sim` #364 — grouped `python-deps`, 3 updates | `CLEAN [uv.lock]` |
+| `fpga-board-sim` #334 — bot + human fixup + merge | `CLEAN [uv.lock]` — the false Hold, closed |
+| `cli/cli` #14091 / #13981 / #14147 — two, three and four files | `CLEAN [github-actions]`, all three |
+| `cli/cli` #14049 — two-parent head | `CLEAN [github-actions]`, base not substituted |
+| `dependabot-audit` #60 — human PR, no bot commit | `BEYOND [unknown]`, the four files 0.28.0 named |
+
+### The first implementation failed two of the three PRs the rule cites
+
+Written from `actions.md`'s wording, the line test accepted a `uses:` line and
+its **trailing** comment. Replayed against `cli/cli` it fired on #13981 and
+#14147:
+
+```
+-#   - actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
++#   - actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+```
+
+A compiler that emits workflows records the pins it wrote in a header block, so a
+correct bump changes the `uses:` line **and** the comment naming the same pin. The
+trailing version comment is not always trailing. Read as a line beyond the pin,
+the gate produced the false Hold the file-count rule exists to prevent, on two of
+the three PRs `actions.md` offers as its own measurement — and the synthetic
+patches in the first test pass could not see it.
+
+`actions.md` said *"a `uses:` line or its **trailing** version comment"*, which is
+the wording the first implementation was written from — so the reference was
+inaccurate against the very PRs it cites, and is corrected here too. It now names
+the comment half properly and points at `$SCOPE_GATE` rather than restating a rule
+the script owns.
+
+**Fixed in the same change**, not deferred: a YAML comment cannot execute, so it
+is inside the pin for a gate that asks what the diff makes *run*. Comment lines
+are counted and reported rather than ignored, because a pin manifest is how a
+generated workflow announces itself — which is a Phase 7 row of its own.
+
+### `$BOT_COMMITS` stops crossing the shell boundary
+
+It was emitted for Phase 1 to iterate, and `$SCOPE_GATE` is the answer that loop
+was computing. Emitting both would leave the shell holding everything it needs to
+roll a second gate by hand, which is how a prose copy and a script copy drift. It
+stays in the report output and in `--json`, where it is evidence rather than an
+input. `$HUMAN_COMMITS` has no script consumer and still crosses.
+
+Two new outputs replace it — `$ECOSYSTEM` and `$SCOPE_GATE` — and Phase 1's block
+is now the branch it always described:
+
+```bash
+[ "$SCOPE_GATE" = clean ] \
+  || { echo "scope $SCOPE_GATE — report it, and STOP before Phase 4" >&2; exit 1; }
+```
+
+Unset compares equal to nothing, so a missing handoff stops here rather than
+reading as clean.
+
+### The tip worktree was gated in prose only
+
+Removing Phase 1's `[ "$BRANCH_POINT" = rewritten ]` branch left `$BRANCH_POINT`
+with no shell consumer at all, and the completeness guard added in 0.26.1 said
+so. Following it found the block that creates `$SCRATCH/tip-<N>` running
+unconditionally under a paragraph that says to run it only when the base was
+rewritten — 0.28.0's own lesson, one phase along. It now tests the variable.
+
+Phase 0's substitution list also claimed *"Phase 1 takes its scope diff from
+`pr-<N>^..pr-<N>`"*, in `SKILL.md` and in `discover.py`'s report. Phase 1 needs no
+substitution now: it reads the bot's own commits, and a commit carries its own
+diff with no range to be wrong about. Where the split is *also* underivable the
+gate answers `underivable` rather than falling back to a range that, under a
+rewritten base, is the entire divergence.
+
+### Two more defects, found by review and by replay
+
+- **A patch withheld in one of the bot's commits was covered by another's.** The
+  union kept the half that *was* readable, so it read as "these are the lines
+  that changed" while the lines the API never sent were the ones the gate would
+  have objected to. Withheld on either side is now withheld for the union.
+- **The unrecognised-manifest branch could answer `beyond` while naming nothing.**
+  A `pyproject.toml`-only bump — pip with nothing locked — is all manifest, so the
+  beyond list filtered to empty and the verdict fired anyway. It reaches a report
+  as *"this bump reaches past the manifest"* over a blank list, which is the one
+  verdict a reader cannot act on. There is no scope rule for that ecosystem, and
+  `underivable` says so.
+
+### Replayed end to end
+
+`fpga-board-sim` #334 under `claude -p --plugin-dir`, in a fresh context against
+the unreleased plugin. Phase 0's report returned:
+
+```
+=== scope: CLEAN  [uv.lock]
+    every changed file is the manifest or the lockfile
+    read from the bot's own commits
+      pyproject.toml
+      uv.lock
+
+RESULT: ORDINARY — 0 finding(s)
+```
+
+Phase 1's block then ran as written, `[ "$SCOPE_GATE" = clean ]` passed, and the
+audit **continued into Phase 2** — reading `ruff` 0.16.0's release notes, which is
+the phase the gate used to stop one short of. The run ended on a spend limit
+rather than a verdict; what it establishes is the gate, and the gate is what
+changed.
+
+### Measured
+
+| | 0.28.0 | 0.29.0 |
+|---|---|---|
+| `SKILL.md` | 74,778 B / ~18,694 tok | **73,786 B / ~18,446 tok** |
+| `discover.py` output, `fpga-board-sim` #363 | 1,026 B | **1,201 B** |
+| `discover.py` output, `cli/cli` #14147 | 1,354 B | **1,889 B** |
+
+`SKILL.md` is re-read from cache every turn and the script's output only from the
+turn it lands on, so on the 52-turn shape measured in 0.16.0 the net is about
+**−11,000 token-turns for a lockfile bump and −7,000 for the worst actions case**
+— roughly half a cent a run. The saving is real and it is not the reason: a rule
+in prose costs tokens every turn *and* can be misapplied, and this one was
+misapplied on the PR that mattered most.
+
+### Tests
+
+Thirteen cases in `tests/test_discover.py`, each a failure the prose already
+names: the four-file trap, a `with:` edit past the pin, the generated pin
+manifest, the bot-versus-branch split, a withheld patch, an empty file list, the
+API's cap, an unsupported lockfile, a rewritten base with no split. Five
+load-bearing behaviours were mutation-checked and each was caught by exactly the
+intended case.
+
+Five prose guards moved with the rule rather than being deleted:
+`test_phase_1_gates_on_the_bots_own_commits` now reads Phase 1's prose (the claim
+the report makes) and requires the shell to consult `$SCOPE_GATE`;
+`test_every_capture_of_git_output_is_checked` covers the one remaining half of
+the split; the unset-fallback canary asserts the gate moved rather than vanished.
+
 ## [0.28.0] — 2026-08-22
 
 One sprint, one release: a producer/consumer sweep of the plugin — for every
@@ -3091,7 +3278,9 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.28.0...v0.29.0
+[0.28.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.1...v0.27.0
 [0.26.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.25.0...v0.26.0

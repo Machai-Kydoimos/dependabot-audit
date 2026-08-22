@@ -63,6 +63,30 @@ def pull(
     }
 
 
+def changed(filename: str, patch: str | None = None) -> dict[str, Any]:
+    """One entry of the API's `files` array. `patch` absent is the real shape.
+
+    GitHub omits `patch` for a binary file, and for any file whose diff exceeds
+    its size limit. An omitted patch is the case the gate must not read as "no
+    lines beyond the pin".
+    """
+    record: dict[str, Any] = {"filename": filename, "status": "modified"}
+    if patch is not None:
+        record["patch"] = patch
+    return record
+
+
+def uses_bump(action: str = "actions/checkout") -> str:
+    """The whole content of an ordinary actions bump's diff for one file."""
+    return (
+        "@@ -12,7 +12,7 @@ jobs:\n"
+        "     steps:\n"
+        f"-      - uses: {action}@" + "a" * 40 + "  # v7.0.0\n"
+        f"+      - uses: {action}@" + "b" * 40 + "  # v7.0.1\n"
+        "       - run: make\n"
+    )
+
+
 class DiscoverHarness(unittest.TestCase):
     def _fake(
         self,
@@ -73,6 +97,8 @@ class DiscoverHarness(unittest.TestCase):
         commits: list[dict[str, Any]] | None = None,
         force_pushes: int = 0,
         fails: tuple[str, ...] = (),
+        commit_files: dict[str, list[dict[str, Any]]] | None = None,
+        compare_files: list[dict[str, Any]] | None = None,
     ) -> tuple[Any, list[str]]:
         """A `_gh` returning (exit code, stdout), dispatching on the call shape.
 
@@ -87,6 +113,11 @@ class DiscoverHarness(unittest.TestCase):
                    "created_at": "2026-08-02T00:00:00Z"}] * force_pushes  # fmt: skip
         calls: list[str] = []
 
+        # An ordinary bump, so the pre-existing cases model one. A fake with no
+        # files hands the gate an empty list, which is correctly underivable and
+        # would make every unrelated case fail for the wrong reason.
+        default_files = [changed("uv.lock"), changed("pyproject.toml")]
+
         def fake(args: list[str]) -> tuple[int, str]:
             joined = " ".join(args)
             calls.append(joined)
@@ -94,6 +125,14 @@ class DiscoverHarness(unittest.TestCase):
             for marker in fails:
                 if marker in joined:
                     return 1, error
+            # The single-commit call is `repos/O/N/commits/<sha>` and the list is
+            # `repos/O/N/pulls/N/commits` — both contain "/commits", so the
+            # single one has to be matched first or it falls through to the list
+            # and the gate reads a commit array as a file array.
+            if "/commits/" in joined:
+                sha = joined.rsplit("/commits/", 1)[1].split()[0]
+                served = default_files if commit_files is None else commit_files.get(sha, [])
+                return 0, json.dumps({"files": served})
             # `/commits` before `/pulls/`: the commits call is a `/pulls/N/commits`
             # URL with `--paginate` after it, so an `endswith` check misses and it
             # falls through to the pull body.
@@ -105,6 +144,8 @@ class DiscoverHarness(unittest.TestCase):
                 body: dict[str, Any] = {}
                 if merge_base is not None:
                     body["merge_base_commit"] = {"sha": merge_base}
+                if compare_files is not None:
+                    body["files"] = compare_files
                 return 0, json.dumps(body)
             if "/issues/" in joined:
                 return 0, json.dumps(events)
@@ -159,7 +200,13 @@ class TestTheBranchPointIsProvedRatherThanAssumed(DiscoverHarness):
         produce the same diff and are not the same finding."""
         fake, _ = self._fake(force_pushes=1)
         _, out, _ = self._run(fake)
-        self.assertIn("pr-<N>^..pr-<N>", out)
+        self.assertIn(
+            "reads the bot's own commits",
+            out,
+            "Phase 1 needs no substitution from 0.29.0 — a commit carries its own "
+            "diff, so there is no range to be wrong about. Saying it still takes "
+            "`pr-<N>^..pr-<N>` would send a reader to build a range by hand",
+        )
         self.assertIn("tip-<N>", out)
 
     def test_a_merge_commit_head_does_not_trigger_the_substitution(self):
@@ -348,10 +395,18 @@ class TestTheScopeDiffIsSplitByAuthorship(DiscoverHarness):
 
     def test_the_two_halves_are_emitted_for_phase_1_to_gate_on(self):
         _, out, _ = self._run(self._mixed(), ["--shell"])
-        self.assertIn(
-            f'BOT_COMMITS="{self.BOT_SHA}"',
+        self.assertNotIn(
+            "BOT_COMMITS=",
             out,
-            "the gate is about what the *bump* changed, and only the bot's own commits are that",
+            "the bot half stopped crossing in 0.29.0: `$SCOPE_GATE` is the answer the "
+            "loop that consumed it was computing, and emitting both leaves the shell "
+            "holding everything it needs to roll a second gate by hand",
+        )
+        self.assertIn(
+            "SCOPE_GATE=clean",
+            out,
+            "the gate is about what the *bump* changed, and only the bot's own commits "
+            "are that — here the human's two commits touch nothing the gate may see",
         )
         self.assertIn(
             f'HUMAN_COMMITS="{self.HUMAN_SHA} {self.MERGE_SHA}"',
@@ -394,9 +449,14 @@ class TestTheScopeDiffIsSplitByAuthorship(DiscoverHarness):
         1's fallback is the old whole-diff gate."""
         fake, _ = self._fake(fails=("/commits",))
         _, out, _ = self._run(fake, ["--shell"])
-        self.assertNotRegex(out, r"(?m)^BOT_COMMITS=")
         self.assertNotRegex(out, r"(?m)^HUMAN_COMMITS=")
-        self.assertIn("# BOT_COMMITS", out, "an underivable output is emitted commented-out")
+        self.assertIn("# HUMAN_COMMITS", out, "an underivable output is emitted commented-out")
+        self.assertIn(
+            "SCOPE_GATE=underivable",
+            out,
+            "and the half that used to be Phase 1's loop says so in its own three "
+            "states rather than handing over an empty list that iterates zero times",
+        )
 
     def test_no_bot_commits_leaves_the_gate_list_unset_rather_than_empty(self):
         """The dangerous shape, and the reason this cannot be a plain join.
@@ -496,6 +556,269 @@ class TestFailureIsNotAFinding(DiscoverHarness):
             main()
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("OWNER/NAME", err.getvalue())
+
+
+class TestThePhase1ScopeGateIsDerivedRatherThanJudged(DiscoverHarness):
+    """Phase 1's gate decided whether Phases 4 and 5 get a shell, by eye.
+
+    The bash block printed a sorted file list and the reader decided whether it
+    was "only the manifest and the lockfile" or "only `uses:` lines". Both rules
+    are mechanical, both fail quietly when misread, and the gate is the one
+    branch in this procedure whose wrong answer hands a shell to code that
+    should not have had one.
+
+    Every case below is a failure the prose already names.
+    """
+
+    BOT_SHA = "1" * 40
+    HUMAN_SHA = "2" * 40
+
+    def _bot_pr(self, files: list[dict[str, Any]], **kw: Any) -> Any:
+        fake, _ = self._fake(
+            commits=[commit(self.BOT_SHA, BOT)],
+            commit_files={self.BOT_SHA: files},
+            **kw,
+        )
+        return fake
+
+    def test_four_workflow_files_of_uses_lines_is_clean_scope(self):
+        """The count-of-files trap, and the one that refuses the ordinary case.
+
+        `actions.md`: "An action is pinned in every workflow that uses it, and a
+        grouped bump moves several actions at once. Measured on `cli/cli`, all
+        three merged: #14091 two files, #13981 three, #14147 four." A gate
+        phrased as "one workflow file" refuses all three, in the report's
+        language for a bump reaching into source.
+        """
+        fake = self._bot_pr(
+            [
+                changed(f".github/workflows/{name}.yml", uses_bump())
+                for name in ("ci", "release", "docs", "nightly")
+            ]
+        )
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "clean")
+        self.assertEqual(report["scope"]["ecosystem"], "github-actions")
+
+    def test_a_changed_line_that_is_not_a_uses_line_fires_the_gate(self):
+        """The invariant is the kind of line, so a `with:` edit is beyond it."""
+        fake = self._bot_pr(
+            [
+                changed(
+                    ".github/workflows/ci.yml",
+                    "@@ -3,3 +3,4 @@\n"
+                    "-      - uses: actions/setup-python@" + "a" * 40 + "  # v7.0.0\n"
+                    "+      - uses: actions/setup-python@" + "b" * 40 + "  # v7.0.1\n"
+                    "+        with:\n"
+                    "+          python-version: '3.13'\n",
+                )
+            ]
+        )
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "beyond")
+        self.assertTrue(
+            any("with:" in line for line in report["scope"]["beyond"]),
+            "the gate has to name the line it fired on, or the report cannot say why",
+        )
+
+    def test_a_generated_workflows_pin_manifest_is_not_beyond_the_pin(self):
+        """Measured on `cli/cli` #13981 and #14147, both merged actions bumps.
+
+        `gh-aw` compiles a `.lock.yml` whose header records every action it
+        pinned, so a correct bump changes the `uses:` line **and** the comment
+        recording the same pin:
+
+            @@ -44,7 +44,7 @@
+             # Custom actions used:
+            -#   - actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+            +#   - actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+        Read as a line beyond the pin, the gate fires on two of the three PRs
+        `actions.md` cites as the measurement for its own rule — the same false
+        Hold the file-count rule exists to prevent, reached a different way. A
+        YAML comment cannot execute, and the pin it records is the one the
+        `uses:` line already carried into the check.
+        """
+        fake = self._bot_pr(
+            [
+                changed(
+                    ".github/workflows/issue-triage.lock.yml",
+                    "@@ -44,7 +44,7 @@\n"
+                    " # Custom actions used:\n"
+                    "-#   - actions/checkout@" + "9" * 40 + " # v7.0.0\n"
+                    "+#   - actions/checkout@" + "3" * 40 + " # v7.0.1\n"
+                    "@@ -212,7 +212,7 @@ jobs:\n"
+                    "-        uses: actions/checkout@" + "9" * 40 + " # v7.0.0\n"
+                    "+        uses: actions/checkout@" + "3" * 40 + " # v7.0.1\n",
+                )
+            ]
+        )
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "clean", report["scope"]["beyond"])
+        self.assertEqual(
+            report["scope"]["comment_lines"],
+            2,
+            "counted and reported rather than waved through: a comment manifest is "
+            "how a generated workflow announces itself, which decides a Phase 7 row",
+        )
+
+    def test_a_manifest_and_lockfile_bump_is_clean_scope(self):
+        fake = self._bot_pr([changed("uv.lock"), changed("pyproject.toml")])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "clean")
+        self.assertEqual(report["scope"]["ecosystem"], "uv.lock")
+
+    def test_a_lockfile_bump_reaching_into_source_fires_the_gate(self):
+        fake = self._bot_pr([changed("uv.lock"), changed("src/app/core.py")])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "beyond")
+        self.assertIn("src/app/core.py", report["scope"]["beyond"])
+
+    def test_the_gate_reads_the_bots_commits_and_not_the_whole_branch(self):
+        """`fpga-board-sim` #334, mechanised.
+
+        A maintainer landed the fixup the bump required on the bot's own branch.
+        Gated on the union the audit reported "this bump reaches beyond the
+        manifest and lockfile", stopped before Phase 4 — and merging it was
+        correct. The split already reached the shell in 0.28.0; the gate that
+        consumes it was still the reader's.
+        """
+        fake, _ = self._fake(
+            commits=[
+                commit(self.BOT_SHA, BOT),
+                commit(self.HUMAN_SHA, "a-human", subject="style: reformat docs"),
+            ],
+            commit_files={
+                self.BOT_SHA: [changed("uv.lock"), changed("pyproject.toml")],
+                self.HUMAN_SHA: [changed("docs/guide.md"), changed("src/app/core.py")],
+            },
+        )
+        report = self._json(fake)
+        self.assertEqual(
+            report["scope"]["verdict"],
+            "clean",
+            "the human's files are a finding to report, never the bump's scope",
+        )
+
+    def test_a_file_whose_patch_the_api_withheld_is_underivable_not_clean(self):
+        """No patch is no evidence, and no evidence is not evidence of nothing.
+
+        GitHub omits `patch` for binary files and for any diff past its size
+        limit. Read as "no lines beyond the pin" it passes the gate on the file
+        least entitled to pass it.
+        """
+        fake = self._bot_pr(
+            [
+                changed(".github/workflows/ci.yml", uses_bump()),
+                changed(".github/workflows/big.yml"),
+            ]
+        )
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "underivable")
+
+    def test_a_patch_withheld_in_one_commit_is_not_covered_by_another(self):
+        """Two of the bot's commits touch one file and only one carries a patch.
+
+        The union has to inherit the *withheld* state, not the readable one. A
+        merged record that keeps the patch it does have reads as "these are the
+        lines that changed", and the lines the API never sent are the ones the
+        gate would have objected to.
+        """
+        second = "4" * 40
+        fake, _ = self._fake(
+            commits=[commit(self.BOT_SHA, BOT), commit(second, BOT)],
+            commit_files={
+                self.BOT_SHA: [changed(".github/workflows/ci.yml")],
+                second: [changed(".github/workflows/ci.yml", uses_bump())],
+            },
+        )
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "underivable", report["scope"]["why"])
+
+    def test_an_empty_file_list_is_underivable_rather_than_clean(self):
+        """The zero-iteration trap one artifact along.
+
+        0.28.0 found `for c in $BOT_COMMITS` over an unset variable iterating
+        zero times, so the gate's file list was empty and it passed. An empty
+        list of changed files is the same shape: nothing to object to, and
+        nothing established.
+        """
+        fake = self._bot_pr([])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "underivable")
+
+    def test_a_truncated_file_list_is_underivable_rather_than_clean(self):
+        """The `contexts(first:100)` failure, in a different endpoint.
+
+        The API caps a commit's `files` at 300 and says nothing about the rest,
+        so file 301 is absent and indistinguishable from one that is in scope.
+        """
+        fake = self._bot_pr(
+            [changed(f".github/workflows/w{i}.yml", uses_bump()) for i in range(300)]
+        )
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "underivable")
+
+    def test_a_manifest_with_no_lockfile_is_underivable_rather_than_a_silent_beyond(self):
+        """A `pyproject.toml`-only bump — pip without a lockfile — names no ecosystem.
+
+        Every changed file is a manifest this plugin knows, so the beyond list
+        filters to empty; the verdict was `beyond` anyway. A gate that fires
+        while naming nothing is the one shape a reader cannot act on, and it
+        would reach the report as "this bump reaches beyond the manifest" with
+        an empty list under it.
+        """
+        fake = self._bot_pr([changed("pyproject.toml")])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "underivable")
+        self.assertEqual(report["scope"]["beyond"], [])
+
+    def test_an_unsupported_ecosystem_is_named_rather_than_gated(self):
+        """A `Cargo.lock` is a boundary, not a scope finding.
+
+        Followed faithfully against a real Cargo bump an improvised recipe
+        returned matching checksums and a clean OSV batch, on a PR that raised
+        the project's minimum Rust version past its own declared floor.
+        """
+        fake = self._bot_pr([changed("Cargo.lock"), changed("Cargo.toml")])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["ecosystem"], "unsupported")
+        self.assertIn("Cargo.lock", report["scope"]["why"])
+
+    def test_a_rewritten_base_with_no_split_leaves_the_scope_underivable(self):
+        """#19's false Hold, in the fallback path.
+
+        With `$BOT_COMMITS` underivable the gate falls back to the whole diff —
+        and under a rewritten base that diff is the entire divergence, which is
+        exactly the input that reported a two-file bump as fourteen files and
+        3,682 deletions.
+        """
+        # `commits=None` means "use the harness default"; an unreadable list is
+        # a failing call, which is the state the shell emits commented-out.
+        fake, _ = self._fake(
+            fails=("/pulls/1/commits",),
+            force_pushes=1,
+            compare_files=[changed("uv.lock"), changed("src/app/core.py")],
+        )
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "underivable")
+
+    def test_the_gate_reaches_the_shell_for_phase_1_to_read(self):
+        fake = self._bot_pr([changed("uv.lock"), changed("pyproject.toml")])
+        _, out, _ = self._run(fake, ["--shell"])
+        self.assertIn("ECOSYSTEM=uv.lock", out)
+        self.assertIn("SCOPE_GATE=clean", out)
+
+    def test_a_fired_gate_is_a_finding_and_a_clean_one_is_not(self):
+        beyond = self._bot_pr([changed("uv.lock"), changed("src/app/core.py")])
+        code, out, _ = self._run(beyond)
+        self.assertEqual(code, 1)
+        self.assertIn("=== scope: BEYOND", out)
+
+        clean = self._bot_pr([changed("uv.lock"), changed("pyproject.toml")])
+        code, out, _ = self._run(clean)
+        self.assertEqual(code, 0)
+        self.assertIn("=== scope: CLEAN", out)
 
 
 if __name__ == "__main__":

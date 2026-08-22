@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from typing import Any, NoReturn
@@ -54,6 +55,59 @@ BOTS = frozenset({"dependabot[bot]", "renovate[bot]", "dependabot", "renovate"})
 DERIVED = "derived"
 ABSENT = "absent"
 UNDERIVABLE = "underivable"
+
+# Phase 1's gate, as data. Both rules were the reader's, both are mechanical, and
+# both fail quietly: a scope that reads clean is what hands Phases 4 and 5 a
+# shell.
+#
+# Filenames only. What a file *is* stays `audit.py`'s question — it sniffs
+# content because a `Cargo.lock` is TOML with `[[package]]` blocks and a name is
+# not evidence. This is the cheaper, earlier signal that decides which reference
+# and which Phase 1 method apply, and it is deliberately not a second opinion on
+# the sniff.
+MANIFESTS = frozenset({"uv.lock", "pyproject.toml"})
+WORKFLOW_DIRS = (".github/workflows/", ".github/actions/")
+
+# Named rather than lumped into "unknown": a Cargo bump is a **boundary**, and
+# reporting it as a scope finding says the bump reached into source when what
+# happened is that this plugin has no rule for it. An improvised recipe returned
+# matching checksums and a clean OSV batch on a real one.
+UNSUPPORTED_LOCKFILES = {
+    "Cargo.lock": "Rust / Cargo",
+    "package-lock.json": "JavaScript / npm",
+    "yarn.lock": "JavaScript / Yarn",
+    "pnpm-lock.yaml": "JavaScript / pnpm",
+    "poetry.lock": "Python / Poetry",
+    "Pipfile.lock": "Python / Pipenv",
+    "go.sum": "Go",
+    "Gemfile.lock": "Ruby / Bundler",
+    "composer.lock": "PHP / Composer",
+}
+
+# The API caps a commit's `files` array here and says nothing about the rest, so
+# file 301 is absent and indistinguishable from one that is in scope. Same
+# failure as `contexts(first:100)` in `ci_state.py`, one endpoint along.
+FILES_CAP = 300
+
+# `actions.md`: "every changed line across them is a `uses:` line or its trailing
+# version comment. That is the invariant." Not the number of files — a grouped
+# bump moves several actions and an action is pinned in every workflow using it.
+USES_LINE = re.compile(r"^\s*-?\s*uses:\s*\S+\s*(#.*)?$")
+
+# The trailing version comment is not always trailing. A compiler that emits
+# workflows records the pins it wrote in a header block, so a correct bump
+# changes the `uses:` line *and* the comment naming the same pin — measured on
+# `cli/cli` #13981 and #14147, both merged:
+#
+#     -#   - actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+#     +#   - actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+#
+# Gated as a line beyond the pin that fires on two of the three PRs `actions.md`
+# cites as the measurement for its own rule. A YAML comment cannot execute, so it
+# is inside the pin for a gate that asks what the diff makes *run* — and it is
+# counted rather than ignored, because a pin manifest is how a generated workflow
+# announces itself, which is a Phase 7 row of its own.
+COMMENT_LINE = re.compile(r"^\s*#")
 
 
 def fail(what: str) -> NoReturn:
@@ -263,6 +317,223 @@ def branch_point(
     }
 
 
+def _changed_lines(patch: str) -> list[str]:
+    """The lines a patch added or removed, sign stripped, headers dropped."""
+    out: list[str] = []
+    for line in patch.splitlines():
+        if not line or line.startswith(("+++", "---", "@@")):
+            continue
+        if line[0] in "+-":
+            out.append(line[1:])
+    return out
+
+
+def bump_files(
+    owner: str,
+    name: str,
+    bot_commits: list[str],
+    compare: dict[str, Any] | None,
+    *,
+    commits_underivable: bool,
+    rewritten: bool,
+) -> tuple[list[dict[str, Any]] | None, str]:
+    """What the bump changed, or None and why it could not be established.
+
+    Phase 1 gates on **the bot's own commits**, not on the branch: a maintainer
+    can land the fixup the bump requires on the bot's branch, and gated on the
+    union that reads as a bump reaching into source. So each bot commit is read
+    on its own, which is also what makes this immune to a rewritten base — the
+    commit carries its own diff and no range is involved.
+
+    The fallback is the whole `$BASE_SHA..pr-<N>` diff, and it is the right
+    fallback rather than the right default. Under a **rewritten** base that diff
+    is the entire divergence — the input that once reported a two-file bump as
+    fourteen files and 3,682 deletions — so there it is refused outright.
+    """
+    if bot_commits:
+        merged: dict[str, dict[str, Any]] = {}
+        for sha in bot_commits:
+            body = _json_or_none(["api", f"repos/{owner}/{name}/commits/{sha}"])
+            if body is None or not isinstance(body.get("files"), list):
+                return None, f"the file list for the bot's commit {sha[:9]} could not be read"
+            files = body["files"]
+            if len(files) >= FILES_CAP:
+                return None, (
+                    f"commit {sha[:9]} reports {len(files)} files, at the API's cap of "
+                    f"{FILES_CAP} — the rest are absent, not shown to be in scope"
+                )
+            for entry in files:
+                filename = entry.get("filename") or ""
+                # A file touched by two of the bot's commits arrives twice, and
+                # the gate has to see every line either changed — so the patches
+                # accumulate rather than the later record winning.
+                if filename in merged:
+                    have, incoming = merged[filename].get("patch"), entry.get("patch")
+                    # Withheld on either side is withheld for the union. Keeping
+                    # the half that *is* readable reads as "these are the lines
+                    # that changed", and the lines the API never sent are the
+                    # ones the gate would have objected to.
+                    merged[filename]["patch"] = (
+                        None if have is None or incoming is None else f"{have}\n{incoming}"
+                    )
+                else:
+                    merged[filename] = dict(entry)
+        return list(merged.values()), "the bot's own commits"
+
+    why_split = (
+        "the authorship split was underivable"
+        if commits_underivable
+        else "no commit above the base is the bot's"
+    )
+    if rewritten:
+        return None, (
+            f"{why_split}, and the base was rewritten — the whole-diff fallback would be "
+            "the entire divergence rather than the bump"
+        )
+    if compare is None or not isinstance(compare.get("files"), list):
+        return None, f"{why_split}, and the PR's own file list could not be read"
+    files = compare["files"]
+    if len(files) >= FILES_CAP:
+        return None, (
+            f"{why_split}, and the diff reports {len(files)} files, at the API's cap of {FILES_CAP}"
+        )
+    return files, f"the whole $BASE_SHA..pr-<N> diff — {why_split}"
+
+
+def _ecosystem(names: list[str]) -> tuple[str, str]:
+    """Which Phase 1 method applies, from the filenames alone."""
+    for filename in names:
+        base = filename.rsplit("/", 1)[-1]
+        if base in UNSUPPORTED_LOCKFILES:
+            return "unsupported", (
+                f"the diff carries a {base} ({UNSUPPORTED_LOCKFILES[base]}). This plugin "
+                "verifies uv.lock and GitHub Actions end to end and nothing else — report "
+                "that boundary, and do not improvise a recipe from the shape of the ones "
+                "that are here"
+            )
+    if any(filename.rsplit("/", 1)[-1] == "uv.lock" for filename in names):
+        return "uv.lock", ""
+    if all(filename.startswith(WORKFLOW_DIRS) for filename in names):
+        return "github-actions", ""
+    return "unknown", ""
+
+
+def scope(files: list[dict[str, Any]] | None, source: str) -> dict[str, Any]:
+    """Phase 1's gate: does the diff stay inside what a bump is allowed to touch?
+
+    Three states like everything else here, and the third is the one that
+    matters. A gate that cannot be evaluated must not answer **clean** — that is
+    the answer which lets Phases 4 and 5 run.
+    """
+    empty: dict[str, Any] = {"files": [], "beyond": [], "comment_lines": 0, "source": source}
+    if files is None:
+        return {"verdict": UNDERIVABLE, "ecosystem": UNDERIVABLE, "why": source, **empty}
+
+    names = sorted(entry.get("filename") or "" for entry in files)
+    if not names:
+        return {
+            "verdict": UNDERIVABLE,
+            "ecosystem": UNDERIVABLE,
+            "why": (
+                f"no changed files came back from {source}. An empty list objects to "
+                "nothing and establishes nothing — the same shape as a gate list that "
+                "iterates zero times"
+            ),
+            **empty,
+        }
+
+    ecosystem, why = _ecosystem(names)
+    common = {"files": names, "comment_lines": 0, "source": source}
+
+    if ecosystem == "unsupported":
+        # Not `beyond`: nothing here says the bump reached into source, only that
+        # the rule for judging it is not in this plugin.
+        return {"verdict": UNDERIVABLE, "ecosystem": ecosystem, "why": why, "beyond": [], **common}
+
+    if ecosystem == "uv.lock":
+        beyond = [n for n in names if n.rsplit("/", 1)[-1] not in MANIFESTS]
+        return {
+            "verdict": "beyond" if beyond else "clean",
+            "ecosystem": ecosystem,
+            "beyond": beyond,
+            "why": (
+                "the diff reaches past the manifest and the lockfile"
+                if beyond
+                else "every changed file is the manifest or the lockfile"
+            ),
+            **common,
+        }
+
+    if ecosystem == "github-actions":
+        # The lockfile rule reads names; this one reads *lines*, so this is the
+        # only branch that needs the patch — and a withheld patch is therefore
+        # only underivable here.
+        withheld = [entry.get("filename") or "" for entry in files if entry.get("patch") is None]
+        if withheld:
+            return {
+                "verdict": UNDERIVABLE,
+                "ecosystem": ecosystem,
+                "beyond": [],
+                "why": (
+                    f"the API withheld the patch for {', '.join(sorted(withheld))} — binary, "
+                    "or past its size limit. No lines to read is not 'no lines beyond the pin'"
+                ),
+                **common,
+            }
+        beyond = []
+        comments = 0
+        for entry in files:
+            for line in _changed_lines(entry.get("patch") or ""):
+                if USES_LINE.match(line):
+                    continue
+                if COMMENT_LINE.match(line):
+                    comments += 1
+                    continue
+                beyond.append(f"{entry.get('filename')}: {line.strip()}")
+        return {
+            **common,
+            "verdict": "beyond" if beyond else "clean",
+            "ecosystem": ecosystem,
+            "beyond": beyond,
+            # After the spread: `common` carries the 0 every other branch wants,
+            # and a key repeated in a literal takes its last value.
+            "comment_lines": comments,
+            "why": (
+                "a changed line is neither a `uses:` pin nor a comment"
+                if beyond
+                else "every changed line across every file is a `uses:` line or a comment"
+            ),
+        }
+
+    beyond = [n for n in names if n.rsplit("/", 1)[-1] not in MANIFESTS]
+    if not beyond:
+        # Every file is a manifest this plugin knows and none is a lockfile — a
+        # `pyproject.toml`-only bump, pip with nothing locked. The filter empties
+        # and `beyond` naming nothing is the one verdict a reader cannot act on:
+        # it reaches the report as "this bump reaches past the manifest" over a
+        # blank list. No rule applied is the honest answer.
+        return {
+            "verdict": UNDERIVABLE,
+            "ecosystem": ecosystem,
+            "beyond": [],
+            "why": (
+                "every changed file is a manifest and none of them is a lockfile this "
+                "plugin covers — there is no scope rule to apply, so the gate was not "
+                "evaluated. Report the boundary"
+            ),
+            **common,
+        }
+    return {
+        "verdict": "beyond",
+        "ecosystem": ecosystem,
+        "beyond": beyond,
+        "why": (
+            "the diff matches no manifest this plugin knows and is not confined to workflow files"
+        ),
+        **common,
+    }
+
+
 def discover(owner: str, name: str, number: int) -> dict[str, Any]:
     repo = _required(["api", f"repos/{owner}/{name}"], f"{owner}/{name}")
     pull = _required(["api", f"repos/{owner}/{name}/pulls/{number}"], f"PR #{number}")
@@ -289,6 +560,23 @@ def discover(owner: str, name: str, number: int) -> dict[str, Any]:
     perms = repo.get("permissions")
     classification = classify(pull, perms)
 
+    bp = branch_point(
+        owner,
+        name,
+        number,
+        base_sha or "",
+        commits,
+        bot_authored=classification["is_bot"],
+    )
+    files, source = bump_files(
+        owner,
+        name,
+        [c["sha"] for c in bp["commits_above_base"] if c["bot"]],
+        compare,
+        commits_underivable=bp["commits_underivable"],
+        rewritten=bp["verdict"] == "rewritten",
+    )
+
     return {
         "owner": owner,
         "name": name,
@@ -301,14 +589,8 @@ def discover(owner: str, name: str, number: int) -> dict[str, Any]:
         "created_at": pull.get("created_at") or "",
         "perms": perms,
         "classification": classification,
-        "branch_point": branch_point(
-            owner,
-            name,
-            number,
-            base_sha or "",
-            commits,
-            bot_authored=classification["is_bot"],
-        ),
+        "branch_point": bp,
+        "scope": scope(files, source),
     }
 
 
@@ -359,7 +641,7 @@ def render(report: dict[str, Any]) -> None:
 
     if bp["verdict"] == "rewritten":
         print("\n    SUBSTITUTE, and report the rewritten base as its own finding:")
-        print("      Phase 1 takes its scope diff from `pr-<N>^..pr-<N>`")
+        print("      Phase 1's gate is unaffected — it reads the bot's own commits")
         print("      Phase 4 measures in $SCRATCH/tip-<N>, not $SCRATCH/base-<N>")
         print("    'The base branch was rewritten' and 'this bump reaches beyond the")
         print("    manifest' produce the same diff and are not the same finding.")
@@ -370,6 +652,32 @@ def render(report: dict[str, Any]) -> None:
         print("\n    Not sufficient to substitute on: a merge of the base *into* the")
         print("    branch looks similar and leaves the merge base correct. Read the")
         print("    commits above before deciding.")
+
+    sc = report["scope"]
+    print(f"\n=== scope: {sc['verdict'].upper()}  [{sc['ecosystem']}]")
+    print(f"    {sc['why']}")
+    print(f"    read from {sc['source']}")
+    for filename in sc["files"]:
+        print(f"      {filename}")
+    if sc["comment_lines"]:
+        print(f"    {sc['comment_lines']} changed line(s) are comments, inside the pin but")
+        print("    worth reading: a compiler that emits workflows records its pins in")
+        print("    one, and a generated file makes this bump transient (Phase 7 row).")
+    if sc["beyond"] and sc["beyond"] != sc["files"]:
+        # Suppressed when they are the same list: on an unrecognised manifest
+        # every file is beyond the pin, and printing the set twice pads the one
+        # output a reader is most likely to quote into the report.
+        print("    beyond the pin:")
+        for line in sc["beyond"]:
+            print(f"      {line}")
+    if sc["beyond"] or sc["verdict"] == "beyond":
+        print("\n    Phase 1 is a gate. Report this and STOP before Phase 4 — the")
+        print("    read-only phases refusing to hand a shell to the PR is what the")
+        print("    ordering buys, and continuing anyway spends it for nothing.")
+    elif sc["verdict"] == UNDERIVABLE:
+        print("\n    Not a clean scope. The gate could not be evaluated, and `clean`")
+        print("    is the answer that lets Phases 4 and 5 run — say so in the report")
+        print("    rather than reading silence as nothing to object to.")
 
     print(f"\n=== execution: {'PHASES 4 AND 5 MAY RUN' if cls['execute'] else 'USE --no-execute'}")
     print(f"    author {cls['author']}, cross-repository={str(cls['cross_repository']).lower()}")
@@ -407,6 +715,11 @@ def analyse(report: dict[str, Any]) -> dict[str, Any]:
         findings.append("non-bot commits above the base, with no force-push event")
     if not cls["execute"]:
         findings.append("Phases 4 and 5 must not run: " + "; ".join(cls["reasons"][:1]))
+    sc = report["scope"]
+    if sc["verdict"] == "beyond":
+        findings.append("Phase 1's scope gate fired: " + sc["why"])
+    elif sc["verdict"] == UNDERIVABLE:
+        findings.append("Phase 1's scope gate could not be evaluated: " + sc["why"])
     report["findings"] = findings
     return report
 
@@ -445,9 +758,16 @@ def shell(report: dict[str, Any]) -> None:
         else:
             print(f"# {key} is {state(value)} — deliberately unset, so a later")
             print("#   phase fails on an empty value rather than a plausible one")
-    bp, cls = report["branch_point"], report["classification"]
+    bp, cls, sc = report["branch_point"], report["classification"], report["scope"]
     print(f"BRANCH_POINT={bp['verdict']}")
     print(f"MAY_EXECUTE={'yes' if cls['execute'] else 'no'}")
+    # Phase 1's gate and the ecosystem it was judged under. Both were the
+    # reader's, and both decide whether Phases 4 and 5 get a shell.
+    print(f"ECOSYSTEM={sc['ecosystem']}")
+    print(f"SCOPE_GATE={sc['verdict']}")
+    if sc["verdict"] != "clean":
+        print("#   Not clean. Phase 1 stops the audit here; see the report output")
+        print("#   for which files or lines, and say so rather than continuing")
 
     # Phase 1's scope gate is about what the *bump* changed, and a bot PR's
     # branch is not always all bot: a maintainer can land the fixup the bump
@@ -458,18 +778,17 @@ def shell(report: dict[str, Any]) -> None:
     # more than anywhere else: an *empty* BOT_COMMITS makes `for c in
     # $BOT_COMMITS` iterate zero times, so the gate passes trivially — clean
     # rather than erroring, on the one phase whose whole job is to refuse.
-    split = {
-        "BOT_COMMITS": " ".join(c["sha"] for c in bp["commits_above_base"] if c["bot"]),
-        "HUMAN_COMMITS": " ".join(c["sha"] for c in bp["commits_above_base"] if not c["bot"]),
-    }
-    for key, value in split.items():
-        if not bp["commits_underivable"] and state(value) == DERIVED:
-            print(f'{key}="{value}"')
-        else:
-            print(f"# {key} is {'underivable' if bp['commits_underivable'] else ABSENT}")
-    if bp["commits_underivable"] or state(split["BOT_COMMITS"]) != DERIVED:
-        print("#   Phase 1 gates on the whole $BASE_SHA..pr-<N> diff and reports")
-        print("#   the split as underivable. An empty gate list would pass silently")
+    # Only the human half crosses. `$BOT_COMMITS` was emitted for Phase 1 to
+    # iterate, and `$SCOPE_GATE` above is the answer that loop was computing — so
+    # emitting it as well would leave the shell holding everything it needs to
+    # roll a second gate by hand, which is how the prose copy and the script copy
+    # drift. It stays in the report output and in `--json`, where it is evidence
+    # rather than an input. The human half has no script consumer and still does.
+    humans = " ".join(c["sha"] for c in bp["commits_above_base"] if not c["bot"])
+    if not bp["commits_underivable"] and state(humans) == DERIVED:
+        print(f'HUMAN_COMMITS="{humans}"')
+    else:
+        print(f"# HUMAN_COMMITS is {'underivable' if bp['commits_underivable'] else ABSENT}")
 
 
 def main() -> int:

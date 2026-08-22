@@ -388,7 +388,7 @@ class TestNoRepoSpecificLiterals(SkillHarness):
         that reaches into source.
         """
         self.assertIn(
-            "pr-<N>^..pr-<N>",
+            "reads the bot's own commits",
             self.text,
             "the fallback diff for a rewritten base must be the bot's own commit",
         )
@@ -850,12 +850,25 @@ class TestTheScopeGateIsAboutTheBumpNotTheBranch(SkillHarness):
     """
 
     def test_phase_1_gates_on_the_bots_own_commits(self):
+        """Moved from the shell to the prose in 0.29.0, with the rule itself.
+
+        The block used to iterate `$BOT_COMMITS` and the reader judged the file
+        list; `discover.py` derives both now, so what `SKILL.md` still owes the
+        reader is *which diff the gate was taken from* — the claim the report
+        makes. `test_discover.py` holds the mechanism.
+        """
         self.assertIn(
             "$BOT_COMMITS",
-            self.shell[1],
+            dict(self.phases)[1],
             "the gate's invariant is 'did the bump reach past the manifest and "
             "lockfile', not 'did this branch' — and only the bot's commits are "
             "the bump",
+        )
+        self.assertIn(
+            "$SCOPE_GATE",
+            self.shell[1],
+            "and the phase has to read the derived answer, or the gate is stated "
+            "and never consulted",
         )
 
     def test_the_human_half_reaches_phase_1_too(self):
@@ -2113,7 +2126,17 @@ class TestEveryConsumerReloadsTheHandoff(SkillHarness):
                     f"and then iterates it anyway; unset it iterates zero times and "
                     f"the gate passes silently, which is worse than a false Hold",
                 )
-        self.assertGreater(seen, 0, "no phase declares an unset-fallback for a value it gates on")
+        if not seen:
+            # From 0.29.0 nothing in SKILL.md hand-iterates a gating handoff
+            # value — `discover.py` derives the gate and its fallback. The
+            # per-loop check above still covers anything that comes back; this
+            # is what stops the class becoming a silent no-op in the meantime.
+            self.assertIn(
+                "$SCOPE_GATE",
+                dict(self.phases)[1],
+                "nothing gates on a handoff list any more and Phase 1 does not read "
+                "the derived gate either — the gate has gone missing rather than moved",
+            )
 
 
 class TestEveryEmittedOutputIsConsumedOrDeclaredInert(SkillHarness):
@@ -2411,8 +2434,8 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
         against a comment. Requiring a `$` is what separates a use from a mention,
         the same discriminator the MAY_EXECUTE guard needs.
         """
-        found = [c for _, _, c in _every_block() if re.search(r"\$\{?BOT_COMMITS", c)]
-        self.assertTrue(found, "no block gates on $BOT_COMMITS")
+        found = [c for _, _, c in _every_block() if re.search(r"\$\{?HUMAN_COMMITS", c)]
+        self.assertTrue(found, "no block reads $HUMAN_COMMITS")
         self.assertEqual(len(found), 1, f"expected one gate block, found {len(found)}")
         return found[0]
 
@@ -2468,7 +2491,10 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
                 f"Exit 2 is this plugin's `could not run`, and it is the honest "
                 f"answer: no evidence is not evidence of nothing",
             )
-        self.assertGreaterEqual(seen, 2, "the gate should capture both halves of the split")
+        # One from 0.29.0: the bot half is `discover.py`'s and never reaches a
+        # shell. The human half still is, and is still the shape that discards
+        # git's status when written as a pipeline.
+        self.assertGreaterEqual(seen, 1, "the reported half of the split is still captured")
 
 
 if __name__ == "__main__":

@@ -26,9 +26,18 @@ neither is where the obvious source puts it:
   is pinned in every workflow that uses it, and a grouped bump moves several
   actions at once. Measured on `cli/cli`, all three merged: #14091 two files,
   #13981 three, #14147 four — and every changed line across them is a `uses:`
-  line or its trailing version comment. That is the invariant. A gate phrased as
-  "one workflow file" refuses the ordinary case, and refuses it in the report's
-  language for a bump reaching into source.
+  line or a comment. That is the invariant, and `scripts/discover.py` applies it:
+  Phase 0 hands Phase 1 `$SCOPE_GATE`, so read that answer rather than
+  re-deriving one here. A gate phrased as "one workflow file" refuses the
+  ordinary case, and refuses it in the report's language for a bump reaching into
+  source.
+- **The comment half is not only the trailing `# v1`.** A compiler that emits
+  workflows records the pins it wrote in a header block, so a correct bump
+  changes the `uses:` line **and** the comment naming the same pin — #13981 and
+  #14147 both do, and a rule reading "trailing version comment" literally fires
+  on two of the three PRs above. The count is reported rather than dropped: a pin
+  manifest is how a generated file announces itself, which is the `DO NOT EDIT`
+  finding below reached from the diff instead of a `grep`.
 - **The versions under audit are not readable from the title or the body.** Phase
   1's rule against reading package *names* off the title extends to versions
   here, where no script derives them. `cli/cli` #13981 — titled and summarised

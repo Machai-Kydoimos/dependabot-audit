@@ -112,6 +112,7 @@ No round of this has yet come back empty:
 | this repo's #26, against the corrected rule | `pr-<N>^` can have no runs to compare against, and the rule as committed discarded an answer sitting on the merge base |
 | `cli/cli` #13996, #13981, #14124 | Dependabot's 2026-07-14 default cooldown, which Phase 2 read as ingestion lag; and two actions facts the PR does not state — the versions adopted, and whether the file it edits is generated |
 | `cli/cli`, eleven bumps, against the *corrected* Phase 1 gate | `$BASE_SHA` collapses onto `$HEAD_SHA` on any PR that has landed, so Phase 1's diff is empty and Phase 4 measures the PR against itself |
+| `cli/cli` #13981 and #14147, against a Phase 1 gate mechanised **from `actions.md`'s own sentence** | the sentence was wrong about the PRs it cites. A compiler that emits workflows records its pins in a header comment block, so *"a `uses:` line or its **trailing** version comment"* fires on two of the three it names (0.29.0) |
 
 **The fourth row is why this is a gate and not a habit.** Three prose guards went
 with it, taking Phase 6's total to six, each mutation-checked against the previous
@@ -121,6 +122,19 @@ interpreters — and one of the three asserted that Phase 6 read `$BASE_SHA`, wh
 prose and the new. It says nothing about whether the new prose is right, and a
 guard written from the fix cannot supply that. The replay costs one `gh` call and
 would have caught this before the commit rather than one commit later.
+
+**The last row is a failure mode the others do not have, and it is the one to
+watch for when mechanising.** Every row above it is a *fix* that was wrong. That
+one is the **specification** being wrong: the rule had been stated in prose for
+five versions, with three merged PRs named as its measurement, and it did not
+describe two of them. A test written from that sentence passed, because it
+reproduced the author's reading of the sentence — which is the thing under test.
+
+So: **when you turn a prose rule into code, replay the PRs the prose cites, not
+PRs of that shape.** A synthetic fixture built from the rule can only ever agree
+with it. This is *"write the check from the evidence, not from the change"* one
+level up — here the change *was* the evidence, and the evidence was already in
+the repository, one `gh api` call away.
 
 **The fifth row is the same gate showing its limit.** `mdcat` #6 could not have
 found it — there the bot's parent has runs — so it took a second replay against a
@@ -285,10 +299,13 @@ after nine commits of growth.
 
 ## Constraints that are load-bearing
 
-- **`audit.py` and `gate_diff.py` import nothing outside the standard library.**
-  They run under whatever bare `python3` the audited repository has, and `tomllib`
-  puts the floor at 3.11. That is why CI runs 3.11 through 3.14 and why the local
-  hooks cannot be the whole story.
+- **Every script here imports nothing outside the standard library** — `audit.py`,
+  `discover.py`, `ci_state.py` and `gate_diff.py` alike. All four are invoked as
+  `python3 "$SCRIPT"` from the audited repository, so they run under whatever bare
+  interpreter it has, and `tomllib` puts the floor at 3.11. That is why CI runs
+  3.11 through 3.14 and why the local hooks cannot be the whole story. The rule
+  named two of the four until 0.29.0, which is the kind of list that silently
+  stops covering what it was written for.
 - **Do not extend a script to an ecosystem you have no repository to test it
   against.** The per-ecosystem references document what is in scope instead,
   deliberately.
