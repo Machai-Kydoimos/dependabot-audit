@@ -3486,7 +3486,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.26.1...v0.27.0
