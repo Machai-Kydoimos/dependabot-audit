@@ -31,7 +31,7 @@ tree:
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
-S="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py"
+S="${SCRIPTS:?not in the handoff — re-run Phase 0}/audit.py"
 
 git show "pr-<N>:uv.lock"    > "$SCRATCH/pr.uv.lock"
 git show "$BASE_SHA:uv.lock" > "$SCRATCH/base.uv.lock"
@@ -127,6 +127,107 @@ hand, do not assume one block per name. Do not report the *lower* block as stale
 — but do check the highest one, which carries markers just the same and is still
 expected to track the registry.
 
+## Phase 2 — Currency
+
+The mechanical half — the registry's true latest, with publish timestamps — is
+**already done** by the Phase 1 script. What is left is the question `SKILL.md`
+sends here: this repo runs the tool, so is it in the change's scope?
+
+### When the changelog entry names a dependency
+
+A compiled Python package vendors another ecosystem's dependency graph into its
+wheel — `ruff`, `uv`, `rumdl` and `pydantic-core` are Rust — and its changelog
+says so in the terms of *that* ecosystem. Two consequences, and the second is the
+one that bites:
+
+- **No Python-side scanner can see the advisory.** It is filed against a crate on
+  crates.io. `pip-audit` reporting clean under both `-s pypi` and `-s osv` is
+  correct and means nothing here.
+- **Grepping this repo's config answers nothing**, because the crate was never in
+  this repo's config. The question is whether it is in the binary this repo
+  installs.
+
+**Read the shipped set out of the wheel.** PEP 770 wheels carry their own SBOM:
+
+```bash
+python3 - "<pkg>" "<version>" <<'EOF'
+import io, json, sys, urllib.request, zipfile
+pkg, version = sys.argv[1], sys.argv[2]
+req = urllib.request.Request(f"https://pypi.org/simple/{pkg}/",
+                             headers={"Accept": "application/vnd.pypi.simple.v1+json"})
+files = json.load(urllib.request.urlopen(req, timeout=60))["files"]
+# Any wheel for the release: the vendored set is the same across platforms.
+name = f"{pkg}-{version}-"
+wheels = [f for f in files
+          if f["filename"].startswith(name) and f["filename"].endswith(".whl")]
+if not wheels:
+    sys.exit(f"no wheel for {pkg} {version} — sdist-only, or a version that is not there")
+wheel = wheels[0]
+zf = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen(wheel["url"], timeout=180).read()))
+found = [n for n in zf.namelist() if "/sboms/" in n]
+if not found:
+    sys.exit(f"{wheel['filename']} carries no SBOM — exposure is UNDERIVABLE, not clean")
+for name in found:
+    doc = json.loads(zf.read(name))
+    print(name, doc.get("bomFormat"), doc.get("specVersion"),
+          len(doc.get("components", [])), "components")
+    print(sorted(c["name"] for c in doc.get("components", [])))
+EOF
+```
+
+Measured on the case this section came from. `rumdl` 0.2.60's release notes carry
+one line — `deps: update h2 to 0.4.16`, under **Fixed**, with no `Security`
+heading — and that is RUSTSEC-2026-0258, *h2 unbounded empty DATA frames*:
+
+| Question | Answer |
+|---|---|
+| `rumdl-0.2.60-py3-none-manylinux_2_28_x86_64.whl` | `dist-info/sboms/rumdl.cyclonedx.json`, CycloneDX 1.5, 178 components |
+| `h2` among them | **no** — nor `reqwest`, `hyper`, `jsonschema` |
+| `tokio` among them | yes, so the SBOM is the real shipped set and not a stub |
+
+Not exposed, established rather than assumed.
+
+**`Cargo.lock` would have said the opposite, and that is the trap.** It records
+`[dev-dependencies]`, which are built for the project's own tests and are not in
+the binary anyone installs. `rumdl`'s `Cargo.toml` at `v0.2.60` has
+`jsonschema = "0.46"` under exactly that heading, and `jsonschema` is what pulls
+`reqwest` → `h2`. Reaching for the lockfile finds the crate and calls it
+exposure. The SBOM is the shipped set.
+
+**A wheel with no SBOM is `underivable`, never clean.** PEP 770 is recent and
+coverage is partial, so absence of the file says nothing about absence of the
+crate. Report it the way Phase 0 reports an output it could not derive — the
+distinction this plugin preserves everywhere else — and say which of the two the
+row is.
+
+### When the entry names a rule this repo disables
+
+Then the claim rests on a config line, and a config line is an assertion about a
+*file* while the verdict is about the *tool*. Run it both ways:
+
+```bash
+uv run <tool> check <one representative file>              # as this repo runs it
+uv run <tool> check --no-config <the same file>            # with the config out
+```
+
+Measured on `rumdl` 0.2.59's destructive `MD013` fix — *"stop reflow from joining
+a setext heading into its underline"* — in a repo running `rumdl check --fix` on
+every Markdown commit, where the claim was `disable = ["MD013", "MD036"]`:
+
+```
+$ uv run rumdl check README.md
+Success: No issues found in 1 file (6ms)
+
+$ uv run rumdl check --no-config README.md
+Issues: Found 32 issues in 1 file (14ms)
+```
+
+32 findings suppressed. The rule really is off, the destructive fix really is
+inert here, and the difference between reporting that and asserting it is one
+command. The escape hatch is spelled differently per tool — `--no-config`,
+`--isolated`, `--config=/dev/null` — and every one of them is cheaper than being
+wrong about which mode runs on every commit.
+
 ## Phase 3 — Known vulnerabilities
 
 Batch-query OSV across the whole locked set, then corroborate with the
@@ -163,7 +264,7 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 
 [ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
 
-G="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/gate_diff.py"
+G="${SCRIPTS:?not in the handoff — re-run Phase 0}/gate_diff.py"
 
 python3 "$G" --tree "$SCRATCH/base-<N>" \
   --run locked   "uv run --no-project --with ruff==<locked> ruff format ." \
@@ -187,6 +288,50 @@ questions, and together they say something neither says alone:
 | differs | agrees | a real behaviour change, and this PR already absorbs it — check *how* |
 | differs | differs | a real behaviour change the PR does **not** handle — it will land on you |
 | agrees | agrees | no behaviour change on this repo's code |
+
+**`--no-project` is right for a self-contained tool and wrong for a gate that
+imports the project.** ruff needs nothing but the files; a type checker or a test
+suite needs the project's dependencies to say anything true. Denied them, every
+expression coming from one degrades to `Any` under `ignore_missing_imports`, and
+`warn_return_any` — which `strict = true` implies — then fires on code that is
+fine. `gate_diff.py` reports the difference faithfully and the difference is an
+artifact of the environment. Drop the flag for those gates; `--with` still pins
+the version under test, measured on uv 0.12.5 against a project locking
+`iniconfig 2.1.0`, where `uv run --with iniconfig==2.0.0` resolves to 2.0.0:
+
+```bash
+  --run proposed "uv run --group <group> --with mypy==<proposed> mypy ."
+```
+
+**Compare the tool's output, not `uv run`'s.** The first invocation provisions
+the environment and says so — `Creating virtual environment`, `Installed 35
+packages`, the hardlink warning — and the second, warm, says none of it. Captured
+whole and diffed, every comparison therefore reports a difference on the first
+run alone. Measured on this phase's own replay, where two mypy runs both
+reported `Success: no issues found in 157 source files` and the diff came back
+eight lines long, all of them uv's. Warm the cache with a throwaway run, or strip
+what uv wrote before comparing; a read-only gate has no tree diff to fall back
+on, so this capture *is* the measurement.
+
+Repos that have been bitten by this say so in their own configuration. The one
+this section came from pins its mypy hook local rather than to `mirrors-mypy`,
+and the comment gives the reason: *"the isolated env that mirrors-mypy builds
+lacks those deps, degrading expressions to Any and tripping warn_return_any —
+false failures that CI's `uv run mypy .` never sees."*
+
+**And `--no-project` does not mean isolated.** Measured, uv 0.12.5, one command
+and one difference:
+
+| The working directory | a project dependency, under `--no-project --with …` |
+|---|---|
+| has a `.venv` beside it | **importable**, and the project's own `src/` is on `sys.path` |
+| has none | absent |
+
+The overlay is layered on a `.venv` when it finds one. Phase 4's worktree is
+fresh, so isolation is what it gets today — which is the half that is wrong for a
+type checker. It is worth knowing anyway, because a re-run after anything has
+synced into that tree is a different measurement wearing an identical command,
+and this phase compares three of them.
 
 **Give the tool's write mode, not `--check`** — the measurement is what each
 version does to the files, and `--check` does nothing to them. Run it once per
@@ -236,6 +381,33 @@ cd "$SCRATCH/pr-<N>"
 uv sync --locked --no-build --no-install-project   # every dep resolved to a wheel
 uv sync --locked                                   # then add the project itself
 ```
+
+**First check that what you installed contains what the PR changed.** uv's
+`default-groups` is `["dev"]`, so the plain command covers a bump into `dev` and
+covers nothing else. Measured on uv 0.12.5:
+
+| Command | a `dev` package | a package in any other group |
+|---|---|---|
+| `uv sync --locked` | **installed** | absent |
+| `uv sync --locked --group <name>` | installed | **installed** |
+
+A bump into `lint`, `test`, `docs` — or into anything at all once
+`tool.uv.default-groups` is narrowed — is therefore *not installed*, and nothing
+fails. Phase 5 then reports a green frozen install for an environment that never
+contained the package under audit, which reads exactly like a reproduction.
+
+The fix is not a flag to memorise: `--group dev` is a no-op where the group is
+already default and still wrong where it is not. **Reconcile instead** — Phase 1
+already derived which packages moved, and the environment will say which ones it
+has:
+
+```bash
+uv pip list --format=freeze | grep -E '^(<the packages Phase 1 named>)='
+```
+
+Every name Phase 1 listed should come back at the version the PR proposes. A name
+that does not is the group question, and re-syncing with `--group <name>` is what
+answers it. Say in the report which groups the row covers.
 
 Step 1 is the one with the security value: if it succeeds, every dependency in
 the lockfile resolved to a **wheel** and no third-party build code ran at all. If
@@ -302,7 +474,7 @@ that was — is honest and is what this phase requires. The second sync is worth
 it when the fork you did *not* install is one of the packages under audit, and
 the report should say which of the two you did.
 
-**Three things qualify this phase's row, and "reproduced" alone asserts past all
+**Four things qualify this phase's row, and "reproduced" alone asserts past all
 of them.** Each has a green result that is true of *one* configuration and reads
 as true of every one:
 
@@ -311,11 +483,12 @@ as true of every one:
 | **which install** | the script-suppressing flags are the documented default and they weaken the proof: a package that genuinely needs its install script is not exercised. Re-running without them is a legitimate choice — say which produced the row |
 | **which interpreter** | the install materialised one fork of a forked lockfile. `uv run python -V`, not the auditor's `python3` |
 | **which forks were only verified** | Phase 1 checked all of them and Phase 5 installed one. Name the others rather than letting the install stand for them |
+| **which groups** | the sync installs the default groups, and a bump outside them is absent with nothing to show for it. Reconcile against the set Phase 1 named, above |
 
-None of the three is a failure to disclose. "Frozen install passed under
-`--no-build --no-install-project` on CPython 3.14; the 3.11 fork of `rpds-py` was
-verified but not installed" is a stronger row than "frozen install passed",
-because it is one a reader can falsify.
+None of the four is a failure to disclose. "Frozen install passed under
+`--no-build --no-install-project` on CPython 3.14, `dev` group included; the 3.11
+fork of `rpds-py` was verified but not installed" is a stronger row than "frozen
+install passed", because it is one a reader can falsify.
 
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.

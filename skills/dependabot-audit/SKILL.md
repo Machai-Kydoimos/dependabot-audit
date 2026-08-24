@@ -118,6 +118,9 @@ Source the outputs rather than transcribing them. Four of them are
 defines:
 
 ```bash
+#   SCRIPTS=<abs path>     this plugin's own scripts/ — the one output not about
+#                          the PR. Derived from discover.py's own location, so a
+#                          reference can name a script; see below
 #   DEFAULT=<branch>       the repo's default branch, derived
 #   HEAD_SHA=<40 hex>      the commit under audit
 #   BASE_REF=<40 hex>      GitHub's own base for the PR
@@ -221,6 +224,7 @@ If either check fails, `git worktree remove` it and re-add.
 
 | | |
 |---|---|
+| `$SCRIPTS` | this plugin's `scripts/` directory, absolute. **This is how `references/*.md` name a script**, and the only output that is not about the PR — `discover.py` derives it from its own location. See the paragraph below for why the references cannot use `${CLAUDE_PLUGIN_ROOT}` and Phase 0 can |
 | `$DEFAULT` | the repo's default branch, derived |
 | `$SCRATCH` | scratch directory, outside the repo — and **derived, so every later call resolves it to the same place**. Nothing else here survives a call boundary, so every consuming block re-derives this and re-sources `phase0.env` before reading any row below |
 | `$HEAD_SHA` | the full 40-character commit under audit |
@@ -236,6 +240,22 @@ If either check fails, `git worktree remove` it and re-add.
 | `$ECOSYSTEM` | `uv.lock`, `github-actions`, `unsupported`, `unknown` or `underivable` — **which Phase 1, 3, 4 and 5 method applies**, derived from the files the bump changed rather than inferred from the PR |
 | `$SCOPE_GATE` | `clean`, `beyond` or `underivable` — **Phase 1's gate, already decided** from the bot's own commits. That is the invariant the gate is about, and it is why `$BOT_COMMITS` does not cross: the loop that consumed it is now the script's |
 | `$HUMAN_COMMITS` | every non-bot commit on the branch, merges included. Its files are a **finding to report**, never a Hold |
+
+**`$SCRIPTS` is on that list because `${CLAUDE_PLUGIN_ROOT}` reaches only this
+file.** The token is substituted into `SKILL.md`'s *text* at skill load — which
+is why the `D=` line above resolves, and why the variable itself measures empty
+in every shell (`ROOT=[]`, marketplace install and `--plugin-dir` alike). A
+reference file is never injected: the model reads it off disk, so the token
+arrives at the shell intact and the path collapses to
+`/skills/dependabot-audit/scripts/…`. Two lines of `references/uv-lock.md`
+shipped that way from 0.15.0 until the first `uv.lock` replay ran them.
+
+So the bootstrap happens **once, here**, and everything downstream derives from
+it. `discover.py` reports its own directory, and a path taken from the file that
+just ran cannot name a different copy than the one running — which is also the
+answer to the stale-cache hazard, where an invented
+`export CLAUDE_PLUGIN_ROOT=…/0.22.1` pins a release into a cache that keeps every
+older version and then audits with it, silently and successfully.
 
 **`$PERMS` is not on that list, and the distinction is the point.** It is read off
 `discover.py`'s report *here in Phase 0*, where the execution gate and the
@@ -638,10 +658,26 @@ takes the verdict from that answer, so it is a finding and not a footnote: read
 the advisory or the bug for the setting, flag or mode it lives in, and grep this
 repo's config for it. A `Security` entry whose leak path the repo never
 configures is a follow-up on the merits; a destructive fix in a write mode the
-repo runs on every commit is not. Same shape of evidence, two urgencies, and the
-distinction is one `grep` — it is the same question Phase 4 asks of an actions
-bump, where `references/actions.md` calls the answer "inert here", a result and
-not silence.
+repo runs on every commit is not. Same shape of evidence, two urgencies — it is
+the same question Phase 4 asks of an actions bump, where `references/actions.md`
+calls the answer "inert here", a result and not silence.
+
+**The grep answers it only when the change is in the tool's own surface**, and
+two cases fall outside that. Both are ordinary, and both return a confident
+`inert here` that was never established:
+
+| The entry names | Why the config cannot answer it | What does |
+|---|---|---|
+| a **dependency** rather than a rule or a flag | it is not in this repo's config, and for a compiled wheel it is not even in this repo's *ecosystem* — a Rust crate inside a Python package, where the advisory lives on crates.io and every PyPI-side scanner is correctly clean | `references/uv-lock.md` § Phase 2 — read the shipped set out of the wheel's own SBOM. `references/actions.md` § Phase 2 for the tag-line question |
+| a rule this repo **disables** | the claim is then about the config *file*, and the verdict is about the *tool*. Config is interpreted: another file can win, a key can be spelled for a different version, a section can go unread | run the gate twice, once with the config and once without, and read the difference |
+
+That second row is Phase 6's rule one phase over. A red check does not carry a
+verdict until it is attributed; a config line does not carry `inert` until the
+tool has been run both ways. Measured on `rumdl` 0.2.59's destructive `MD013`
+fix, against a repo that runs `rumdl check --fix` on every Markdown commit:
+`rumdl check README.md` is clean, `rumdl check --no-config README.md` finds 32.
+The suppression is real — and one command is the difference between reporting
+that and asserting it.
 
 ## Phase 3 — Known vulnerabilities
 
@@ -728,12 +764,16 @@ report.
 
 **Say what the row actually covered.** A green reproduction is true of *one*
 configuration and reads as true of every one, so name which install ran, which
-interpreter produced it, and anything verified but not installed. "Frozen install
-passed under `--no-build --no-install-project` on CPython 3.14; the 3.11 fork of
+interpreter produced it, which dependency groups it covered, and anything
+verified but not installed. "Frozen install passed under `--no-build
+--no-install-project` on CPython 3.14, `dev` group included; the 3.11 fork of
 `rpds-py` was verified but not installed" is a stronger row than "frozen install
-passed", because it is one a reader can falsify. `uv run python -V` from inside
-the synced environment is where the interpreter comes from — not the auditor's
-own `python3` — and `resolution-markers` is why the two can differ.
+passed", because it is one a reader can falsify. A bump into a group the sync
+does not install is absent from the environment with nothing to show for it —
+the reference has the measurement and the reconciliation that catches it.
+`uv run python -V` from inside the synced environment is where the interpreter
+comes from — not the auditor's own `python3` — and `resolution-markers` is why
+the two can differ.
 
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.
@@ -781,7 +821,7 @@ answering in a well-formed way. A hand-run query cannot be regression-tested.
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
-C="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/ci_state.py"
+C="${SCRIPTS:?not in the handoff — re-run Phase 0}/ci_state.py"
 PARENT=$(git rev-parse "pr-<N>^") \
   || { echo "cannot resolve pr-<N>^ — was the ref fetched?" >&2; exit 2; }
 

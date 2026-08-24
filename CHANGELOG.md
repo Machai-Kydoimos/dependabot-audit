@@ -11,6 +11,214 @@ patch.
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-08-24
+
+The `uv.lock` path had never been replayed in a fresh context. `fpga-board-sim`
+#363 is a `setup-uv` bump, and every round of the replay gate since 0.24.0 rode
+on it — so fifteen versions of the Python method shipped without a run against
+it. The first one handed back five things, and one of them was a line that could
+never have worked. Minor: it changes what Phase 2 verifies, what Phase 5's row
+asserts, and what Phase 0 hands over.
+
+### `references/uv-lock.md` named its scripts with a token nothing expands
+
+Two measurements this repo already had, never put together:
+
+- **0.24.0**: `${CLAUDE_PLUGIN_ROOT}` is expanded *textually at skill load*, into
+  `SKILL.md`'s injected text. That is why Phase 0's `D=` line resolves.
+- **#52**: `$CLAUDE_PLUGIN_ROOT` is *empty* in the Bash tool's environment —
+  `ROOT=[]`, marketplace install and `--plugin-dir` alike.
+
+A reference file is never injected. The model reads it off disk, so the token
+reaches the shell intact and the path collapses. Measured, both spellings, with a
+real handoff:
+
+| `S=` as the file wrote it | resolves to |
+|---|---|
+| `${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/audit.py` | `/skills/dependabot-audit/scripts/audit.py` — **exit 2** |
+| `${SCRIPTS:?not in the handoff — re-run Phase 0}/audit.py` | the real file |
+
+`references/actions.md` contains no occurrence, which is the whole reason three
+replay rounds on an actions bump never ran one.
+
+**#52 named this and closed with it still in.** Its premise was that *every*
+handoff fails and every audit silently substitutes an absolute path; 0.24.0
+corrected that for `SKILL.md` and nobody re-checked the files the harness never
+touches. Its option 1 is what ships here:
+
+> Drop the variable and have Phase 0 derive the plugin root once […] into a Phase
+> 0 output the later phases consume.
+
+`discover.py --shell` now emits `SCRIPTS=`, from
+`os.path.dirname(os.path.realpath(__file__))`. Derived rather than named, which
+also closes the hazard 0.23.0 flagged from the other side: an invented
+`export CLAUDE_PLUGIN_ROOT=…/0.22.1` pins a release into a cache that keeps every
+older copy, and carried forward it audits with a stale plugin silently and
+successfully. **A path taken from the file that just ran cannot name a different
+copy than the one running.** Phase 6's `ci_state.py` moved to the same spelling,
+so exactly one line in the plugin depends on the substitution — Phase 0's
+bootstrap — and a guard holds it there.
+
+### Phase 5 could report a green install of an environment without the package
+
+And the hand-back's reason for it was wrong, which is worth more than the fix.
+
+It proposed `uv sync --locked --group dev`, because *"for a dev-dependency bump
+the plain form installs none of the packages under audit"*. Measured on uv 0.12.5
+against a project with two groups:
+
+| Command | a `dev` package | a package in any other group |
+|---|---|---|
+| `uv sync --locked` | **installed** | absent |
+| `uv sync --locked --group lint` | installed | **installed** |
+
+`default-groups` defaults to `["dev"]`. `fpga-board-sim` declares its group as
+`dev` and has no `[tool.uv]` table at all, so the flag was a no-op and Phase 5
+did exercise the bump. **The row underneath is the defect**: a bump into `lint`,
+`test`, `docs` — or anything once `default-groups` is narrowed — is not
+installed, nothing fails, and the phase reports a reproduction for an environment
+that never held the package the PR is about.
+
+So the fix is not the flag. It is the fourth qualifier in the table Phase 5
+already keeps — *which install*, *which interpreter*, *which forks*, and now
+**which groups** — plus the reconciliation that closes it: Phase 1 derived which
+packages moved, and `uv pip list` will say which ones are there. A memorised
+`--group dev` is a no-op where it was proposed and still wrong where it matters.
+
+### Phase 4 isolated gates that cannot answer without the project
+
+`--no-project` was written for ruff and given for every gate. A type checker
+denied the project's dependencies degrades every expression from them to `Any`
+under `ignore_missing_imports`, and `warn_return_any` — implied by
+`strict = true` — fires on code that is fine. `gate_diff.py` reports the
+difference faithfully; the difference is the environment.
+
+The audited repo documents the trap in its own `.pre-commit-config.yaml`, as the
+reason its mypy hook is local rather than `mirrors-mypy` — and **so does this
+repo's**, one directory over, as the reason `mirrors-mypy` is safe here. Both
+were written before Phase 4 walked into it.
+
+**Measured while fixing it, and not in the hand-back: `--no-project` is not
+isolation.** uv 0.12.5, one command, one difference:
+
+| The working directory | a project dependency, under `--no-project --with …` |
+|---|---|
+| has a `.venv` beside it | **importable**, and the project's own `src/` is on `sys.path` |
+| has none | absent |
+
+The overlay layers on a `.venv` when it finds one. Phase 4's worktree is fresh,
+so isolation is what it gets — the half that is wrong for a type checker. Worth
+knowing anyway: a re-run after anything has synced there is a different
+measurement wearing an identical command, and the phase compares three of them.
+`--with` still pins the version under test without the flag, measured against a
+project locking `iniconfig 2.1.0` where `--with iniconfig==2.0.0` resolves to
+2.0.0.
+
+### Phase 2 called its scope test "one `grep`", and two ordinary cases fall outside it
+
+Both return a confident `inert here` nobody established. `references/uv-lock.md`
+gains a `## Phase 2` section for them, and Phase 2 joins the split phases.
+
+**A changelog entry naming a dependency.** `rumdl` 0.2.60 ships one line —
+`deps: update h2 to 0.4.16`, under **Fixed**, no `Security` heading — and that is
+RUSTSEC-2026-0258 / GHSA-q83h-524g-xf6h, *h2 unbounded empty DATA frames*. The
+crate is Rust inside a Python wheel, so `pip-audit` is clean under both
+`-s pypi` and `-s osv`, correctly, and this repo's config has never heard of
+`h2`. The wheel answers it — PEP 770 puts an SBOM in `.dist-info/sboms/`:
+
+```
+rumdl-0.2.60-py3-none-manylinux_2_28_x86_64.whl   6,657,559 bytes
+  dist-info/sboms/rumdl.cyclonedx.json   CycloneDX 1.5, 178 components
+  h2, reqwest, hyper, jsonschema         absent
+  tokio                                  present — so the document is the shipped set
+```
+
+**`Cargo.lock` says the opposite, and that is the trap.** It records
+`[dev-dependencies]`, and `rumdl`'s `Cargo.toml` at `v0.2.60` has
+`jsonschema = "0.46"` under exactly that heading — which is what pulls `reqwest`
+→ `h2`. Reaching for the lockfile finds the crate and calls it exposure.
+
+A wheel with no SBOM is **`underivable`, never clean**. PEP 770 coverage is
+partial, so absence of the file says nothing about absence of the crate, and the
+recipe exits non-zero saying so rather than printing an empty component list.
+
+**A rule the repo disables.** `rumdl` 0.2.59 fixed a *destructive* autofix — "stop
+reflow from joining a setext heading into its underline" — in a repo running
+`rumdl check --fix` on every Markdown commit. `disable = ["MD013", "MD036"]` is a
+claim about a file; the verdict is about the tool:
+
+```
+$ uv run rumdl check README.md                 Success: No issues found
+$ uv run rumdl check --no-config README.md     Issues: Found 32 issues
+```
+
+That is Phase 6's rule one phase over. A red check does not carry a verdict until
+it is attributed; a config line does not carry `inert` until the tool has been run
+both ways. The hand-back classified this row **correct** — ordinary judgement, not
+a gap — and it is promoted because the judgement was right and the procedure did
+not ask for it.
+
+### Tests
+
+Fifteen guards in `tests/test_skill_prose.py`, four classes, every one
+mutation-checked against the prose or the code it was written for, with the
+mutation asserted to have landed before the result was read.
+
+**Two did not discriminate as first written, and both are the house failure.**
+One asserted `"group"` appeared in Phase 5 and passed against `grouped`,
+`--group` and `default-groups` alike; it now reads the qualifier *table*. The
+other asserted `uv pip list` and passed against prose that has printed the
+installed versions since 0.20.0 to answer a different question — the same shape
+as the 0.24.0 guard satisfied by a narrative quoting the string it looked for. It
+now asserts the filter is fed from the set Phase 1 derived.
+
+`reachable()` had to learn the new spelling in the same commit, and the reason is
+its own docstring: converting Phase 6's `C=` line silently emptied
+`reachable(6)`, and four guards asserting on `ci_state.py`'s query went to
+matching nothing. They failed loudly, which is the only reason this is a footnote
+rather than an entry of its own.
+
+### The replay
+
+`fpga-board-sim` #365 — a grouped `python-deps` bump, mypy 2.3.0 → 2.3.1, ruff
+0.16.3 → 0.16.4, rumdl 0.2.55 → 0.2.58 — audited end to end in a fresh context
+via `claude -p --plugin-dir`, execution authorised deliberately because Phase 4
+and Phase 5 both changed and `fpga-board-sim` is a repo this account can push to.
+Checked against the session transcript's actual `Bash` calls, not the report's
+recollection.
+
+**It ran out of budget at Phase 7 and never printed a report, so there is no
+verdict and no Phase 8 hand-back from it.** What it did reach is every surface
+this release changes, and the transcript is the record:
+
+| Changed here | What the run did with it |
+|---|---|
+| `SCRIPTS=` in the handoff | emitted, sourced, and `S="${SCRIPTS:?…}/audit.py"` resolved — the Phase 1 block ran **as written** and verified all three packages against PyPI |
+| § Phase 2, the SBOM recipe | run against `rumdl` 0.2.58: `h2 -> no`, `hyper -> no`, `reqwest -> no`, `jsonschema -> no`, `tokio -> YES` |
+| § Phase 2, the config differential | `rumdl check README.md` clean against `--no-config` finding 32, reproduced — then it went further and grepped the repo for setext headings, which is the question behind the question |
+| § Phase 4, no `--no-project` for a type checker | `uv run --group dev --with mypy==2.3.0/2.3.1 mypy .`, both `Success: no issues found in 157 source files`. Under the old recipe those 157 files would have been resolved against nothing |
+| § Phase 5, reconcile against Phase 1's set | `uv pip list --format=freeze \| grep -iE '^(mypy\|ruff\|rumdl)='` → `mypy==2.3.1 ruff==0.16.4 rumdl==0.2.58`, and it read `[tool.uv]` for `default-groups` unprompted |
+
+**And it found a defect in the Phase 4 prose written one hour earlier.** Dropping
+`--no-project` means the diagnostics comparison is a capture of `uv run`, and the
+first invocation provisions the environment while the second does not. Both mypy
+runs printed `Success: no issues found in 157 source files`; the diff came back
+eight lines long, every one of them uv's own `Creating virtual environment` /
+`Installed 35 packages` / hardlink warning. A read-only gate has no tree diff to
+fall back on, so that capture *is* the measurement — a false difference of
+exactly the kind this phase exists to catch, introduced by the fix for the last
+one. Folded in rather than filed.
+
+Two deviations visible in the transcript, both minor: a repeat `gate_diff.py`
+call abbreviated `G="${SCRIPTS:?…}"` to `G="$SCRIPTS"`, dropping the fail-loudly
+guard the file writes; and `gate_diff.py --help` was invoked by absolute path for
+reconnaissance before first use. Neither changed a result.
+
+`uv sync --locked --no-build --no-install-project` failed on `actionlint-py`,
+exit 2, and step 2 succeeded — the known sdist-only case, reproduced, not a
+finding against this bump.
+
+
 ## [0.29.0] — 2026-08-22
 
 Phase 1's scope gate — the branch that decides whether Phases 4 and 5 get a
