@@ -752,6 +752,25 @@ def shell(report: dict[str, Any]) -> None:
         ("CREATED_AT", report["created_at"]),
     ]
     print("# Phase 0 outputs. Sourced, not transcribed.")
+
+    # Where this plugin's scripts live, derived from the file emitting the line
+    # rather than named by anyone. It is the one output that is not about the PR,
+    # and it is here because it is the only place the answer is known for certain.
+    #
+    # `${CLAUDE_PLUGIN_ROOT}` is substituted into `SKILL.md`'s *text* at skill
+    # load, so it resolves there and nowhere else. `references/*.md` are read off
+    # disk; the token reaches the shell intact, where the variable is empty and
+    # the path collapses to `/skills/dependabot-audit/scripts/…`. Every reference
+    # block already reloads this handoff, so this is what lets one name a script.
+    #
+    # Deliberately not routed through `state()`: the other outputs can be
+    # underivable, and this one cannot — the script answering is the script being
+    # located. That also settles the version question 0.23.0 raised, where an
+    # invented `export CLAUDE_PLUGIN_ROOT=…/0.22.1` pinned a release into a cache
+    # that keeps every older copy and ran a stale plugin silently. A path taken
+    # from the running file cannot name a version other than the one running.
+    print(f"SCRIPTS={os.path.dirname(os.path.realpath(__file__))}")
+
     for key, value in pairs:
         if state(value) == DERIVED:
             print(f"{key}={value}")

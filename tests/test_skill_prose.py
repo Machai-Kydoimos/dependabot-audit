@@ -46,11 +46,16 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "skills/dependabot-audit"
 SKILL = PLUGIN / "SKILL.md"
 
-# Names the skill is entitled to use without defining: the harness supplies them.
-# Supplied by the environment, never by a phase, so the forward-reference guard
-# must not read them as outputs one phase owes another. `TMPDIR` joined them in
-# 0.26.0: Phase 0 derives `$SCRATCH` under `${TMPDIR:-/tmp}` so the path is the
+# Names the skill is entitled to use without defining, so the forward-reference
+# guard must not read them as outputs one phase owes another. `TMPDIR` joined them
+# in 0.26.0: Phase 0 derives `$SCRATCH` under `${TMPDIR:-/tmp}` so the path is the
 # same on every call, and macOS sets TMPDIR where Linux leaves it unset.
+#
+# `CLAUDE_PLUGIN_ROOT` is here on a different footing, and the comment used to say
+# "the harness supplies them", which is measurably false — it is empty in every
+# shell. What the harness supplies is the *substitution*, into `SKILL.md`'s text
+# at load. So it resolves in this one file and the guard below is what keeps it
+# there; everywhere else the plugin's scripts are reached through `$SCRIPTS`.
 EXTERNAL = {"CLAUDE_PLUGIN_ROOT", "HOME", "PATH", "IFS", "TMPDIR"}
 
 PHASE_HEADING = re.compile(r"^## Phase (\d+)\b", re.MULTILINE)
@@ -80,6 +85,12 @@ REF_MADE = re.compile(r"git fetch \S+ \"pull/<N>/head:pr-<N>\"")
 # script. Module-level because both the path-existence guard and `reachable()`
 # read it, and two copies would drift.
 PLUGIN_PATH = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([A-Za-z0-9_./-]+)")
+
+# The same handoff as the reader now spells it outside Phase 0's bootstrap:
+# `$SCRIPTS` is the Phase 0 output carrying this plugin's own `scripts/`. The
+# optional `:?message` is bash's fail-on-unset, which the blocks use so an
+# unsourced handoff stops rather than running `/ci_state.py`.
+SCRIPTS_PATH = re.compile(r"\$\{?SCRIPTS(?::[^}]*)?\}?/([A-Za-z0-9_.-]+)")
 
 # A reference the prose hands off to, e.g. `references/actions.md`.
 REFERENCE = re.compile(r"references/([a-z0-9_-]+\.md)")
@@ -141,6 +152,30 @@ def _code_only(source: str) -> str:
     return ast.unparse(tree)
 
 
+def _scripts_named_in(text: str) -> list[pathlib.Path]:
+    """Every plugin script `text` invokes, under either spelling.
+
+    Two exist because only one of them works in only one place. Phase 0
+    bootstraps with `${CLAUDE_PLUGIN_ROOT}`, substituted into `SKILL.md`'s text at
+    skill load; everything after it reads `$SCRIPTS` out of the handoff, because
+    a file the harness never injects reaches the shell with the token intact and
+    an empty variable.
+
+    Kept in one function because `reachable()` and the path-existence guard both
+    ask it, and because forgetting the second spelling is not a loud failure:
+    converting Phase 6's `C=` line silently emptied `reachable(6)`, and four
+    guards asserting on `ci_state.py`'s query went to matching nothing. That is
+    the exact defect the `reachable()` docstring was written for, one spelling
+    later.
+    """
+    found = []
+    for rel in PLUGIN_PATH.findall(text):
+        found.append(ROOT / rel)
+    for name in SCRIPTS_PATH.findall(text):
+        found.append(PLUGIN / "scripts" / name)
+    return [p for p in found if p.suffix == ".py" and p.exists()]
+
+
 def first_phase(hits: dict[str, list[int]], name: str) -> int:
     return min(hits[name])
 
@@ -187,10 +222,8 @@ class SkillHarness(unittest.TestCase):
         for name, section in self._handoffs(number):
             del name
             parts.extend(bash_blocks(section))
-        for rel in PLUGIN_PATH.findall(dict(self.phases)[number]):
-            path = ROOT / rel
-            if path.suffix == ".py" and path.exists():
-                parts.append(_code_only(path.read_text(encoding="utf-8")))
+        for path in _scripts_named_in(dict(self.phases)[number]):
+            parts.append(_code_only(path.read_text(encoding="utf-8")))
         return "\n".join(parts)
 
     def _handoffs(self, number: int) -> list[tuple[str, str]]:
@@ -479,10 +512,15 @@ class TestEveryHandoffLands(SkillHarness):
     breaks the target, and dropping a mention breaks the pointer.
     """
 
-    # Phases doing ecosystem-specific work. Phase 2's uv answer comes out of the
-    # Phase 1 script rather than a section of its own, so it is not on this list;
-    # Phase 6 is ecosystem-independent by construction.
-    SPLIT_PHASES = (1, 3, 4, 5)
+    # Phases doing ecosystem-specific work. Phase 6 is ecosystem-independent by
+    # construction and stays off the list.
+    #
+    # Phase 2 joined in 0.30.0. Its uv answer used to be nothing but the Phase 1
+    # script's `latest` line, which is why it was exempt — but the scope half of
+    # the phase is per-ecosystem and always was: a vendored crate is read out of
+    # a wheel's SBOM, a moving major tag out of a `compare`. Both had a home in
+    # `actions.md` and only one had one anywhere.
+    SPLIT_PHASES = (1, 2, 3, 4, 5)
     ECOSYSTEMS = ("uv-lock.md", "actions.md")
 
     def test_every_split_phase_names_both_ecosystem_references(self):
@@ -2499,3 +2537,297 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestThePluginRootResolvesWhereItIsUsed(SkillHarness):
+    """`references/uv-lock.md` named its scripts with a token nothing expands.
+
+    Two measurements this repo already had, never put together:
+
+    - `${CLAUDE_PLUGIN_ROOT}` is substituted into `SKILL.md`'s **text** at skill
+      load (0.24.0, settled from a 62,674-character injection whose `D=` line
+      reads as an absolute path against a file holding the token on disk).
+    - `$CLAUDE_PLUGIN_ROOT` is **empty** in the Bash tool's environment, on
+      marketplace install and `--plugin-dir` alike (#52, `ROOT=[]`).
+
+    A reference file is never injected — the model reads it off disk — so the
+    token arrives at the shell intact and the path collapses to
+    `/skills/dependabot-audit/scripts/audit.py`. Two lines shipped that way from
+    0.15.0, and `references/actions.md` happens to contain none, which is why
+    three replay rounds on an actions bump never ran one.
+
+    The old guards blessed it: `EXTERNAL` called the variable harness-supplied,
+    and the path check asked only whether the *target file* exists. Both pass on
+    a line that cannot execute.
+    """
+
+    def _docs(self):
+        yield SKILL
+        yield from sorted((PLUGIN / "references").glob("*.md"))
+
+    def test_the_token_is_absent_from_every_file_the_harness_does_not_inject(self):
+        for doc in sorted((PLUGIN / "references").glob("*.md")):
+            found = PLUGIN_PATH.findall(doc.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [],
+                found,
+                f"{doc.name} names ${{CLAUDE_PLUGIN_ROOT}}/{found[0] if found else ''}. "
+                f"Only SKILL.md is substituted at skill load; a reference is read off "
+                f"disk, so the token reaches the shell where the variable is empty and "
+                f"the path resolves to /skills/... — use $SCRIPTS from the handoff",
+            )
+
+    def test_the_bootstrap_happens_once_and_in_phase_0(self):
+        """One line may depend on the substitution, because one line has to."""
+        whole = SKILL.read_text(encoding="utf-8")
+        self.assertEqual(
+            1,
+            len(PLUGIN_PATH.findall(whole)),
+            "SKILL.md should reach the plugin root exactly once — Phase 0's "
+            "bootstrap. Every later use is a second dependency on a substitution "
+            "that holds in one file and one file only",
+        )
+        self.assertTrue(
+            PLUGIN_PATH.search(dict(self.phases)[0]),
+            "the one bootstrap is not in Phase 0, so a phase that runs earlier "
+            "than the derivation depends on it",
+        )
+
+    def test_every_script_reached_through_the_handoff_exists(self):
+        for doc in self._docs():
+            for name in SCRIPTS_PATH.findall(doc.read_text(encoding="utf-8")):
+                self.assertTrue(
+                    (PLUGIN / "scripts" / name).exists(),
+                    f"{doc.name} runs $SCRIPTS/{name}, which is not in scripts/",
+                )
+
+    def test_the_scripts_directory_is_an_output_phase_0_actually_emits(self):
+        self.assertIn(
+            "SCRIPTS",
+            _emitted_by_discover(),
+            "the references name $SCRIPTS and discover.py --shell does not write "
+            "it, so every one of them resolves to /audit.py",
+        )
+
+    def test_the_directory_is_derived_from_the_script_rather_than_written_down(self):
+        """A literal path pins a version; `__file__` cannot name the wrong copy.
+
+        0.23.0 recorded the hazard from the other direction — an invented
+        `export CLAUDE_PLUGIN_ROOT=…/0.22.1` pins a release into a cache that
+        keeps every older copy, and carried forward it audits with a stale plugin
+        silently and successfully. The emitter closes it only while the value
+        comes from the file doing the emitting.
+        """
+        src = (PLUGIN / "scripts/discover.py").read_text(encoding="utf-8")
+        emitter = next(
+            ast.unparse(node)
+            for node in ast.walk(ast.parse(src))
+            if isinstance(node, ast.FunctionDef)
+            and "Phase 0 outputs. Sourced, not transcribed." in ast.unparse(node)
+        )
+        line = next(ln for ln in emitter.splitlines() if "SCRIPTS=" in ln)
+        self.assertIn(
+            "__file__",
+            line,
+            f"SCRIPTS is emitted as {line.strip()!r} rather than derived from the "
+            f"script's own location; a written-down path is one that can name a "
+            f"different version than the one running",
+        )
+
+
+class TestPhase5NamesTheGroupsTheInstallCovered(SkillHarness):
+    """A frozen install can contain none of the packages under audit and pass.
+
+    `uv sync --locked` installs `tool.uv.default-groups`, which defaults to
+    `["dev"]`. Measured on uv 0.12.5 against a project with two groups:
+
+        uv sync --locked                  dev package installed, other absent
+        uv sync --locked --group lint     both installed
+
+    So a bump into `lint`, `test`, `docs` — or into anything once
+    `default-groups` is narrowed — is not installed, nothing fails, and Phase 5
+    reports a green reproduction for an environment that never held the package
+    the PR is about.
+
+    The `fpga-board-sim` #365 hand-back proposed `--group dev` as the fix, on the
+    reasoning that the plain form installs nothing under audit for a dev bump.
+    The table above says otherwise: that repo declares its group as `dev` and no
+    `[tool.uv]` at all, so the flag was a no-op and the bump *was* exercised. The
+    defect is the row underneath, and a memorised flag does not close it — the
+    environment has to be asked, which is what the phase already does for the
+    interpreter and the forks.
+    """
+
+    def test_the_row_is_qualified_by_which_groups_it_covered(self):
+        """Asserted against the qualifier table, not the phase body.
+
+        A body-wide search for "group" passes on `--group`, on `default-groups`,
+        and on the word appearing anywhere at all — mutation-checked and it did.
+        The claim is narrower than that: the table listing what "reproduced"
+        asserts past must carry a row for this, because that table is what a
+        writer reads when composing the row.
+        """
+        qualifiers = [
+            table
+            for table in tables(self.material(5))
+            if any("which install" in row.lower() for row in table)
+        ]
+        self.assertTrue(qualifiers, "Phase 5 has no table of what qualifies its row")
+        rows = "\n".join(qualifiers[0]).lower()
+        self.assertIn(
+            "which groups",
+            rows,
+            "the qualifier table names which install, which interpreter and which "
+            "forks. A bump outside the default groups is absent from the "
+            "environment in the same way and with nothing to show for it, so it "
+            "belongs in the same table rather than in prose beside it",
+        )
+
+    def test_the_default_is_measured_rather_than_assumed_either_way(self):
+        """Both wrong readings are live: that `dev` needs a flag, and that no group does."""
+        phase5 = self.material(5)
+        self.assertIn(
+            "default-groups",
+            phase5,
+            "Phase 5 must name what the plain command actually installs. Without "
+            "it, `--group dev` reads as necessary where it is a no-op and as "
+            "sufficient where the group is called something else",
+        )
+
+    def test_the_installed_set_is_reconciled_against_the_packages_that_moved(self):
+        """Phase 1 derived the set; the environment will say what it has.
+
+        Not `uv pip list` on its own: § Phase 5 has printed the installed
+        versions since 0.20.0, to answer *which interpreter*, and a guard
+        asserting the command passes without the reconciliation ever being
+        written. Mutation-checked, and it did — the same shape as the 0.24.0
+        guard satisfied by a narrative quoting the string it looked for.
+
+        What is new is where the filter comes from. A hand-typed list of names
+        re-introduces the defect one layer up, because the names would be read
+        off the PR title, which a grouped bump does not carry.
+        """
+        self.assertRegex(
+            self.reachable(5),
+            r"uv pip list[^\n]*Phase 1 named",
+            "nothing checks the bumped packages against what was installed. That "
+            "is the one test a wrong dependency group cannot pass, and the set to "
+            "check against has to be the one Phase 1 derived",
+        )
+
+
+class TestPhase4DoesNotIsolateAGateThatNeedsTheProject(SkillHarness):
+    """`--no-project` was written for ruff and applied to every gate.
+
+    A type checker denied the project's dependencies degrades every expression
+    from them to `Any` under `ignore_missing_imports`, and `warn_return_any` —
+    implied by `strict = true` — then fires on code that is fine. `gate_diff.py`
+    reports the difference faithfully; the difference is the environment.
+
+    The repo this came from documents the trap in its own pre-commit config, as
+    the reason its mypy hook is local rather than `mirrors-mypy`. Phase 4 walked
+    into it anyway.
+
+    Measured while fixing it, and not in the hand-back: `--no-project` is not
+    isolation. With a `.venv` beside the working directory the `--with` overlay
+    is layered on it and the project's dependencies are importable; with none
+    they are absent. Same command, uv 0.12.5.
+    """
+
+    def test_the_flag_is_qualified_rather_than_given_for_every_gate(self):
+        phase4 = self.material(4)
+        self.assertIn(
+            "--no-project",
+            phase4,
+            "Phase 4's recipe is built on the flag; the guard below is about "
+            "whether the exception to it is stated",
+        )
+        self.assertRegex(
+            phase4.lower(),
+            r"--no-project[^.]{0,200}(wrong|right for)",
+            "Phase 4 gives `--no-project` three times and never says which gates "
+            "it is wrong for, so the recipe reads as universal",
+        )
+
+    def test_the_symptom_is_named_so_a_false_difference_is_recognisable(self):
+        phase4 = self.material(4)
+        self.assertIn(
+            "warn_return_any",
+            phase4,
+            "the failure is a difference that looks real. Naming the mechanism is "
+            "what lets a reader tell it from a behaviour change",
+        )
+
+    def test_the_flag_is_not_described_as_isolation_it_does_not_give(self):
+        self.assertIn(
+            ".venv",
+            self.material(4),
+            "`--no-project` layers on a `.venv` when it finds one, so what the "
+            "flag means depends on a directory. A phase that runs three of these "
+            "and compares them has to say so",
+        )
+
+
+class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
+    """Phase 2 answered "is this repo in scope" with one grep over repo config.
+
+    That works for a rule or a flag. Two ordinary cases fall outside it, and both
+    return a confident `inert here` nobody established.
+
+    **A changelog entry naming a dependency.** `rumdl` 0.2.60 ships
+    `deps: update h2 to 0.4.16` under **Fixed**, with no `Security` heading —
+    RUSTSEC-2026-0258. The crate is Rust inside a Python wheel, so `pip-audit`
+    is clean under both `-s pypi` and `-s osv`, correctly, and the repo's config
+    has never heard of `h2`. Reading the wheel's PEP 770 SBOM answers it:
+    CycloneDX 1.5, 178 components, no `h2` — while `tokio` is there, so the
+    document is the real shipped set. `Cargo.lock` says the opposite, because it
+    carries `[dev-dependencies]` and `jsonschema` is one.
+
+    **A rule the repo disables.** `rumdl` 0.2.59 fixed a destructive `MD013`
+    autofix in a repo running `--fix` on every Markdown commit. `disable =
+    ["MD013"]` is a claim about a file; `rumdl check README.md` clean against
+    `--no-config` finding 32 is a claim about the tool.
+    """
+
+    def test_phase_2_says_the_grep_cannot_answer_a_vendored_dependency(self):
+        self.assertRegex(
+            self.material(2).lower(),
+            r"grep[^.]{0,400}(cannot|only when)",
+            "Phase 2 called the scope test `one grep`, which is false for an "
+            "advisory against a dependency vendored out of another ecosystem — "
+            "the case where every Python-side scanner is correctly clean",
+        )
+
+    def test_the_shipped_set_is_read_from_the_wheel_not_the_vendored_lockfile(self):
+        phase2 = self.material(2)
+        self.assertIn(
+            "sboms/",
+            phase2,
+            "the shipped set is in the wheel's own SBOM; nothing else in reach "
+            "distinguishes a vendored crate that is compiled in from one that is not",
+        )
+        self.assertIn(
+            "dev-dependencies",
+            phase2,
+            "a reader who reaches for Cargo.lock instead finds the crate and calls "
+            "it exposure — it records dev-dependencies, which are not in the binary",
+        )
+
+    def test_a_wheel_with_no_sbom_is_underivable_rather_than_clean(self):
+        self.assertRegex(
+            self.material(2).lower(),
+            r"no sbom[^.]{0,200}underivable|underivable[^.]{0,200}sbom",
+            "PEP 770 coverage is partial, so a missing SBOM says nothing about a "
+            "missing crate. Collapsing it into `clean` builds the unverified "
+            "verifier this plugin exists to argue against",
+        )
+
+    def test_a_disabled_rule_is_proven_by_running_the_tool_both_ways(self):
+        phase2 = self.material(2)
+        self.assertIn(
+            "--no-config",
+            phase2,
+            "an `inert here` resting on a config line is an assertion about the "
+            "file while the verdict is about the tool — the same gap Phase 6 "
+            "closed for a red check by attributing it",
+        )
