@@ -1,7 +1,10 @@
-# Local gates, and the only enforcing ones. Branch protection and rulesets are
-# both unavailable on this repo's plan (private repo, free org), so a CI check
-# can never be made required — CI here is advisory, and these hooks are what can
-# actually stop a bad commit. Install with: pre-commit install
+# Local gates, run before the commit exists. They are no longer the *only*
+# enforcing ones: the repo went public on 2026-08-15 and a ruleset on `main` now
+# requires six contexts, so CI is enforcing rather than advisory — a red check
+# blocks the merge. #37 recorded that switch; the ruleset itself is a repo setting.
+# These hooks still earn their place by failing in seconds on your machine
+# instead of minutes in Actions, and by running `--fix` where CI only checks.
+# Install with: pre-commit install
 #
 # The pinned `rev:`s are the single source of truth for tool versions: CI runs
 # `pre-commit run --all-files` rather than its own `pip install ruff mypy`, so

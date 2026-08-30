@@ -1084,6 +1084,65 @@ class TestPhase4DoesNotReadItsOwnResidueAsAFinding(SkillHarness):
         )
 
 
+class TestPhase4CallsTheScriptForEveryGate(SkillHarness):
+    """A `--run` fragment does not elicit the call it is a fragment of.
+
+    Measured, not reasoned: the round-10 replay of `fpga-board-sim` #365 took
+    ruff and rumdl through `gate_diff.py` and compared **mypy** -- the
+    project-importing gate the `--no-project` exception exists for -- with a bare
+    `cd` into the worktree and two `uv run` calls. Every other code block in
+    Phase 4 is a whole `python3 "$G" --tree ...` invocation; that one was a lone
+    `--run` line, and it read as advice about a flag rather than a call to make.
+
+    The bypass costs more than the flag. It loses `require_clean_worktree`, loses
+    the `reset --hard` between runs -- so run two inherits run one -- and loses
+    the tree snapshot the phase exists to take. It also silently voided 0.30.1,
+    whose neutralisation is a `--run` fragment and so reaches nothing when no
+    `--run` is built: that fix shipped green, mutation-checked, and inert.
+
+    So the guard is structural rather than textual. A prose assertion that the
+    phase *says* to use the script would have passed against the text that did
+    not elicit it -- 298 tests did. This asks that every block teaching a gate
+    invocation actually contains one.
+    """
+
+    def _phase4_blocks(self) -> list[tuple[str, str]]:
+        found: list[tuple[str, str]] = []
+        for path in (SKILL, PLUGIN / "references/uv-lock.md"):
+            for number, body in phases(path.read_text(encoding="utf-8")):
+                if number == 4:
+                    found.extend((path.name, code) for code in bash_blocks(body))
+        return found
+
+    def _blocks_containing(self, token: str) -> list[tuple[str, str]]:
+        hits = [(name, code) for name, code in self._phase4_blocks() if token in code]
+        self.assertTrue(hits, f"Phase 4 no longer carries a block containing {token!r}")
+        return hits
+
+    def test_every_gate_example_is_a_whole_invocation(self):
+        """A block that pins a version under test must also make the call."""
+        for token in ("--with mypy", "--with pytest", "--with ruff"):
+            for name, code in self._blocks_containing(token):
+                self.assertIn(
+                    "gate_diff.py",
+                    code,
+                    f"{name}: the {token} example is a fragment. #85 measured that a bare "
+                    "--run line is compared by hand instead, losing the clean-tree guard, "
+                    "the reset between runs, and the tree snapshot",
+                )
+                self.assertIn("--tree", code, f"{name}: {token} example names no tree")
+
+    def test_the_residue_neutralisation_reaches_a_call(self):
+        """0.30.1's fix was inert precisely because it sat in a fragment."""
+        for name, code in self._blocks_containing("PYTHONDONTWRITEBYTECODE"):
+            self.assertIn(
+                "gate_diff.py",
+                code,
+                f"{name}: the neutralisation only takes effect on a --run the script is "
+                "handed; in a fragment it is text",
+            )
+
+
 class TestEverythingTheProseNamesExists(SkillHarness):
     """A renamed script breaks every phase that invokes it, silently."""
 
