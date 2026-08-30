@@ -33,3 +33,10 @@ jobs:
       - run: python -m unittest discover -s integration -v
         env:
           RUN_NETWORK_TESTS: "1"
+          # `test_live_changelog_sources` shells out to `gh api`, and `gh` refuses
+          # to run unauthenticated. Without a token its helper raises SkipTest, so
+          # the whole file would skip in silence — a guard that never fires while
+          # looking like coverage, which is worse than not having it. Read-only:
+          # the job's `permissions:` is `contents: read`, and every repository it
+          # queries is public.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -155,10 +155,26 @@ Then the part that changes state, which is yours:
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
+git worktree prune          # a previous run's registrations, if $SCRATCH is gone
 git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
 ```
+
+**`prune` first, and it is not defensive clutter.** `$SCRATCH` lives under
+`$TMPDIR`, so a reboot or a tmp sweep between two audits of the same PR deletes
+the worktrees and leaves their registrations behind. Git then refuses **the
+fetch** — one command before any `worktree add` — with a message naming a
+directory that is not there:
+
+```
+fatal: refusing to fetch into branch 'refs/heads/pr-<N>' checked out at '<a path that no longer exists>'
+```
+
+That is this, not a permissions or ref problem, and the stale-worktree paragraph
+below does not reach it: that paragraph is keyed to `git worktree add` refusing,
+and Phase 0 never gets that far. `prune` is a no-op when state is clean, needs no
+path argument, and clears `pr-<N>` and `base-<N>` together.
 
 **An actions bump consumes neither worktree — do not create them for one.**
 `references/actions.md` reads the diff with `git show "pr-<N>:…"` throughout,

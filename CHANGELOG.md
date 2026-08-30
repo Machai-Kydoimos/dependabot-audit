@@ -11,6 +11,83 @@ patch.
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-08-30
+
+Closes [#90](https://github.com/Machai-Kydoimos/dependabot-audit/issues/90) and
+[#91](https://github.com/Machai-Kydoimos/dependabot-audit/issues/91), handed back
+by the round-12 and round-13 replays of `fpga-board-sim` #365. Both are the same
+shape: a phase names a step it never says how to take, so the run improvises one
+— and an improvisation that comes up empty is indistinguishable from a real
+absence.
+
+**Minor, not patch.** Phase 0 gains a command in its state-changing block, and
+Phase 2 gains a documented method where it had none. Both change what the phase
+does and what its row can assert.
+
+### Fixed
+
+- **Phase 0 prunes stale worktree registrations before it fetches** (#90).
+  `$SCRATCH` lives under `$TMPDIR`, so a reboot or a tmp sweep between two audits
+  of the same PR deletes the worktrees and leaves their registrations behind. Git
+  then refuses **the fetch** — one command before either `worktree add` — with
+  `refusing to fetch into branch 'refs/heads/pr-<N>' checked out at '<a path that
+  no longer exists>'`. The stale-worktree paragraph that exists for exactly this
+  is keyed to `git worktree add` refusing, so Phase 0 died two commands before
+  reaching its own remedy. Measured on git 2.55.0: stale registration → fetch
+  exits 128; `prune` first → fetch and both adds exit 0; `prune` on clean state
+  is a no-op.
+
+  **The hand-back was wrong about both remedies**, and the issue records the
+  measurement rather than the row: `git worktree remove` does *not* fail on a
+  missing path (exit 0, and git's own message for the `add` case names it), and
+  `git branch -D` was never needed once the registration was gone. `prune` is
+  preferred for taking no path argument and clearing `pr-<N>` and `base-<N>`
+  together.
+
+### Added
+
+- **Phase 2 has a way to reach a changelog** (#91). *"Read the changelog for
+  every version in the gap"* had no method anywhere in the plugin — not how to
+  find the project's repository, not how to name the release tag, not what to do
+  when there is no release. `references/uv-lock.md` § Phase 2 now carries the
+  repo lookup and a three-rung ladder: release notes, then a changelog section
+  for that exact version, then the tag-to-tag commit range. **Say which rung
+  produced the row**, for the same reason Phase 5 says which install ran.
+
+- **The tag is matched against the release list, never constructed.** Measured
+  2026-08-30 across one bump's three tools: `ruff` releases as `0.16.4` (and
+  `gh release view v0.16.4` is *release not found*, while its **older** tags do
+  carry `v`), `rumdl` as `v0.2.58`, and `python/mypy` publishes **zero** releases
+  while tagging `v2.3.1`. A guessed prefix returns "release not found", which
+  reads exactly like "this version has no notes" — so the audit reports an
+  absence of evidence as evidence of absence for a version whose notes are
+  sitting there.
+
+  mypy is the worked example because it needs all three rungs: no releases, a
+  `CHANGELOG.md` written per *minor* release so there is no `2.3.1` section, and
+  then six commits in the range. It is also in the `dev` group of most repos this
+  plugin audits, so the row that used to go quiet went quiet often.
+
+### Tests
+
+- **The repo's own pipe guard caught the first version of the ladder.**
+  `gh api … | grep | head` reports `head`'s status, so a failed lookup yields an
+  empty tag at exit 0 — the exact failure the new prose warns about, reintroduced
+  by the code teaching it. The block now captures the release list, checks the
+  status, and filters the variable.
+
+- **`integration/test_live_changelog_sources.py`** holds the two claims about
+  other people's repositories that the prose rests on: that mypy still publishes
+  no releases, and that ruff and rumdl still disagree about the `v` prefix. They
+  belong in the network suite precisely because they can change under us — if
+  mypy starts cutting releases, the example should be revisited rather than left
+  quietly asserting something that stopped being true.
+
+- **A guard anchored to the whole of `material(2)` passed trivially** and was
+  narrowed. `actions.md` § Phase 2 carries its own `compare` call, so a check for
+  the commit-range rung was satisfied by a different reference's prose — the
+  round-8 trap, recurring. Six mutants confirm the guards, including that one.
+
 ## [0.32.0] — 2026-08-30
 
 Closes [#87](https://github.com/Machai-Kydoimos/dependabot-audit/issues/87) and
@@ -3734,7 +3811,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.1...v0.31.0
 [0.30.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.0...v0.30.1
