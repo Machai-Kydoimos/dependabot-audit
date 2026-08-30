@@ -133,6 +133,66 @@ The mechanical half — the registry's true latest, with publish timestamps — 
 **already done** by the Phase 1 script. What is left is the question `SKILL.md`
 sends here: this repo runs the tool, so is it in the change's scope?
 
+### Reaching the changelog at all
+
+`SKILL.md` says to read the changelog for every version in the gap. For a PyPI
+package that is three steps, and each has a way of failing quietly.
+
+**The repo is in PyPI's metadata, not guessable from the package name.** The
+Simple API the Phase 1 script uses carries artifacts and nothing else, so this is
+the one place to reach for the JSON API:
+
+```bash
+PKG=<name>; VER=<version>
+REPO=$(python3 - "$PKG" <<'PY'
+import json, sys, urllib.request
+d = json.load(urllib.request.urlopen(f"https://pypi.org/pypi/{sys.argv[1]}/json", timeout=30))
+for url in (d["info"].get("project_urls") or {}).values():
+    if url and "github.com/" in url:
+        print("/".join(url.split("github.com/")[1].strip("/").split("/")[:2])); break
+PY
+)
+
+# Do NOT construct the tag. Match it — and capture the list before filtering it,
+# so a failed lookup is a failed lookup and not an empty answer.
+TAGS=$(gh api "repos/$REPO/releases" --paginate --jq '.[].tag_name') \
+  || { echo "release list unavailable for $REPO — a lookup failure, not an absent release" >&2; exit 2; }
+TAG=$(printf '%s\n' "$TAGS" | grep -Fx -e "$VER" -e "v$VER" | head -1)
+```
+
+**Constructing the tag is the quiet failure.** Projects disagree about the `v`
+prefix and change their minds mid-life. Measured 2026-08-30, on the three tools
+in one bump:
+
+| Project | Release tag for the audited version | Note |
+|---|---|---|
+| `ruff` | `0.16.4` | `gh release view v0.16.4` → *release not found*; its **older** tags do carry `v` |
+| `rumdl` | `v0.2.58` | |
+| `mypy` | — | tags `v2.3.1`, publishes **no releases at all** |
+
+A guessed tag returns "release not found", which reads exactly like "this version
+has no notes" — so the audit reports an absence of evidence as evidence of
+absence, for a version whose notes are right there.
+
+**Then the ladder, in order. Say which rung produced the row:**
+
+| Rung | Command | When it runs out |
+|---|---|---|
+| 1. release notes | `gh release view "$TAG" --repo "$REPO"` | the project publishes none — check `gh api repos/$REPO/releases --jq length`, and `0` means *never*, not *not yet* |
+| 2. the repo's changelog | fetch `CHANGELOG.md` and find the section for **this exact version** | the project writes entries per *minor* release, so a patch has no section |
+| 3. the commit range | `gh api repos/$REPO/compare/<tag-before>...<tag> --jq '.commits[].commit.message'` | the tags themselves are missing, which is worth reporting |
+
+Measured on `mypy` 2.3.0 → 2.3.1, which needs all three rungs: zero releases, a
+`CHANGELOG.md` whose headings run `Next Release`, `Mypy 2.3`, `Mypy 2.2` with no
+`2.3.1` between them, and then six commits in the range — a crash fix on
+overload unpacking and three `mypyc` fixes, which is the content the phase came
+for.
+
+**"No changelog" is not a finding; "rung 3, six commits" is.** Report which rung
+answered, the same way Phase 5 reports which install ran. A patch release from a
+project that tags without releasing is ordinary — mypy is in the `dev` group of
+most repos this plugin audits — so a row that goes quiet here goes quiet often.
+
 ### When the changelog entry names a dependency
 
 A compiled Python package vendors another ecosystem's dependency graph into its

@@ -3152,3 +3152,120 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
             "file while the verdict is about the tool — the same gap Phase 6 "
             "closed for a red check by attributing it",
         )
+
+
+class TestPhase0ClearsAStaleWorktreeRegistration(SkillHarness):
+    """`$SCRATCH` lives under `$TMPDIR`, so it disappears between audits.
+
+    The worktrees go; their registrations in `.git/worktrees` do not. Git then
+    refuses the **fetch** — `refusing to fetch into branch 'refs/heads/pr-<N>'
+    checked out at '<a path that no longer exists>'` — and Phase 0 dies one
+    command before either `worktree add`.
+
+    That matters because the stale-worktree paragraph further down is keyed to
+    `git worktree add` refusing, so the phase's own remedy is unreachable from
+    the failure that actually fires. Measured on git 2.55.0: with the
+    registration stale the fetch exits 128; `git worktree prune` first makes the
+    fetch, and both adds, exit 0, and `prune` on clean state is a no-op.
+
+    Ordering is the whole content of the fix, so the guard checks position and
+    not merely presence — `prune` after the fetch would be green on a
+    substring test and useless in the run.
+    """
+
+    def _phase0(self) -> str:
+        return self.shell[0]
+
+    def test_phase_0_prunes_before_it_fetches(self):
+        shell = self._phase0()
+        self.assertIn("git worktree prune", shell, "Phase 0 must clear stale registrations")
+        prune = shell.index("git worktree prune")
+        fetch = shell.index('git fetch origin "pull/')
+        self.assertLess(
+            prune,
+            fetch,
+            "prune must run BEFORE the fetch: the fetch is what a stale registration "
+            "refuses, and pruning afterwards never runs",
+        )
+
+    def test_the_failure_it_answers_is_named(self):
+        """A message naming a directory that is not there reads like a
+        permissions or ref problem, and the reader has no reason to connect it
+        to worktrees at all."""
+        body = dict(self.phases)[0]
+        self.assertIn(
+            "refusing to fetch into branch",
+            body,
+            "Phase 0 must quote the error, or the remedy is unfindable from the symptom",
+        )
+
+
+class TestPhase2CanReachAChangelogAtAll(SkillHarness):
+    """ "Read the changelog for every version in the gap" had no method.
+
+    Nothing in the plugin said how to find the project's repo, how to name the
+    release tag, or what to do when there is no release — so every run
+    improvised, and a run that improvises "no changelog found" reports an
+    absence of evidence as evidence of absence.
+
+    Measured 2026-08-30 on the three tools in `fpga-board-sim` #365: `ruff`'s
+    release tag is `0.16.4` (and `v0.16.4` is *release not found*), `rumdl`'s is
+    `v0.2.58`, and `python/mypy` publishes **zero** releases while tagging
+    `v2.3.1` — with a `CHANGELOG.md` that has no `2.3.1` section, because it
+    writes entries per minor release. Only the commit range answers that one.
+    """
+
+    def _ladder(self) -> str:
+        for _, section in self._handoffs(2):
+            for block in bash_blocks(section):
+                if "project_urls" in block:
+                    return block
+        self.fail("Phase 2 documents no way to find the project's repository")
+
+    def test_the_tag_is_matched_against_the_release_list_not_constructed(self):
+        """Guessing the prefix returns "release not found", which reads exactly
+        like "this version has no notes"."""
+        block = self._ladder()
+        self.assertIn("tag_name", block, "the tag comes from the release list")
+        self.assertRegex(
+            block,
+            r"grep -Fx.*-e \"\$VER\".*-e \"v\$VER\"",
+            "both spellings must be matched against what the project actually "
+            "published, rather than one of them assumed",
+        )
+
+    def test_a_failed_lookup_is_not_read_as_an_absent_release(self):
+        """The same distinction Phase 0 draws for every derived output, at the
+        point where the two look identical: an empty tag."""
+        block = self._ladder()
+        self.assertIn(
+            "a lookup failure, not an absent release",
+            block,
+            "a failed `gh api` must exit, not fall through to 'no release for this version'",
+        )
+
+    def _uv_lock_phase2(self) -> str:
+        """Just `uv-lock.md`'s Phase 2, never the whole of `material(2)`.
+
+        `actions.md` § Phase 2 carries its own `compare` call for the tag-line
+        question, so a guard reading every reference at once is satisfied by
+        that one and says nothing about this ladder — the trap round 8 named:
+        anchor a prose guard to the subsection it is about.
+        """
+        for name, section in self._handoffs(2):
+            if name == "uv-lock.md":
+                return section
+        self.fail("Phase 2 no longer hands off to uv-lock.md")
+
+    def test_all_three_rungs_are_named(self):
+        section = self._uv_lock_phase2()
+        for rung in ("gh release view", "CHANGELOG.md", "/compare/"):
+            self.assertIn(rung, section, f"the ladder is missing {rung}")
+
+    def test_the_row_says_which_rung_answered(self):
+        """ "No changelog" is not a finding; "rung 3, six commits" is."""
+        self.assertRegex(
+            self._uv_lock_phase2(),
+            r"[Ss]ay which rung produced the row|which rung answered",
+            "Phase 2 must report which rung produced the row, as Phase 5 reports which install ran",
+        )
