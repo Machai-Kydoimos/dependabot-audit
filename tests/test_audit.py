@@ -1305,7 +1305,8 @@ wheels = [
         _, out, _ = self._run(
             [write_lock(self, self.FORKED), "--changed", "rpds-py"], meta=self._forked_meta()
         )
-        self.assertIn("one of them installed", out)
+        self.assertIn("one pin installed", out)
+        self.assertIn("artifacts verified against the registry", out)
         self.assertIn("uv run python -V", out, "the interpreter is the thing to record")
 
     def test_an_unforked_lockfile_says_nothing_about_forks(self):
@@ -1327,6 +1328,166 @@ wheels = [
         currency = json.loads(out)["currency"]
         self.assertEqual([c["pinned"] for c in currency], [["0.30.0", "2026.6.3"]] * 2)
         self.assertEqual({c["pins"] for c in currency}, {2})
+
+
+class TestForksOutsideTheChangedSet(_MainHarness):
+    """The fork list covers the lockfile, not the bump.
+
+    Phase 5's disclosure duty is lockfile-wide — the install materialises one
+    resolution of *every* fork present, not only the ones a PR moved — but the
+    list was built from `report["currency"]`, which only ever holds the changed
+    set. A package forked and unchanged produced no fork list at all.
+
+    Measured on `fpga-board-sim` #365 (a mypy + ruff + rumdl bump, with
+    `rpds-py` forked and untouched): `audit.py` printed nothing, the auditor
+    derived the list by hand, and the report asserted "`rpds-py 0.30.0` was
+    verified by Phase 1 but not installed" — false in its first half, because
+    `rpds-py` was never in the audited set. Widening the list without keeping
+    the audited/unaudited split would make that sentence *easier* to write, so
+    the split is held here as tightly as the widening.
+    """
+
+    UNCHANGED_FORK = f"""
+[[package]]
+name = "rumdl"
+version = "0.2.53"
+source = {{ registry = "https://pypi.org/simple" }}
+wheels = [
+    {{ url = "https://files.pythonhosted.org/packages/xx/rumdl-0.2.53-py3-none-any.whl", hash = "sha256:{"a" * 64}", size = 100 }},
+]
+
+[[package]]
+name = "rpds-py"
+version = "0.30.0"
+source = {{ registry = "https://pypi.org/simple" }}
+resolution-markers = ["python_full_version < '3.11'"]
+wheels = [
+    {{ url = "https://files.pythonhosted.org/packages/xx/p-0.30.0.whl", hash = "sha256:{"a" * 64}", size = 100 }},
+]
+
+[[package]]
+name = "rpds-py"
+version = "2026.6.3"
+source = {{ registry = "https://pypi.org/simple" }}
+resolution-markers = ["python_full_version >= '3.11'"]
+wheels = [
+    {{ url = "https://files.pythonhosted.org/packages/xx/p-2026.6.3.whl", hash = "sha256:{"a" * 64}", size = 100 }},
+]
+
+[[package]]
+name = "fpga-simulator"
+version = "0.20.0"
+source = {{ editable = "." }}
+"""
+
+    def _rumdl_meta(self):
+        return pypi_meta("0.2.53", [pypi_file("rumdl-0.2.53-py3-none-any.whl")])
+
+    def _run_unchanged_fork(self, *extra):
+        return self._run(
+            [write_lock(self, self.UNCHANGED_FORK), "--changed", "rumdl", *extra],
+            meta=self._rumdl_meta(),
+        )
+
+    def test_a_fork_outside_the_changed_set_is_still_named(self):
+        """The regression itself: bump rumdl, and rpds-py's fork went unmentioned."""
+        code, out, _ = self._run_unchanged_fork()
+        self.assertEqual(code, 0)
+        self.assertIn("forked packages", out, "a fork the bump did not touch is still installed")
+        self.assertIn("rpds-py", out)
+        self.assertIn("0.30.0, 2026.6.3", out, "both pins, in version order")
+
+    def test_an_unaudited_fork_is_not_printed_as_verified(self):
+        """The half that makes the widening safe rather than worse."""
+        _, out, _ = self._run_unchanged_fork()
+        self.assertIn("NOT audited by this run", out)
+        head, _, tail = out.partition("NOT audited by this run")
+        self.assertIn("rpds-py", tail, "the unchanged fork belongs under the unaudited heading")
+        self.assertNotIn(
+            "rpds-py",
+            head.split("=== forked packages")[-1],
+            "an unaudited fork must not appear under the verified heading",
+        )
+
+    # A second forked package, untouched by the bump, so both groups print at
+    # once. With a single fork the two headings are mutually exclusive and the
+    # rows cannot be attributed to the wrong one — which is the whole risk.
+    TWO_FORKS = (
+        UNCHANGED_FORK
+        + f"""
+[[package]]
+name = "zope-interface"
+version = "5.0"
+source = {{ registry = "https://pypi.org/simple" }}
+resolution-markers = ["python_full_version < '3.11'"]
+wheels = [
+    {{ url = "https://files.pythonhosted.org/packages/xx/z-5.0.whl", hash = "sha256:{"a" * 64}", size = 100 }},
+]
+
+[[package]]
+name = "zope-interface"
+version = "6.0"
+source = {{ registry = "https://pypi.org/simple" }}
+resolution-markers = ["python_full_version >= '3.11'"]
+wheels = [
+    {{ url = "https://files.pythonhosted.org/packages/xx/z-6.0.whl", hash = "sha256:{"a" * 64}", size = 100 }},
+]
+"""
+    )
+
+    def test_a_changed_fork_and_an_unchanged_one_are_reported_apart(self):
+        """Both groups at once — the case where conflating them is invisible.
+
+        `rpds-py` is forked and bumped, `zope-interface` is forked and untouched.
+        A single flat list would put them side by side under one heading, which
+        is how an unaudited pin gets written up as verified.
+        """
+        _, out, _ = self._run(
+            [write_lock(self, self.TWO_FORKS), "--changed", "rpds-py"],
+            meta=pypi_meta(
+                "2026.6.3",
+                [],
+                releases={
+                    "0.30.0": [pypi_file("p-0.30.0.whl")],
+                    "2026.6.3": [pypi_file("p-2026.6.3.whl")],
+                },
+            ),
+        )
+        verified, sep, unaudited = out.partition("NOT audited by this run")
+        self.assertTrue(sep, "the unaudited heading must appear when a fork went unchecked")
+        verified = verified.split("=== forked packages")[-1]
+        self.assertIn("artifacts verified against the registry", verified)
+        self.assertIn("rpds-py", verified, "the bumped fork had its artifacts checked")
+        self.assertNotIn("zope-interface", verified, "an unaudited fork must not sit under it")
+        self.assertIn("zope-interface", unaudited)
+        self.assertIn("5.0, 6.0", unaudited, "its pins are still worth disclosing")
+
+    def test_the_forks_reach_json_with_the_audited_flag(self):
+        """A caller reading JSON needs the split too, or it re-derives it wrongly."""
+        _, out, _ = self._run_unchanged_fork("--json")
+        forks = json.loads(out)["forks"]
+        self.assertEqual(
+            forks,
+            [{"name": "rpds-py", "pinned": ["0.30.0", "2026.6.3"], "pins": 2, "audited": False}],
+        )
+
+    def test_an_unorderable_version_in_an_unaudited_fork_does_not_abort_the_run(self):
+        """Refusing is the contract for a package under audit, not for every
+        package in the lockfile.
+
+        `_version_key` raises on a version it cannot parse, and the audited path
+        routes that through `fail()` deliberately — currency it cannot judge is
+        a finding. The fork list is wider than the audited set now, so the same
+        raise would let one unparseable version in a package nobody asked about
+        kill an otherwise-complete audit. Disclosure is not judgment.
+        """
+        lock = self.UNCHANGED_FORK.replace('version = "2026.6.3"', 'version = "not-a-version"')
+        code, out, err = self._run(
+            [write_lock(self, lock), "--changed", "rumdl"], meta=self._rumdl_meta()
+        )
+        self.assertEqual(code, 0, f"the audit of rumdl still stands: {err}")
+        self.assertIn("rpds-py", out)
+        self.assertIn("not-a-version", out, "printed unsorted rather than dropped")
 
 
 class TestOsvBatching(_MainHarness):

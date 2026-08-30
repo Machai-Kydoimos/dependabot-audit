@@ -693,6 +693,22 @@ def _is_prerelease(version: str) -> bool:
     return parsed["pre"] is not None or parsed["dev"] is not None
 
 
+def _ordered_pins(versions: Sequence[str]) -> list[str]:
+    """Every pin of one package, newest last, falling back to lockfile order.
+
+    `_version_key` refuses a version it cannot parse, and for an *audited*
+    package refusing is the contract — its currency is what the audit is for.
+    This list is wider than the audited set, so the same refusal here would let
+    one unparseable version in a package nobody asked about abort the whole run.
+    Disclosure is not judgment: the names and versions are still worth printing
+    unsorted, and lockfile order is a defined order rather than an arbitrary one.
+    """
+    try:
+        return sorted(versions, key=_version_key)
+    except ValueError:
+        return list(versions)
+
+
 def fork_context(entry: dict[str, Any], pins: dict[str, list[str]]) -> tuple[list[str], bool]:
     """Every version this package is pinned at, and whether this entry is the highest.
 
@@ -931,22 +947,36 @@ def render(report: dict[str, Any]) -> None:
         print("      earliest first; compare these against $CREATED_AT, the PR's own\n")
 
     # A forked package is checked in full and installed in part, and nothing in
-    # the output said so. Phase 1 verifies every fork's artifacts against the
-    # registry; a frozen install materialises one resolution. A green Phase 5
-    # then reads as though it covered all of them, which is a claim the run
-    # never made. Mechanised here rather than left to the prose, because a
-    # disclosure the report is merely asked to remember is one it can omit.
-    forked = {c["name"]: c["pinned"] for c in report["currency"] if c["pins"] > 1}
-    if forked:
-        print("=== forked packages: every pin verified, one of them installed")
-        for name, versions in forked.items():
-            print(f"      {name:24s} {len(versions)} pins: {', '.join(versions)}")
+    # the output said so. Phase 1 verifies the artifacts of every fork it audits;
+    # a frozen install materialises one resolution. A green Phase 5 then reads as
+    # though it covered all of them, which is a claim the run never made.
+    # Mechanised here rather than left to the prose, because a disclosure the
+    # report is merely asked to remember is one it can omit.
+    #
+    # Printed in two groups rather than one annotated list. The failure this
+    # replaces was a report calling an unaudited fork "verified by Phase 1", and
+    # a heading that says which check ran is harder to misread past than a
+    # column the eye can skip.
+    forks = report.get("forks", [])
+    if forks:
+        print("=== forked packages: uv pins these at more than one version")
+        verified = [f for f in forks if f["audited"]]
+        unverified = [f for f in forks if not f["audited"]]
+        if verified:
+            print("      artifacts verified against the registry above, one pin installed:")
+            for f in verified:
+                print(f"        {f['name']:24s} {f['pins']} pins: {', '.join(f['pinned'])}")
+        if unverified:
+            print("      NOT audited by this run — lockfile structure only, no artifact")
+            print("      of these was checked, because they are outside the changed set:")
+            for f in unverified:
+                print(f"        {f['name']:24s} {f['pins']} pins: {', '.join(f['pinned'])}")
         print("      uv splits a package across blocks under different resolution-markers.")
-        print("      The provenance rows above cover all of them; a frozen install")
-        print("      materialises only the resolution matching the interpreter and")
-        print("      platform present — which need not be the highest pin. Name the one")
-        print("      Phase 5 exercised (`uv run python -V` inside the synced environment)")
-        print("      rather than reporting the install as though it covered every fork.\n")
+        print("      A frozen install materialises only the resolution matching the")
+        print("      interpreter and platform present — which need not be the highest")
+        print("      pin. Name the one Phase 5 exercised (`uv run python -V` inside the")
+        print("      synced environment) rather than reporting the install as though it")
+        print("      covered every fork, and do not report an unaudited pin as verified.\n")
 
     for att in report.get("attestations", []):
         if not att["artifacts"]:
@@ -1107,8 +1137,33 @@ def main() -> int:
     # Fork structure comes from the whole lockfile, not just the selected set: a
     # bump can move one fork of a package while its sibling stays where it is.
     pins: dict[str, list[str]] = {}
+    spelling: dict[str, str] = {}
     for pkg in packages:
-        pins.setdefault(_normalize(pkg["name"]), []).append(pkg["version"])
+        key = _normalize(pkg["name"])
+        pins.setdefault(key, []).append(pkg["version"])
+        spelling.setdefault(key, pkg["name"])
+
+    # Every fork in the lockfile, not only the audited ones. Phase 5's disclosure
+    # duty covers the whole install, so a fork outside the changed set is exactly
+    # as capable of making a green install read as though it covered every pin —
+    # and it used to be invisible here, which left the auditor deriving the list
+    # by hand and reporting an unaudited package as "verified by Phase 1".
+    #
+    # `audited` carries the half that is easy to conflate and expensive to get
+    # wrong: this run compared artifacts against the registry only for packages
+    # in the changed set. For the rest this is lockfile structure and nothing
+    # more, and the two must not be printed as one list.
+    audited = {_normalize(p["name"]) for p in targets}
+    report["forks"] = [
+        {
+            "name": spelling[key],
+            "pinned": _ordered_pins(versions),
+            "pins": len(versions),
+            "audited": key in audited,
+        }
+        for key, versions in pins.items()
+        if len(versions) > 1
+    ]
 
     # What each selected package held in the base lockfile, so an attestation can
     # be compared against the release it replaces.

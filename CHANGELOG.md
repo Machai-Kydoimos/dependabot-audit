@@ -11,6 +11,104 @@ patch.
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-08-30
+
+Closes [#87](https://github.com/Machai-Kydoimos/dependabot-audit/issues/87) and
+[#88](https://github.com/Machai-Kydoimos/dependabot-audit/issues/88), the two
+deviations the round-11 replay of `fpga-board-sim` #365 handed back. Both are
+Phase 5, and both are the same failure in different clothing: the phase asks for
+a disclosure the run cannot actually make, so the auditor improvises one — and
+the improvisation is not the same twice.
+
+**Minor, not patch.** The fork list now covers the whole lockfile instead of the
+changed set, and Phase 5 gained a documented salvage where it previously
+recorded an accepted loss. Both change what the phase verifies and what its row
+asserts.
+
+### Fixed
+
+- **`audit.py`'s fork list covers the lockfile, not the bump** (#88). It was
+  built from `report["currency"]`, which only ever holds the changed set, so a
+  package that is forked and *unchanged* produced no fork list at all — while
+  `pins`, four lines above it, was already lockfile-wide and said so in its own
+  comment. On #365 that left the auditor deriving the list by hand and the report
+  asserting *"`rpds-py 0.30.0` … was verified by Phase 1 but not installed"*,
+  false in its first half: `rpds-py` was never in the audited set.
+
+- **The widened list keeps the two claims apart**, which is the half that makes
+  widening safe rather than worse. Forks print under one of two headings —
+  `artifacts verified against the registry above` for packages this run audited,
+  `NOT audited by this run` for the rest. Artifact provenance really is
+  changed-only; conflating it with pin structure is how #88 started.
+
+- **Three sentences in `references/uv-lock.md` that were wrong about their own
+  script.** The scope table promised *"**every** fork's artifacts"*, the
+  qualifier row claimed *"Phase 1 checked all of them"*, and the worked example
+  modelled *"the 3.11 fork of `rpds-py` was verified but not installed"* — the
+  exact wrong sentence a real report then reproduced.
+
+- **An unparseable version in an unaudited fork no longer aborts the run.**
+  `_version_key` refuses what it cannot order, and for a package under audit that
+  refusal is the contract. The fork list is wider than the audited set now, so
+  the same raise would let one odd version in a package nobody asked about kill a
+  complete audit. Disclosure is not judgment: `_ordered_pins` falls back to
+  lockfile order.
+
+### Added
+
+- **A documented salvage for a refused `--no-build`** (#87). The refusal names
+  the package it rejected; when that is a *dependency* rather than the project,
+  the loss can be narrowed instead of accepted. The lockfile already identifies
+  the offenders — a package with no `wheels` array is one uv must build — so
+  excluding every package that *has* one leaves the offenders as the only source
+  builds, and yields a falsifiable row: *"4 of 6 third-party packages resolved to
+  wheels; `actionlint-py` was the only sdist built"*.
+
+  This existed as a gap because the same refusal on the same PR produced two
+  different rows in two consecutive replays: round 10 fell back to a plain
+  `uv sync --locked` and dropped the wheels claim, round 11 improvised the
+  enumeration for 36 of 38 packages. Phase 5's own text says *"'Frozen install
+  passed' is not the same claim in the two cases"*, so a non-deterministic row
+  here is a defect rather than a preference.
+
+  Two boundaries ship with it, both measured on uv 0.12.7: the narrowing **proves
+  less than a true `--no-build`**, because the conceded package's build code did
+  run; and uv **fails fast, naming one package per run**, so the lockfile read is
+  a predictor and the sync remains the proof.
+
+- **The recipe counts packages, not lockfile blocks** — a correction the replay
+  made to the first version of it, which had shipped in this same branch. Run
+  against #365 it printed *"held 37 of 38 third-party packages to wheels"*, and
+  the lockfile has 39 blocks, 38 remote, but **37 remote packages**: `rpds-py` is
+  forked across two. The block-wise count inflated both halves of the row and
+  passed the duplicate to `--no-build-package` twice. Corrected, the same lockfile
+  yields *"36 of 37"*, with no duplicate. A forked package is now held to a wheel
+  only if **every** one of its forks has one, since uv must build the fork that
+  does not. Getting this wrong is the sharpest possible version of the phase's own
+  failure mode: a row whose entire value is that a reader can check the numbers.
+
+- **The local-versus-remote distinction the recipe turns on.** Filtering on
+  `registry` looks equivalent and is not — measured, uv also emits `url` and
+  `git` (remote, and a `url` wheel *does* carry a `wheels` array) alongside
+  `editable`, `virtual` and `directory` (local). Registry-only filtering lets a
+  `url` or `git` dependency escape both the exclusion and the denominator, so a
+  package built from source goes unnamed in a row claiming to name them all.
+  This was caught by the guard below, on the first version of the recipe.
+
+### Tests
+
+- **The salvage guard runs the documented snippet**, against a fixture carrying
+  every `source` kind uv was observed to emit, rather than matching it for
+  substrings. Inverting the condition to `not p.get("wheels")` — the mistake that
+  makes the recipe a no-op — leaves every substring in place, so a
+  pattern-matching guard cannot tell the recipe from the one that does nothing.
+  Four mutants confirm it: the inversion, the dropped local filter, the
+  registry-only filter, and a `LOCAL` set missing `directory`.
+
+- **The cross-artifact quotation guard reads its quote out of the prose** instead
+  of holding a third copy of the literal. It was passing by agreeing with itself;
+  derived, a reworded script fails until the reference is brought along.
+
 ## [0.31.0] — 2026-08-30
 
 Closes [#85](https://github.com/Machai-Kydoimos/dependabot-audit/issues/85), which
@@ -3636,7 +3734,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.1...v0.31.0
 [0.30.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.0...v0.30.1
 [0.30.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.29.0...v0.30.0

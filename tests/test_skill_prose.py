@@ -40,6 +40,9 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -858,13 +861,220 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
         A cross-artifact check, in the same family as "every path the prose names
         must exist": reword the script and the quotation goes stale, sending the
         reader to look for a line that is no longer there.
+
+        The quotation is *read out of the prose* rather than written here as a
+        third copy. Hardcoding it meant the literal lived in two places and this
+        test passed by agreeing with itself; derived, a reworded script fails
+        until the reference is brought along, which is the coupling it exists for.
         """
-        quoted = "forked packages: every pin verified, one of them installed"
-        self.assertIn(quoted.split(":")[0], self.material(5))
+        # Fenced blocks first: ``` pairs off against the inline spans and drags
+        # the scan out of alignment, which reads as "the prose stopped quoting
+        # it". The quotation has to be in prose anyway — a heading named inside
+        # a bash block is not the reader being told where to look.
+        phase5 = re.sub(r"```.*?```", "", self.material(5), flags=re.DOTALL)
+        # Whitespace-collapsed on both sides: the quotation wraps across a line
+        # in the Markdown, and a guard that a reflow can break is one that gets
+        # deleted rather than fixed.
+        quoted = [
+            " ".join(q.split())
+            for q in re.findall(r"`([^`]+)`", phase5)
+            if q.lstrip().startswith("forked packages")
+        ]
+        self.assertEqual(
+            len(quoted), 1, "Phase 5 should quote audit.py's fork heading exactly once"
+        )
+        script = " ".join((PLUGIN / "scripts/audit.py").read_text(encoding="utf-8").split())
         self.assertIn(
-            quoted,
-            (PLUGIN / "scripts/audit.py").read_text(encoding="utf-8"),
-            "SKILL.md quotes a line audit.py no longer prints",
+            quoted[0],
+            script,
+            "Phase 5 quotes a line audit.py no longer prints",
+        )
+
+    def test_the_prose_names_both_groups_the_script_prints(self):
+        """The fork list is lockfile-wide and split; the prose must carry both.
+
+        Widening the list without the split is what produced the defect it fixes:
+        an unaudited fork printed beside audited ones, and a report that called
+        it "verified by Phase 1". The heading a reader has to *not* misread is
+        the unaudited one, so that is the one held here.
+        """
+        script = (PLUGIN / "scripts/audit.py").read_text(encoding="utf-8")
+        self.assertIn("NOT audited by this run", script)
+        self.assertIn(
+            "NOT audited by this run",
+            self.material(5),
+            "Phase 5 must name the group heading whose rows it forbids calling verified",
+        )
+
+    def test_an_unaudited_fork_is_not_described_as_verified(self):
+        """The reference modelled the exact wrong sentence.
+
+        `audit.py` only ever audits the changed set, so "the 3.11 fork of
+        `rpds-py` was verified but not installed" — about a package no bump
+        touched — asserts a check that never ran. It was the example row, and a
+        real #365 report reproduced it almost verbatim.
+        """
+        phase5 = self.material(5)
+        self.assertNotIn(
+            "fork of `rpds-py` was verified",
+            phase5,
+            "the example sentence claims Phase 1 verified an unchanged package",
+        )
+        self.assertIn(
+            "neither audited nor installed",
+            phase5,
+            "the worked example must model the unaudited-fork wording, not the verified one",
+        )
+
+
+class TestPhase5SalvagesARefusedNoBuild(SkillHarness):
+    """A refused `--no-build` has one documented answer, not two improvised ones.
+
+    `uv sync --locked --no-build --no-install-project` fails when a *dependency*
+    ships only an sdist, and the reference described that as an accepted loss.
+    Two consecutive replays of `fpga-board-sim` #365 then handled the same
+    refusal differently: round 10 fell back to a plain `uv sync --locked` and
+    dropped the wheels claim entirely, round 11 improvised `--no-build-package`
+    for 36 of 38 packages. Both are defensible readings, which is the defect —
+    Phase 5's own text says "'Frozen install passed' is not the same claim in
+    the two cases", so this row must not be non-deterministic across runs.
+
+    Held structurally, per the 0.31.0 lesson: a guard that only asks whether the
+    phase *mentions* `--no-build-package` passes against a sentence that never
+    elicits the call. The block has to build the exclusion and run the sync.
+    """
+
+    def _salvage_block(self) -> str:
+        for _, section in self._handoffs(5):
+            for block in bash_blocks(section):
+                if "--no-build-package" in block:
+                    return block
+        self.fail("Phase 5 documents no block that runs the narrowed --no-build")
+
+    def test_the_salvage_is_a_whole_invocation_not_a_flag_to_mention(self):
+        block = self._salvage_block()
+        self.assertIn("uv sync --locked", block, "the salvage has to reach an actual sync")
+        self.assertIn(
+            "uv.lock",
+            block,
+            "the exclusion list is derived from the lockfile; a hand-written list is "
+            "the improvisation this replaces",
+        )
+
+    def test_the_salvage_excludes_the_wheeled_packages_not_the_offender(self):
+        """The inverse is the easy mistake and it is a no-op.
+
+        `--no-build-package <offender>` refuses the build that was already
+        failing. The recipe has to name every package that *has* a wheel, so the
+        offenders are the only source builds left.
+
+        The documented snippet is **run**, against a lockfile with a known
+        sdist-only package, rather than matched for substrings. Inverting the
+        condition to `not p.get("wheels")` leaves every substring in place — a
+        pattern-matching guard cannot tell this recipe from the one that does
+        nothing, which is the distinction the whole issue is about.
+        """
+        match = re.search(r"<<'PY'\n(.*?)\nPY\n", self._salvage_block(), re.DOTALL)
+        if match is None:
+            self.fail("the salvage derives its list with an embedded PY heredoc")
+        snippet = match.group(1)
+
+        # Every `source` kind uv 0.12.7 was observed to emit, so the local/remote
+        # split is falsifiable here rather than asserted: `url` carries wheels and
+        # must be excluded, `directory` and `editable` must not be.
+        lock = """
+[[package]]
+name = "wheeled-one"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [{ url = "https://x/w1-1.0-py3-none-any.whl", hash = "sha256:aa", size = 1 }]
+
+[[package]]
+name = "sdist-only"
+version = "2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://x/s-2.0.tar.gz", hash = "sha256:bb", size = 1 }
+
+[[package]]
+name = "url-wheeled"
+version = "3.0"
+source = { url = "https://x/u-3.0-py3-none-any.whl" }
+wheels = [{ url = "https://x/u-3.0-py3-none-any.whl", hash = "sha256:cc", size = 1 }]
+
+[[package]]
+name = "git-built"
+version = "4.0"
+source = { git = "https://example.invalid/g" }
+
+[[package]]
+name = "path-dep"
+version = "5.0"
+source = { directory = "vendor/path-dep" }
+wheels = [{ url = "https://x/p-5.0-py3-none-any.whl", hash = "sha256:dd", size = 1 }]
+
+[[package]]
+name = "half-forked"
+version = "6.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = ["python_full_version >= '3.11'"]
+wheels = [{ url = "https://x/h-6.0-py3-none-any.whl", hash = "sha256:ee", size = 1 }]
+
+[[package]]
+name = "half-forked"
+version = "0.9"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = ["python_full_version < '3.11'"]
+sdist = { url = "https://x/h-0.9.tar.gz", hash = "sha256:ff", size = 1 }
+
+[[package]]
+name = "the-project"
+version = "0.1.0"
+source = { editable = "." }
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "uv.lock"
+            path.write_text(lock, encoding="utf-8")
+            done = subprocess.run(
+                [sys.executable, "-", str(path)],
+                input=snippet,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        total, *wheeled = done.stdout.split()
+        self.assertEqual(
+            wheeled,
+            ["wheeled-one", "url-wheeled"],
+            "the exclusion list is every REMOTE package that has wheels. `sdist-only` "
+            "and `git-built` are the concessions; `half-forked` has a fork with no "
+            "wheel so uv must build it; `path-dep` and `the-project` are local and "
+            "must never be excluded, whatever they carry",
+        )
+        self.assertEqual(
+            total,
+            "5",
+            "the denominator counts PACKAGES, not lockfile blocks: five remote "
+            "packages across six blocks, because `half-forked` is forked. Counting "
+            "blocks inflates the row and passes the duplicate to "
+            "--no-build-package twice",
+        )
+
+    def test_the_boundary_is_stated_with_the_recipe(self):
+        """The narrowing proves less than a true `--no-build`, and a row that
+        does not say so overstates in the direction this phase exists to stop."""
+        material = self.material(5)
+        self.assertIn(
+            "fails fast",
+            material,
+            "uv names one refused package per run, so the reader needs to know it may "
+            "have to re-run rather than concluding the set is complete",
+        )
+        self.assertRegex(
+            material,
+            r"[Pp]roves less than a true `--no-build`",
+            "the conceded package's build code did run; the report must not read as "
+            "'no third-party build code ran'",
         )
 
 
