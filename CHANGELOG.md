@@ -11,6 +11,73 @@ patch.
 
 ## [Unreleased]
 
+## [0.30.1] — 2026-08-30
+
+[#83](https://github.com/Machai-Kydoimos/dependabot-audit/issues/83), handed back
+by the `fpga-board-sim` #365 replay against the released 0.30.0 and classified a
+prose gap. The hand-back was right that 0.30.0 opened a hole, and wrong about
+where it is. Measuring moved the fix.
+
+0.30.0 tells Phase 4 to drop `--no-project` for a gate that imports the project.
+Such a gate writes its own bookkeeping into the tree `gate_diff.py` is measuring,
+and the issue read the cache directories as the hazard — to be closed by checking
+they are gitignored. Measured with `gate_diff.py` itself, that is the one shape
+that never was:
+
+| What the gate leaves behind | Reaches `snapshot_changes` |
+|---|---|
+| `.mypy_cache/`, `.ruff_cache/`, `.pytest_cache/` | **never** — each tool writes a `.gitignore` of `*` into its own cache; measured on mypy 1.18.2, ruff 0.14.2 and pytest 8.4.2 against a repo with no `.gitignore` at all |
+| another untracked directory, `__pycache__/` above all | **not by default** — `git status --porcelain` collapses it to `dir/`, and `_content_key` returns `None` for anything that is not a file, so the entry is dropped before it can be compared |
+| a file at a non-ignored path — `.coverage`, `coverage.xml`, `junit.xml` | **always** |
+
+So the proposed fix would have sent auditors to gitignore directories that were
+already invisible, while the shape that does fire went unnamed. Both false
+findings reproduced end to end, and neither run touched a line of the repo's code:
+
+- a real `coverage 7.6.1 -> 7.13.0` bump, `.coverage` untracked and unignored, in
+  the **default** git configuration, reports `~ .coverage  both act, different
+  result — the fix itself changed`. That is the destructive-fix vocabulary — the
+  finding this phase exists for — spent on coverage's own data file.
+- with `status.showUntrackedFiles=all` in the repo under test, which un-collapses
+  the directory row, a real `pytest 8.4.2 -> 9.1.1` bump reports a `+`/`-` pair on
+  `tests/__pycache__/test_ok.cpython-313-pytest-9.1.1.pyc` — *widened scope* and
+  *narrowed scope* — because pytest stamps its own version into the name of every
+  file it rewrites.
+
+**Patch rather than minor.** Phase 4 verifies what it always did, on the tree it
+always did. What changes is that the measurement stops carrying the tool's own
+bookkeeping into the answer, which is this file's definition of a patch: a fix
+that only makes an existing claim true.
+
+### Fixed
+
+- **`references/uv-lock.md` Phase 4 names the residue that actually reaches the
+  comparison**, as a table rather than a caution. The useful half is which rows to
+  stop worrying about — a reference that says "check your caches are ignored"
+  spends the auditor's attention on the two rows that were never visible.
+
+- **The neutralisation goes in the command, not in the repo's `.gitignore`.**
+  `PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=../cov-<label>`, prepended identically
+  to every `--run`: the runs have to be treated alike for the comparison to mean
+  anything, and only the command reaches both. `gate_diff.py` runs each command
+  with the tree as its working directory, so the relative `../` lands the data
+  file beside the worktree and needs no handoff to resolve. That spelling is the
+  suite's doing — the first draft wrote `$SCRATCH/cov-proposed` and the guard
+  against a block reading the handoff without sourcing it failed on it — the
+  guard 0.28.0 added, doing the job it was added for.
+
+### Tests
+
+Three guards in `tests/test_gate_diff.py` pin the mechanics the prose describes: a
+collapsed directory is dropped, a file at the root is compared, and
+`status.showUntrackedFiles=all` is the repo setting that turns the first into the
+second. Two in `tests/test_skill_prose.py` hold Phase 4 to naming both the
+neutralisation and the residue.
+
+All five mutation-checked. Returning `_content_key`'s `None` to a sentinel fails
+the directory guard and nothing else; deleting either token from the reference
+fails one prose guard each.
+
 ## [0.30.0] — 2026-08-24
 
 The `uv.lock` path had never been replayed in a fresh context. `fpga-board-sim`
@@ -3486,7 +3553,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.1...HEAD
+[0.30.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.0...v0.30.1
 [0.30.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.27.0...v0.28.0

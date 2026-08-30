@@ -303,6 +303,39 @@ the version under test, measured on uv 0.12.5 against a project locking
   --run proposed "uv run --group <group> --with mypy==<proposed> mypy ."
 ```
 
+**A gate that imports the project also writes into the tree it is measured in,
+and one shape of that residue is reported as a finding.** Not the shape it looks
+like — checking that `.mypy_cache/` is gitignored is busywork. Measured with
+`gate_diff.py` itself, mypy 1.18.2 / ruff 0.14.2 / pytest 8.4.2:
+
+| What the gate leaves behind | Reaches `snapshot_changes` |
+|---|---|
+| `.mypy_cache/`, `.ruff_cache/`, `.pytest_cache/` | **never** — each tool writes a `.gitignore` of `*` into its own cache, so git omits it whatever the repo ignores |
+| another untracked directory, `__pycache__/` above all | **not by default** — `git status --porcelain` collapses it to `dir/`, and a directory has no content to hash, so the entry is dropped. **Yes** where the repo sets `status.showUntrackedFiles=all`, which un-collapses it |
+| a file at a non-ignored path — `.coverage`, `coverage.xml`, `junit.xml` | **always** |
+
+The two live rows invent a difference out of the tool's own bookkeeping and
+report it in the vocabulary of a real finding. A `coverage 7.6.1 -> 7.13.0` bump
+with `.coverage` unignored gives `~ .coverage  both act, different result — the
+fix itself changed`; under `showUntrackedFiles=all`, `pytest 8.4.2 -> 9.1.1`
+gives a `+`/`-` pair on
+`tests/__pycache__/test_ok.cpython-313-pytest-9.1.1.pyc` — *widened scope* and
+*narrowed scope* — because pytest stamps its own version into every file it
+rewrites. Neither touches a line of the repo's code.
+
+Neutralise it in the command, identically on every run, rather than trusting the
+repo's `.gitignore` — the runs have to be treated alike for the comparison to
+mean anything:
+
+```bash
+  --run proposed "PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=../cov-proposed uv run --group <group> --with pytest==<proposed> pytest -q --cov=<pkg>"
+```
+
+`gate_diff.py` runs each command with the tree as its working directory, so the
+relative `../` lands the data file beside the worktree instead of inside it, and
+needs no handoff to resolve. Both false findings above go to *no difference*
+under it, measured.
+
 **Compare the tool's output, not `uv run`'s.** The first invocation provisions
 the environment and says so — `Creating virtual environment`, `Installed 35
 packages`, the hardlink warning — and the second, warm, says none of it. Captured

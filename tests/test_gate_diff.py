@@ -290,5 +290,78 @@ class TestTheSnapshotReadsEveryPorcelainField(GateDiffHarness):
         self.assertIn("fresh.txt", changed)
 
 
+class TestGateResidueThatIsNotAFinding(GateDiffHarness):
+    """A project-importing gate writes its own bookkeeping into the measured tree.
+
+    Phase 4 drops `--no-project` for a type checker or a test suite, which is
+    what makes this live: those gates leave caches and data files behind. The
+    intuition is that any of it manufactures a difference, and the measurement
+    says only one shape of it does.
+
+    A directory does not, because two mechanisms have to line up and only ever
+    one does: `git status --porcelain` collapses a wholly untracked directory to
+    `dir/`, and `_content_key` returns None for anything that is not a file, so
+    the entry is dropped before it can be compared. A file does, always -- a
+    real `coverage 7.6.1 -> 7.13.0` bump reports `~ .coverage`, *both act,
+    different result*, which reads as the destructive-fix case and is nothing
+    but coverage's own data file.
+
+    These pin the table in `references/uv-lock.md` Phase 4. Both halves matter:
+    without the first, the reference tells auditors to go and gitignore caches
+    that were never visible; without the second, the residue that does invent a
+    finding looks equally harmless.
+    """
+
+    def test_an_untracked_directory_the_gate_leaves_behind_is_not_a_change(self):
+        """Differing contents, and still no difference: the collapse hides it."""
+        tree = git_repo(self)
+        code, out, _ = self._run(
+            tree,
+            [
+                ("locked", "mkdir -p .cache/v && printf one > .cache/v/meta.json"),
+                ("proposed", "mkdir -p .cache/v && printf two > .cache/v/meta.json"),
+            ],
+        )
+        self.assertEqual(code, 0, "a collapsed directory has no content to compare")
+        self.assertIn("no run changed any file", out)
+
+    def test_a_file_the_gate_leaves_behind_is_a_change(self):
+        """The `.coverage` shape: a file at the root reaches the comparison."""
+        tree = git_repo(self)
+        code, out, _ = self._run(
+            tree,
+            [("locked", "printf one > .coverage"), ("proposed", "printf two > .coverage")],
+        )
+        self.assertEqual(code, 1)
+        self.assertIn(".coverage", out)
+        self.assertIn("different result", out)
+
+    def test_expanding_untracked_files_surfaces_the_directory_residue(self):
+        """`status.showUntrackedFiles=all` un-collapses it, and then it does fire.
+
+        Measured on a real `pytest 8.4.2 -> 9.1.1` bump: pytest writes its own
+        version into the name of every file it rewrites, so the two runs leave
+        `...-pytest-8.4.2.pyc` and `...-pytest-9.1.1.pyc` and the comparison
+        reports a `+`/`-` pair -- *widened scope* and *narrowed scope* -- for a
+        gate that touched no code at all.
+        """
+        tree = git_repo(self)
+        subprocess.run(
+            ["git", "-C", str(tree), "config", "status.showUntrackedFiles", "all"],
+            check=True,
+            capture_output=True,
+        )
+        code, out, _ = self._run(
+            tree,
+            [
+                ("locked", "mkdir -p .cache && printf x > .cache/a-1.0.pyc"),
+                ("proposed", "mkdir -p .cache && printf x > .cache/a-2.0.pyc"),
+            ],
+        )
+        self.assertEqual(code, 1, "the repo config is what decides this, not the gate")
+        self.assertIn("acted on by proposed only", out)
+        self.assertIn("acted on by locked only", out)
+
+
 if __name__ == "__main__":
     unittest.main()
