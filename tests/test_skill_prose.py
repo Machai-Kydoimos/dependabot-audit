@@ -1036,6 +1036,54 @@ class TestPhase4MeasuresTheRightTree(SkillHarness):
         self.assertIn("$SCRATCH/base-<N>", self.shell[0])
 
 
+class TestPhase4DoesNotReadItsOwnResidueAsAFinding(SkillHarness):
+    """The gate writes into the tree Phase 4 is measuring it in.
+
+    0.30.0 dropped `--no-project` for a gate that imports the project, which is
+    what makes this live: a type checker or a test suite leaves caches and data
+    files behind, and the phase compares the tree before and after.
+
+    The intuition is that the cache directories are the hazard, and measurement
+    says they are the one shape that never was. `.mypy_cache/`, `.ruff_cache/`
+    and `.pytest_cache/` each carry a `.gitignore` of `*` the tool writes
+    itself; any other untracked directory is collapsed to `dir/` by
+    `git status --porcelain` and then dropped, because a directory has no
+    content to hash. What does reach the comparison is a *file* -- and a real
+    `coverage 7.6.1 -> 7.13.0` bump reports `~ .coverage`, *both act, different
+    result*, which is the destructive-fix vocabulary spent on coverage's own
+    data file.
+
+    So the guard is that the reference gives a neutralisation in the command
+    rather than a `.gitignore` audit: the two runs have to be treated alike for
+    the comparison to mean anything, and only the command reaches both.
+    `tests/test_gate_diff.py` pins the mechanics this prose describes.
+    """
+
+    def test_the_neutralisation_is_something_the_run_carries(self):
+        material = self.material(4)
+        for token in ("PYTHONDONTWRITEBYTECODE", "COVERAGE_FILE"):
+            self.assertIn(
+                token,
+                material,
+                f"{token} is how a run stops writing residue into the measured "
+                "tree; a check on the repo's .gitignore reaches neither run",
+            )
+
+    def test_the_residue_that_actually_reaches_the_comparison_is_named(self):
+        material = self.material(4)
+        self.assertIn(
+            ".coverage",
+            material,
+            "the file-shaped residue is the row that fires by default",
+        )
+        self.assertIn(
+            "status.showUntrackedFiles",
+            material,
+            "and the repo config that un-collapses the directory row is the "
+            "only thing that makes the rest of it visible",
+        )
+
+
 class TestEverythingTheProseNamesExists(SkillHarness):
     """A renamed script breaks every phase that invokes it, silently."""
 
