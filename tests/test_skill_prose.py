@@ -822,10 +822,14 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
 
     `uv sync --locked` asserts the whole lockfile is consistent with the
     manifest, across every `resolution-markers` fork, and Phase 1 verifies every
-    fork's artifacts against the registry. The install then covers only the
-    resolution matching the interpreter present — so a green row on 3.14 says
-    nothing about whether the 3.11 fork's artifacts fetch or install, and nothing
-    in the report distinguished the two.
+    fork's artifacts **of the packages it audits** — which is the changed set,
+    not the lockfile. The install then covers only the resolution matching the
+    interpreter present — so a green row on 3.14 says nothing about whether the
+    3.11 fork's artifacts fetch or install, and nothing in the report
+    distinguished the two.
+
+    The unqualified version of that sentence stood here until 0.32.0 and was the
+    same claim the reference made; #88 is what it cost.
 
     Phase 5 already insists the row name *which install* ran. The same rule was
     not applied to the interpreter, where it matters more.

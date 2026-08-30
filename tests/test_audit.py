@@ -1248,9 +1248,14 @@ class TestForkDisclosure(_MainHarness):
     `uv sync --locked` asserts the whole lockfile is consistent with the
     manifest, across every fork. The install then materialises only the
     resolution for the interpreter that happens to be present. Phase 1 verifies
-    every fork's artifacts against the registry, so a green Phase 5 on 3.14 says
-    nothing about whether the 3.11 fork's artifacts install — and nothing in the
-    output distinguished the two.
+    every fork's artifacts **of the packages it audits**, so a green Phase 5 on
+    3.14 says nothing about whether the 3.11 fork's artifacts install — and
+    nothing in the output distinguished the two.
+
+    That qualifier is load-bearing and was absent here until 0.32.0: the audited
+    set is the changed set, so "every fork" is true of this class's fixture and
+    false of a lockfile with a fork nobody bumped. `TestForksOutsideTheChangedSet`
+    covers that case.
 
     Mechanised here rather than left to `SKILL.md`, per the rule in
     CONTRIBUTING: prose is the weakest of the three levers, and a disclosure the
