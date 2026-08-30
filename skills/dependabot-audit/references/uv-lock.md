@@ -300,7 +300,17 @@ the version under test, measured on uv 0.12.5 against a project locking
 `iniconfig 2.1.0`, where `uv run --with iniconfig==2.0.0` resolves to 2.0.0:
 
 ```bash
-  --run proposed "uv run --group <group> --with mypy==<proposed> mypy ."
+# Fresh call: nothing survives one, so re-derive and re-source exactly as above.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
+
+G="${SCRIPTS:?not in the handoff — re-run Phase 0}/gate_diff.py"
+
+python3 "$G" --tree "$SCRATCH/base-<N>" \
+  --run locked   "PYTHONDONTWRITEBYTECODE=1 uv run --group <group> --with mypy==<locked> mypy ." \
+  --run proposed "PYTHONDONTWRITEBYTECODE=1 uv run --group <group> --with mypy==<proposed> mypy ."
 ```
 
 **A gate that imports the project also writes into the tree it is measured in,
@@ -328,6 +338,15 @@ repo's `.gitignore` — the runs have to be treated alike for the comparison to
 mean anything:
 
 ```bash
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
+
+G="${SCRIPTS:?not in the handoff — re-run Phase 0}/gate_diff.py"
+
+python3 "$G" --tree "$SCRATCH/base-<N>" \
+  --run locked   "PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=../cov-locked   uv run --group <group> --with pytest==<locked>   pytest -q --cov=<pkg>" \
   --run proposed "PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=../cov-proposed uv run --group <group> --with pytest==<proposed> pytest -q --cov=<pkg>"
 ```
 
@@ -335,6 +354,16 @@ mean anything:
 relative `../` lands the data file beside the worktree instead of inside it, and
 needs no handoff to resolve. Both false findings above go to *no difference*
 under it, measured.
+
+**Through the script, not beside it — including the gates with no write mode.**
+A type checker or a test suite writes nothing, so the temptation is to run it
+twice by hand and diff the output, which is what a replay of #365 did: it took
+ruff and rumdl through `gate_diff.py` and compared mypy with a bare `cd` into the
+worktree and two `uv run` calls. That loses `require_clean_worktree`, loses the
+`reset --hard` between runs — so run two inherits run one — and loses the tree
+snapshot entirely. And the residue above is not a lesser concern for a read-only
+gate but the **only** thing its tree delta can contain: a gate that writes
+nothing, measured as having written something, has measured its own cache.
 
 **Compare the tool's output, not `uv run`'s.** The first invocation provisions
 the environment and says so — `Creating virtual environment`, `Installed 35
@@ -344,7 +373,10 @@ run alone. Measured on this phase's own replay, where two mypy runs both
 reported `Success: no issues found in 157 source files` and the diff came back
 eight lines long, all of them uv's. Warm the cache with a throwaway run, or strip
 what uv wrote before comparing; a read-only gate has no tree diff to fall back
-on, so this capture *is* the measurement.
+on, so this capture *is* the measurement. Which is a reason to run it **inside**
+`gate_diff.py`, not outside: the script already captures each run's output and
+compares them, and warming beforehand is a `--run` you discard, not a licence to
+drive the tool by hand.
 
 Repos that have been bitten by this say so in their own configuration. The one
 this section came from pins its mypy hook local rather than to `mirrors-mypy`,

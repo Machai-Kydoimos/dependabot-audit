@@ -11,6 +11,89 @@ patch.
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-08-30
+
+Closes [#85](https://github.com/Machai-Kydoimos/dependabot-audit/issues/85), which
+the round-10 replay of `fpga-board-sim` #365 found while validating 0.30.1 — and
+which shows why that validation is a separate gate from the test suite.
+
+**0.30.1 shipped green, mutation-checked, and inert.** Its neutralisation is a
+`--run` fragment, and the replay never built a `--run` to put it in: Phase 4 took
+ruff and rumdl through `gate_diff.py` and compared **mypy** — the
+project-importing gate the whole `--no-project` exception exists for — with a
+bare `cd` into the worktree and two `uv run` calls. The residue fix reached
+nothing, and three older guarantees went with it: `require_clean_worktree`, the
+`reset --hard` between runs, and the tree snapshot the phase exists to take. The
+run then reported *"no improvisation affecting the evidence — every phase ran
+through the plugin's own scripts (`gate_diff.py`) as written"*, which is the
+Phase 8 line a reader trusts to decide whether to re-check.
+
+Two candidate causes, and the fix closes both rather than settling which:
+
+- **the example was a fragment.** Every other block in Phase 4 is a whole
+  `python3 "$G" --tree …` invocation; the project-importing one was a lone
+  `--run` line, reading as advice about a flag rather than a call to make.
+- **the prose arguably licensed it.** *"A read-only gate has no tree diff to fall
+  back on, so this capture is the measurement"* is a defensible warrant for
+  capturing the output by hand.
+
+**Minor, not patch.** Phase 4 now takes a tree measurement for a class of gate it
+was only comparing by output, and its report says so — a change to what the phase
+verifies.
+
+### Fixed
+
+- **The project-importing example is a whole invocation**, preamble and all,
+  matching every other block in the phase. So is the residue example from 0.30.1,
+  which had the same fragment shape and the same consequence.
+
+- **A new rule, "through the script, not beside it — including the gates with no
+  write mode."** It names the #365 bypass, what it costs, and the sharp half: for
+  a read-only gate, a tree delta is not a lesser signal but the **only** thing it
+  can contain — a gate that writes nothing, measured as having written something,
+  has measured its own cache. That makes 0.30.1's neutralisation matter most
+  exactly where it looked least relevant.
+
+- **The warm-up line no longer reads as a licence.** "Warming beforehand is a
+  `--run` you discard, not a licence to drive the tool by hand."
+
+- **`.pre-commit-config.yaml`'s header stopped arguing a policy that reversed.**
+  It claimed branch protection and rulesets were unavailable "on this repo's plan
+  (private repo, free org)", so CI "can never be made required" and the hooks
+  "are what can actually stop a bad commit". The repo went public 2026-08-15 and a
+  ruleset on `main` requires six contexts, so a red check blocks the merge. The
+  stale text argued the opposite. The version-pinning paragraph below it was
+  correct and is untouched.
+
+### Tests
+
+Two guards in `tests/test_skill_prose.py`, **structural rather than textual on
+purpose**: every Phase 4 block that pins a version under test must contain an
+actual invocation, and the neutralisation must sit inside one. A guard asserting
+the phase *says* to use the script would have passed against the text that did
+not elicit it — 298 tests did exactly that, which is the whole lesson of #85.
+Both mutation-checked by restoring each example to its fragment form.
+
+### Replay
+
+`fpga-board-sim` #365, headless against the working tree, **before** this PR
+rather than after — 40 turns, 8m12s, $4.16.
+
+`gate_diff.py` calls went 3 → 5, and mypy is now one of them:
+
+```
+--run warm-locked "PYTHONDONTWRITEBYTECODE=1 uv run --group dev --with mypy==2.3.0 mypy ."
+--run locked      "PYTHONDONTWRITEBYTECODE=1 uv run --group dev --with mypy==2.3.0 mypy ."
+--run proposed    "PYTHONDONTWRITEBYTECODE=1 uv run --group dev --with mypy==2.3.1 mypy ."
+```
+
+The discarded warm-up run is the new warm-up line being followed. The report's
+disclosure is now accurate — it names its one real improvisation instead of
+claiming none — and the run's own hand-back reads: *"That guidance worked — I
+took mypy through the script with a discarded warm-up run, and the uv-provisioning
+artifact it warns about did not appear."* Verdict unchanged and correct: merge
+as-is, then follow up.
+
 ## [0.30.1] — 2026-08-30
 
 [#83](https://github.com/Machai-Kydoimos/dependabot-audit/issues/83), handed back
@@ -3553,7 +3636,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.1...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.1...v0.31.0
 [0.30.1]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.0...v0.30.1
 [0.30.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.28.0...v0.29.0
