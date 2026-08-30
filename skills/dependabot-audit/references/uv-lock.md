@@ -570,8 +570,10 @@ is that a reader can check them.
 Two things about it are worth knowing, and both belong in the report:
 
 - **It proves less than a true `--no-build`.** The conceded package's build code
-  did run. The claim is "everything except these named packages came from a
-  wheel", not "no third-party build code ran".
+  did run, and a PEP 517 build is arbitrary code — it can fetch from the network,
+  which is the whole reason `--no-build` is worth wanting. The claim is
+  "everything except these named packages came from a wheel", not "no third-party
+  build code ran". Name the concessions in the row so the reader can weigh them.
 - **The lockfile read is a predictor; the sync is the proof.** A package can carry
   wheels for other platforms and none for this one, and it will be refused despite
   having a `wheels` array. uv **fails fast — one package per run** (measured: with
