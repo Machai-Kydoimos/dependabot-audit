@@ -499,6 +499,88 @@ install proves slightly less than it would otherwise. That is a trade worth maki
 by default and worth reversing deliberately — **say in the report which one you
 ran.** "Frozen install passed" is not the same claim in the two cases.
 
+#### When the refusal names a dependency, narrow it — do not drop the claim
+
+The error above names the package it refused. If that package is the **project**,
+`--no-install-project` is the answer and it is already in the command. If it is a
+**dependency**, the loss is not all-or-nothing, and the two wrong moves are
+dropping to a plain `uv sync --locked` (which proves nothing about wheels) and
+hand-rolling the exclusion list differently each time. Both have happened on the
+same PR.
+
+There is no inverse flag, but the lockfile already names the offenders: a package
+with **no `wheels` array** is one uv must build. Exclude every package that *does*
+have one, and the offenders are the only source builds left.
+
+The one distinction that matters is **local versus remote**, not registry versus
+everything. Measured on uv 0.12.7, a lockfile entry's `source` is one of:
+
+| `source` key | What it is | Exclude it? |
+|---|---|---|
+| `registry`, `url`, `git` | a package fetched from elsewhere | **yes, if it has `wheels`** — that is the claim being made |
+| `editable`, `virtual`, `directory` | the project itself, or a path dependency | **never** — these are built from source by design, and excluding one fails the sync for the reason `--no-install-project` exists |
+
+Filtering on `registry` alone looks equivalent and is not: a `url` or `git`
+dependency then escapes the exclusion *and* the denominator, so a package built
+from source goes unnamed in a row claiming to name them all.
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
+
+cd "$SCRATCH/pr-<N>"
+mapfile -t ROWS < <(python3 - uv.lock <<'PY'
+import sys, tomllib
+LOCAL = {"editable", "virtual", "directory"}   # the project and its path deps
+remote: dict[str, bool] = {}
+for p in tomllib.load(open(sys.argv[1], "rb"))["package"]:
+    if LOCAL & set(p.get("source", {})):
+        continue
+    # Count PACKAGES, not lockfile blocks: a forked package has one block per
+    # fork, and counting blocks inflates both halves of the row. It can be held
+    # to a wheel only if EVERY one of its forks has one, hence the `and`.
+    # No `wheels` key -> uv must build it, so it is one of the concessions.
+    remote[p["name"]] = remote.get(p["name"], True) and bool(p.get("wheels"))
+print(len(remote))                     # first line: the denominator
+for name, wheeled in remote.items():
+    if wheeled:
+        print(name)
+PY
+)
+TOTAL="${ROWS[0]}"; WHEELED=("${ROWS[@]:1}")
+
+ARGS=(); for p in "${WHEELED[@]}"; do ARGS+=(--no-build-package "$p"); done
+uv sync --locked "${ARGS[@]}"
+echo "held ${#WHEELED[@]} of $TOTAL third-party packages to wheels"
+```
+
+Measured on uv 0.12.7, replaying `fpga-board-sim` #365: this installs the project
+editable and every wheeled dependency from a wheel, and yields *"36 of 37
+third-party packages resolved to wheels; `actionlint-py` was the only sdist
+built"* — falsifiable, and strictly stronger than the plain sync.
+
+**Say "packages" only if you counted packages.** That lockfile has 39 blocks, 38
+of them remote, but only 37 remote *packages* — `rpds-py` is forked across two
+blocks. A block-wise count reports "37 of 38" and passes the duplicate to
+`--no-build-package` twice; the numbers are then wrong in a row whose entire value
+is that a reader can check them.
+
+Two things about it are worth knowing, and both belong in the report:
+
+- **It proves less than a true `--no-build`.** The conceded package's build code
+  did run, and a PEP 517 build is arbitrary code — it can fetch from the network,
+  which is the whole reason `--no-build` is worth wanting. The claim is
+  "everything except these named packages came from a wheel", not "no third-party
+  build code ran". Name the concessions in the row so the reader can weigh them.
+- **The lockfile read is a predictor; the sync is the proof.** A package can carry
+  wheels for other platforms and none for this one, and it will be refused despite
+  having a `wheels` array. uv **fails fast — one package per run** (measured: with
+  two sdist-only dependencies the error names one), so if the sync still fails,
+  add the newly-named package to the conceded set and re-run. It converges, and
+  the conceded set is the answer.
+
 Then run the repo's own gates from Phase 0, and its full test suite.
 
 ### `--locked` checks the whole lockfile; the install materialises one resolution
@@ -507,9 +589,12 @@ Those are different claims and the row must not merge them:
 
 | Step | Scope |
 |---|---|
-| `audit.py` provenance | **every** fork's artifacts, against the registry |
+| `audit.py` provenance | every fork's artifacts **of the packages this PR changed** — the lockfile's other forks are not checked at all |
 | `uv sync --locked` | asserts the whole lockfile is consistent with the manifest |
 | the install that follows | **one** resolution — the interpreter and platform present |
+
+Three different scopes, and the first is the narrow one. It is easy to read the
+provenance row as lockfile-wide because its neighbours are.
 
 So a green row here on 3.14 says nothing about whether the 3.11 fork's artifacts
 still fetch or its older release still installs. **Ask the environment which one
@@ -521,10 +606,19 @@ uv run python -V                  # inside the synced environment
 uv pip list --format=freeze       # the versions actually materialised
 ```
 
-The Phase 1 script prints the fork list — `forked packages: every pin verified,
-one of them installed` — so the names and versions to reconcile against are
-already in the output. Name the interpreter and the fork in the reproduction
-row; do not report the install as though it covered every pin.
+The Phase 1 script prints the fork list — `forked packages: uv pins these at more
+than one version` — covering the **whole lockfile**, so the names and versions to
+reconcile against are already in the output and there is nothing to derive by
+hand. It arrives in two groups, and the split is the point:
+
+| Group in `audit.py`'s output | What Phase 5 may say about it |
+|---|---|
+| `artifacts verified against the registry above` | this run checked every pin's artifacts; the install exercised one. Name which |
+| `NOT audited by this run` | the pin **count and versions only**. Phase 1 checked nothing here — the package is outside the changed set |
+
+Name the interpreter and the fork in the reproduction row; do not report the
+install as though it covered every pin, and **never write "verified" against a
+name from the second group** — that asserts a check the run did not make.
 
 **When the bumped package is itself forked, a second sync is the thorough
 version** and it is a deliberate escalation, not the default:
@@ -547,13 +641,19 @@ as true of every one:
 |---|---|
 | **which install** | the script-suppressing flags are the documented default and they weaken the proof: a package that genuinely needs its install script is not exercised. Re-running without them is a legitimate choice — say which produced the row |
 | **which interpreter** | the install materialised one fork of a forked lockfile. `uv run python -V`, not the auditor's `python3` |
-| **which forks were only verified** | Phase 1 checked all of them and Phase 5 installed one. Name the others rather than letting the install stand for them |
+| **which forks were only verified, and which were not checked at all** | of the forks Phase 1 audited it checked every pin and Phase 5 installed one; the lockfile's other forks got neither. Name both sets rather than letting the install stand for them |
 | **which groups** | the sync installs the default groups, and a bump outside them is absent with nothing to show for it. Reconcile against the set Phase 1 named, above |
 
 None of the four is a failure to disclose. "Frozen install passed under
-`--no-build --no-install-project` on CPython 3.14, `dev` group included; the 3.11
-fork of `rpds-py` was verified but not installed" is a stronger row than "frozen
-install passed", because it is one a reader can falsify.
+`--no-build --no-install-project` on CPython 3.14, `dev` group included; `rpds-py`
+is forked and unchanged, so its 3.11 pin was neither audited nor installed" is a
+stronger row than "frozen install passed", because it is one a reader can falsify.
+
+Note which half of that sentence the fork clause makes: **unaudited and not
+installed**, not "verified but not installed". The verified-but-not-installed row
+is the right one only for a fork of a package the PR actually changed — and on a
+real audit of #365 the wrong version of this sentence was written about `rpds-py`,
+which the run had never looked at.
 
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.
