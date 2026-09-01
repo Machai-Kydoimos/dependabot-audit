@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import unittest
 from typing import Any
@@ -86,3 +87,86 @@ class TestReleaseTagsDisagreeAboutThePrefix(unittest.TestCase):
     def test_rumdl_releases_with_one(self):
         tags = gh_json("repos/rvben/rumdl/releases?per_page=100", "[.[].tag_name]")
         self.assertIn("v0.2.58", tags)
+
+
+@live
+class TestARungThatAnsweredCanStillBeIncomplete(unittest.TestCase):
+    """The premise behind Phase 2's reconciliation, and behind `changelog.py`.
+
+    The ladder's rungs are not a fallback chain. Prose is what a project chose to
+    say; the commit range is what actually landed, and the two can disagree while
+    every rung returns real, well-formed, correctly-authored content. No exit
+    status anywhere can reach that.
+
+    `rumdl` v0.2.60...v0.2.62 is the case #94 was filed from, and it is durable:
+    release bodies for published tags are immutable in practice, the tag pair is
+    fixed, and the assertions below are the ones the rule rests on. If any of
+    them goes red, the project changed how it generates release notes and the
+    reference's worked example needs a new subject -- which is exactly what this
+    directory is for.
+
+    These are also the live half of `tests/test_changelog.py`'s recorded
+    fixtures. Those stay green by construction; these say whether they still
+    describe the world.
+    """
+
+    def test_the_release_notes_for_the_audited_version_document_no_fixes(self):
+        # `.body | @json`, not `.body`: a release body is multi-line, and the
+        # plain filter hands back raw text this helper cannot parse. The same
+        # escaping `changelog.py` needs to keep one commit message on one line.
+        body = gh_json("repos/rvben/rumdl/releases/tags/v0.2.61", ".body | @json") or ""
+        notes = body.split("## Downloads")[0]
+        self.assertIn("### Added", notes, "the notes are not the shape the example describes")
+        self.assertNotIn(
+            "### Fixed",
+            notes,
+            "rumdl v0.2.61 now documents fixes -- the reconciliation example needs a new subject",
+        )
+
+    def test_the_same_range_carries_fix_commits(self):
+        """The half no changelog can omit."""
+        subjects = gh_json(
+            "repos/rvben/rumdl/compare/v0.2.60...v0.2.62",
+            '[.commits[].commit.message | split("\\n")[0]]',
+        )
+        fixes = [s for s in subjects if s.startswith("fix(")]
+        self.assertGreaterEqual(
+            len(fixes),
+            5,
+            f"the range carried 5 fix commits when #94 was filed; it now carries {len(fixes)}",
+        )
+
+    def test_two_of_them_carry_the_destructive_shape_phase_2_looks_for(self):
+        """`stop rewriting Rust source when formatting doc comments` wrote
+        `# [derive(Debug)]` to disk. This is the row a run honoring the ladder as
+        written never reported."""
+        subjects = gh_json(
+            "repos/rvben/rumdl/compare/v0.2.60...v0.2.62",
+            '[.commits[].commit.message | split("\\n")[0]]',
+        )
+        marked = [s for s in subjects if re.search(r"\b(?:stops?|no longer)\b", s, re.I)]
+        self.assertGreaterEqual(len(marked), 2, f"expected the two destructive fixes, got {marked}")
+
+    def test_the_project_does_document_fixes_when_it_has_them(self):
+        """Why the obvious heuristic does not save the ladder: "does this project
+        document its fixes at all?" returns a confident yes. Only the versions
+        under audit had none."""
+        body = gh_json("repos/rvben/rumdl/releases/tags/v0.2.59", ".body | @json") or ""
+        self.assertIn("### Fixed", body.split("## Downloads")[0])
+
+    def test_mypy_labels_none_of_its_commits(self):
+        """The other classifier's premise. A filter keyed on `fix(` reports zero
+        fixes for this range, which carries four -- the defect `changelog.py`
+        shipped in its first version and the offline suite now pins."""
+        subjects = gh_json(
+            "repos/python/mypy/compare/v2.3.0...v2.3.1",
+            '[.commits[].commit.message | split("\\n")[0]]',
+        )
+        conventional = [s for s in subjects if re.match(r"^[a-z]+(\([^)]*\))?!?:", s)]
+        self.assertEqual(
+            conventional, [], "python/mypy has adopted conventional commits; the example is stale"
+        )
+        self.assertTrue(
+            [s for s in subjects if "Fix" in s],
+            "the range no longer carries the fixes the unlabelled example rests on",
+        )

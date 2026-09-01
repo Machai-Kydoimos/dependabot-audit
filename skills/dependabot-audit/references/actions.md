@@ -311,7 +311,16 @@ runners, so local reproduction is unavailable. The substitute is **evidence that
 this pin has already run**: ask the workflow the bump changed.
 
 ```bash
-gh run list --workflow <changed>.yml --limit 10 \
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# `<workflow>` is the same derived list Phase 0 and Phase 6 use, narrowed to what
+# this PR touched. Derive it; do not guess a filename.
+git diff --name-only "$BASE_SHA...pr-<N>" -- '.github/workflows/'
+echo "changed-workflow list exit: $?"
+
+gh run list --workflow <workflow> --limit 10 \
   --json conclusion,headBranch,createdAt,displayTitle \
   --jq '.[] | "\(.conclusion)\t\(.createdAt)\t\(.displayTitle)"'
 ```
