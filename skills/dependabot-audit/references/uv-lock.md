@@ -140,25 +140,31 @@ package that is three steps, and each has a way of failing quietly.
 
 **The repo is in PyPI's metadata, not guessable from the package name.** The
 Simple API the Phase 1 script uses carries artifacts and nothing else, so this is
-the one place to reach for the JSON API:
+the one place the JSON API is the right call. `changelog.py` reads it, and two
+things about how it reads it are load-bearing.
 
-```bash
-PKG=<name>; VER=<version>
-REPO=$(python3 - "$PKG" <<'PY'
-import json, sys, urllib.request
-d = json.load(urllib.request.urlopen(f"https://pypi.org/pypi/{sys.argv[1]}/json", timeout=30))
-for url in (d["info"].get("project_urls") or {}).values():
-    if url and "github.com/" in url:
-        print("/".join(url.split("github.com/")[1].strip("/").split("/")[:2])); break
-PY
-)
+**The host is compared, never searched for.** `project_urls` is written by the
+package author — the party this plugin exists to *not* trust — so a substring
+test on `"github.com/"` hands the audit whatever repository that author names.
+Measured against the version of this block that shipped from 0.33.0 until 0.36.0,
+and against this script's own first cut:
 
-# Do NOT construct the tag. Match it — and capture the list before filtering it,
-# so a failed lookup is a failed lookup and not an empty answer.
-TAGS=$(gh api "repos/$REPO/releases" --paginate --jq '.[].tag_name') \
-  || { echo "release list unavailable for $REPO — a lookup failure, not an absent release" >&2; exit 2; }
-TAG=$(printf '%s\n' "$TAGS" | grep -Fx -e "$VER" -e "v$VER" | head -1)
-```
+| `project_urls` entry | Repo the audit would have read |
+|---|---|
+| `https://evil.example.invalid/github.com/attacker/lookalike` | `attacker/lookalike` |
+| `https://example.invalid/?q=github.com/attacker/repo` | `attacker/repo` |
+| `https://github.com/../../users/octocat` | `../..`, walking out of `repos/` |
+
+The first two point this phase's entire changelog read at a repository the
+package author controls: tidy release notes, no unreconciled fixes, a clean
+currency row. Reported by CodeQL as `py/incomplete-url-substring-sanitization`
+on the PR that mechanised it, which is the only reason the prose copy was found.
+
+**Do not construct the tag; match it.** Projects disagree about the `v` prefix
+and change their minds mid-life, and a guessed tag returns "release not found",
+which reads exactly like "this version has no notes". The script matches against
+the published list, falls back to probing **both** spellings against the git ref,
+and reports which answered.
 
 **Constructing the tag is the quiet failure.** Projects disagree about the `v`
 prefix and change their minds mid-life. Measured 2026-08-30, on the three tools

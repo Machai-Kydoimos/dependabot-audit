@@ -3381,32 +3381,81 @@ class TestPhase2CanReachAChangelogAtAll(SkillHarness):
     """
 
     def _ladder(self) -> str:
-        for _, section in self._handoffs(2):
-            for block in bash_blocks(section):
-                if "project_urls" in block:
-                    return block
-        self.fail("Phase 2 documents no way to find the project's repository")
+        """What Phase 2 *runs* to find the repo and the tag, not what it says.
+
+        This used to return the bash block whose heredoc re-implemented the
+        resolution in six lines. 0.36.0 deleted that block: it was a second
+        implementation of what `changelog.py` already did, and it carried the
+        same `"github.com/" in url` substring test — so fixing the flaw in one
+        copy would have left it live in the other. Re-anchored to `reachable`,
+        which follows the script, rather than re-anchored to nothing.
+        """
+        code = self.reachable(2)
+        self.assertIn(
+            "changelog.py",
+            "\n".join(block for _, section in self._handoffs(2) for block in bash_blocks(section)),
+            "Phase 2 documents no way to find the project's repository",
+        )
+        return code
 
     def test_the_tag_is_matched_against_the_release_list_not_constructed(self):
         """Guessing the prefix returns "release not found", which reads exactly
         like "this version has no notes"."""
-        block = self._ladder()
-        self.assertIn("tag_name", block, "the tag comes from the release list")
+        code = self._ladder()
+        self.assertIn("tag_name", code, "the tag comes from the release list")
         self.assertRegex(
-            block,
-            r"grep -Fx.*-e \"\$VER\".*-e \"v\$VER\"",
+            code,
+            r"for candidate in \(version, f'v\{version\}'\)",
             "both spellings must be matched against what the project actually "
             "published, rather than one of them assumed",
         )
 
+    def test_the_repo_url_is_matched_on_its_host_not_by_substring(self):
+        """`project_urls` is written by the package author, who is exactly the
+        party this plugin exists to not trust.
+
+        `"github.com/" in url` resolved `https://evil.invalid/github.com/a/b` to
+        `a/b`, pointing the whole phase at a repository the package chooses —
+        tidy notes, no unreconciled fixes, a clean currency row. It shipped in
+        the prose from 0.33.0 and in this script's first cut, and CodeQL caught
+        it as `py/incomplete-url-substring-sanitization`.
+        """
+        code = self._ladder()
+        self.assertRegex(
+            code,
+            r"hostname not in \('github\.com', 'www\.github\.com'\)",
+            "the host must be compared, never searched for",
+        )
+        self.assertNotRegex(
+            code,
+            r"'github\.com/' in url",
+            "the substring test is the defect, not a second line of defence",
+        )
+
     def test_a_failed_lookup_is_not_read_as_an_absent_release(self):
         """The same distinction Phase 0 draws for every derived output, at the
-        point where the two look identical: an empty tag."""
-        block = self._ladder()
-        self.assertIn(
-            "a lookup failure, not an absent release",
-            block,
-            "a failed `gh api` must exit, not fall through to 'no release for this version'",
+        point where the two look identical: an empty answer.
+
+        The bash block used to carry this as a `|| { ...; exit 2; }` and a
+        sentence. The script carries it as a type: `_gh` returns `None` on
+        failure and `""` on a call that succeeded with no rows, and the release
+        list goes through the wrapper that exits on `None`. Same property, and
+        the guard follows it rather than following the sentence that described
+        it -- `python/mypy` really does publish zero releases, so `""` here has
+        to stay a real answer.
+        """
+        code = self._ladder()
+        # DOTALL on both: these span a function body, and `assertRegex` compiles
+        # a bare string with no flags.
+        self.assertRegex(
+            code,
+            re.compile(r"def releases\(slug: str\).*?_gh_hard\(", re.DOTALL),
+            "the release list must go through the wrapper that exits on failure",
+        )
+        self.assertRegex(
+            code,
+            re.compile(r"def _gh_hard\(.*?if out is None:\s+fail\(", re.DOTALL),
+            "and that wrapper has to actually exit, not return an empty string",
         )
 
     def _uv_lock_phase2(self) -> str:

@@ -92,6 +92,37 @@ report; Phase 0 and Phase 6 gain a derivation they only implied.
   exactly as `git show "<ref>:<path>"` is; a `show`-only pattern called both
   working-tree reads.
 
+### Security
+
+- **The GitHub repository was resolved with an unanchored substring test**, in
+  the prose since 0.33.0 and in this script's first cut. `project_urls` is
+  written by the package author — the party this plugin exists to *not* trust —
+  so `if "github.com/" in url` hands the audit whatever repository that author
+  names. Measured:
+
+  | `project_urls` entry | Repo the audit would have read |
+  |---|---|
+  | `https://evil.example.invalid/github.com/attacker/lookalike` | `attacker/lookalike` |
+  | `https://example.invalid/?q=github.com/attacker/repo` | `attacker/repo` |
+  | `https://github.com/../../users/octocat` | `../..`, walking out of `repos/` |
+
+  The first two point Phase 2's entire changelog read at a repository the package
+  controls: tidy release notes, no unreconciled fixes, a clean currency row. The
+  reconciliation added above is a verdict input Phase 7 reads, so this was worse
+  after #94 than before it — the feature made the target worth attacking.
+
+  Now the host is **compared**, never searched for, and both path segments are
+  validated (which is what rejects `..`, since the slug is interpolated into a
+  `gh api repos/<slug>/…` path). `--repo-slug` goes through the same check: it
+  reaches the same API path, and a typo that silently answers about something
+  else is the failure this phase is about.
+
+  Caught by CodeQL as `py/incomplete-url-substring-sanitization`, high severity,
+  on the PR that mechanised the ladder. **The prose copy was found only because
+  the script copy was flagged** — and that copy is now deleted rather than fixed,
+  because a second implementation of what `changelog.py` already does is how one
+  of them keeps the bug.
+
 ### Fixed
 
 - **`changelog.py`'s own first version reported `python/mypy` v2.3.0…v2.3.1 as

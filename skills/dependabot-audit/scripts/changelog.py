@@ -87,6 +87,7 @@ import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import NoReturn
@@ -155,6 +156,11 @@ HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 # docstring on which error this file prefers.
 MATCH_RATIO = 0.82
 
+# One path segment of a GitHub `owner/repo`. Rejects `.` and `..` outright,
+# because the slug is interpolated into a `gh api repos/<slug>/...` path and
+# `..` walks out of `repos/` into a different endpoint.
+SEGMENT = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$")
+
 
 def fail(what: str) -> NoReturn:
     """Exit 2 -- could not run. Never 1, which means the prose came up short."""
@@ -207,6 +213,64 @@ def _gh_hard(args: list[str]) -> str:
     return out
 
 
+def valid_slug(slug: str) -> bool:
+    """Exactly two well-formed path segments.
+
+    `--repo-slug` is interpolated into `gh api repos/<slug>/...`, so `../..`
+    would walk out of `repos/` and query a different endpoint. Checked even
+    though the caller is the auditor rather than the package: the same string
+    reaches the same place, and a typo that silently answers about something
+    else is the failure mode this whole phase is about.
+    """
+    parts = slug.split("/")
+    return len(parts) == 2 and all(SEGMENT.match(p) for p in parts)
+
+
+def github_slug(url: str) -> str | None:
+    """`owner/repo` if `url` is a GitHub repository URL, else None.
+
+    **The host is compared, never searched for.** `project_urls` is written by
+    the package author -- the party this whole plugin exists to not trust -- and
+    a substring test on `"github.com/"` hands the audit whatever repository that
+    author names. Measured, against the version that shipped in the prose from
+    0.33.0 and in the first cut of this script:
+
+        https://evil.example.invalid/github.com/attacker/lookalike -> attacker/lookalike
+        https://example.invalid/?q=github.com/attacker/repo        -> attacker/repo
+        https://github.com/../../users/octocat                     -> ../..
+
+    The first two point Phase 2's entire changelog read at a repository the
+    package author controls: tidy release notes, no unreconciled fixes, a clean
+    currency row. The third walks out of `repos/` into a different API endpoint,
+    because the slug is interpolated into a `gh api` path.
+
+    That is worse now than it was before this file existed. The reconciliation
+    is a verdict input Phase 7 reads, so a package that can choose which
+    repository answers for it can choose its own Phase 2 finding.
+
+    Segments are validated too, which is what rejects `..` -- a name may not be
+    `.` or `..`, and may hold only the characters GitHub actually allows.
+    """
+    if not url:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(url.strip())
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    # `.hostname` is already lowercased and strips any `user:pass@` and `:port`.
+    if parsed.hostname not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[0], parts[1].removesuffix(".git")
+    if not (SEGMENT.match(owner) and SEGMENT.match(repo)):
+        return None
+    return f"{owner}/{repo}"
+
+
 def resolve_repo(package: str) -> str:
     """`owner/repo` from PyPI's JSON metadata, which is where it actually lives.
 
@@ -227,10 +291,9 @@ def resolve_repo(package: str) -> str:
     urls = list((data.get("info", {}).get("project_urls") or {}).values())
     urls.append(data.get("info", {}).get("home_page") or "")
     for url in urls:
-        if url and "github.com/" in url:
-            parts = url.split("github.com/")[1].strip("/").split("/")
-            if len(parts) >= 2:
-                return f"{parts[0]}/{parts[1]}"
+        slug = github_slug(url)
+        if slug:
+            return slug
     fail(
         f"{package} names no GitHub repository in its PyPI metadata -- pass "
         f"--repo-slug, and say in the report that the link was not derived"
@@ -598,6 +661,8 @@ def main() -> int:
     if not scratch.is_dir():
         fail(f"{scratch} does not exist -- re-derive $SCRATCH, or Phase 0 never ran")
 
+    if args.slug and not valid_slug(args.slug):
+        fail(f"--repo-slug {args.slug!r} is not an owner/repo pair")
     slug = args.slug or resolve_repo(args.package)
     published = releases(slug)
     tags = [row["tag"] for row in published]

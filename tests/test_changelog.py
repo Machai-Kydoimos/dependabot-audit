@@ -47,13 +47,16 @@ from changelog import (
     candidates,
     cli,
     described,
+    github_slug,
     labelled,
     main,
     match_tag,
     normalise,
     rank,
     reconciled,
+    resolve_repo,
     section_for,
+    valid_slug,
 )
 
 # --- recorded: rvben/rumdl, the bump behind #94 ------------------------------
@@ -654,6 +657,139 @@ class TestItRefusesRatherThanGuessing(ChangelogHarness):
             cli()
         self.assertEqual(caught.exception.code, 2)
         self.assertIn("This is a bug, not a finding", err.getvalue())
+
+
+class TestThePackageCannotChooseWhichRepositoryAnswersForIt(unittest.TestCase):
+    """`project_urls` is written by the package author.
+
+    That is the party this whole plugin exists to not trust, and until 0.36.0
+    both the prose (since 0.33.0) and this script's first cut resolved the
+    repository with `if "github.com/" in url` — an unanchored substring test.
+
+    A package that wants a clean Phase 2 row can supply
+    `https://evil.invalid/github.com/attacker/lookalike` and have the audit read
+    *that* repository's release notes: tidy, additive, no unreconciled fixes.
+    The reconciliation is a verdict input Phase 7 reads, so this is worse after
+    #94 than it was before — the feature made the target worth attacking.
+
+    Reported by CodeQL as `py/incomplete-url-substring-sanitization`, high
+    severity, on the PR that mechanised the ladder. The prose copy was found only
+    because the script copy was flagged.
+    """
+
+    def test_a_lookalike_host_is_not_github(self):
+        for url in (
+            "https://evil.example.invalid/github.com/attacker/lookalike",
+            "https://example.invalid/?q=github.com/attacker/repo",
+            "https://github.com.attacker.invalid/github.com/a/b",
+            "https://notgithub.com/a/b",
+        ):
+            self.assertIsNone(github_slug(url), f"{url} resolved to a repository")
+
+    def test_a_path_cannot_walk_out_of_the_repos_endpoint(self):
+        """The slug is interpolated into `gh api repos/<slug>/...`."""
+        for url in (
+            "https://github.com/../../users/octocat",
+            "https://github.com/./../org/repo",
+        ):
+            slug = github_slug(url)
+            if slug is not None:
+                self.assertNotIn("..", slug, f"{url} produced a traversing slug")
+
+    def test_a_non_http_scheme_is_rejected(self):
+        """Not redundant with the host check, though it looks it.
+
+        `javascript:alert(1)//github.com/a/b` parses with no hostname, so the
+        host check alone would already reject it. **`//github.com/attacker/repo`
+        does not** — a protocol-relative URL parses with hostname `github.com`
+        and resolves without this check, which is why the mutation that deleted
+        it first went green. Pinned by the second case here.
+        """
+        for url in ("javascript:alert(1)//github.com/a/b", "file:///github.com/a/b", ""):
+            self.assertIsNone(github_slug(url))
+        self.assertIsNone(
+            github_slug("//github.com/attacker/repo"),
+            "a protocol-relative URL parses with hostname github.com and must "
+            "still be rejected: the scheme is what says this is a real link",
+        )
+
+    def test_the_real_forms_still_resolve(self):
+        """Erring toward rejection would be its own defect: an unresolved repo
+        sends Phase 2 back to having no method at all."""
+        for url, want in (
+            ("https://github.com/rvben/rumdl", "rvben/rumdl"),
+            ("https://github.com/rvben/rumdl.git", "rvben/rumdl"),
+            ("https://www.github.com/astral-sh/ruff/issues", "astral-sh/ruff"),
+            ("http://github.com/python/mypy", "python/mypy"),
+            ("https://github.com/psf/requests/", "psf/requests"),
+        ):
+            self.assertEqual(github_slug(url), want, url)
+
+    def test_the_metadata_is_read_through_the_same_check(self):
+        """The guard belongs on the resolution, not beside it — the flaw was in
+        `resolve_repo`'s loop, so a helper nothing calls fixes nothing."""
+        payload = {
+            "info": {
+                "project_urls": {
+                    "Homepage": "https://evil.example.invalid/github.com/attacker/lookalike",
+                    "Source": "https://github.com/rvben/rumdl",
+                }
+            }
+        }
+        with mock.patch("changelog.urllib.request.urlopen") as opened:
+            opened.return_value.__enter__.return_value = io.StringIO(json.dumps(payload))
+            self.assertEqual(resolve_repo("rumdl"), "rvben/rumdl")
+
+    def test_a_package_naming_only_a_lookalike_fails_rather_than_guessing(self):
+        payload = {"info": {"project_urls": {"Homepage": "https://evil.invalid/github.com/a/b"}}}
+        with (
+            mock.patch("changelog.urllib.request.urlopen") as opened,
+            contextlib.redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as caught,
+        ):
+            opened.return_value.__enter__.return_value = io.StringIO(json.dumps(payload))
+            resolve_repo("malicious")
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("names no GitHub repository", err.getvalue())
+
+    def test_the_auditors_own_slug_is_validated_too(self):
+        """`--repo-slug` reaches the same API path. Checked even though the
+        auditor types it: a typo that silently answers about something else is
+        the failure this phase is about."""
+        for good in ("rvben/rumdl", "astral-sh/ruff", "a/b"):
+            self.assertTrue(valid_slug(good), good)
+        for bad in ("../..", "a/b/c", "rvben", "", "a/../b", "./x"):
+            self.assertFalse(valid_slug(bad), bad)
+
+    def test_the_slug_check_is_wired_into_the_run(self):
+        """A validator nothing calls validates nothing.
+
+        Mutation-checked: deleting the call in `main()` left the unit test above
+        green, because it exercises the function and not the path. This drives
+        the whole entry point.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            argv = [
+                "changelog.py",
+                "--scratch",
+                scratch,
+                "--repo-slug",
+                "../..",
+                "--from",
+                "1.0.0",
+                "--to",
+                "2.0.0",
+            ]
+            with (
+                mock.patch("changelog._gh", lambda args: None),
+                mock.patch.object(sys, "argv", argv),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()) as err,
+                self.assertRaises(SystemExit) as caught,
+            ):
+                main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("is not an owner/repo pair", err.getvalue())
 
 
 class TestAFailedCallIsNotAnEmptyAnswer(unittest.TestCase):
