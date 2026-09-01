@@ -1428,7 +1428,12 @@ class TestCleanupRunsOnEveryPath(SkillHarness):
     a report, because "stopping here is not a failed audit".
     """
 
-    CLEANUP = re.compile(r"git worktree remove|git branch -D")
+    # The mechanism, wherever it lives. Phase 7 was three git commands until
+    # 0.35.0 and is `cleanup.py` from then on. A guard keyed only to the commands
+    # went green on a Phase 7 that no longer contained them — the retirement
+    # `reachable()`'s own docstring warns about, arrived at for real rather than
+    # hypothetically, and caught by this suite on the commit that mechanised it.
+    CLEANUP = re.compile(r"git worktree remove|git branch -D|cleanup\.py")
 
     def test_the_cleanup_is_not_in_a_phase_that_can_be_skipped(self):
         for number in (4, 5):
@@ -1442,18 +1447,67 @@ class TestCleanupRunsOnEveryPath(SkillHarness):
 
     def test_the_cleanup_is_in_the_phase_every_audit_reaches(self):
         self.assertRegex(
-            self.shell[7],
+            self.reachable(7),
             self.CLEANUP,
             "Phase 7 is the only phase reached on every path, including the Phase 1 "
             "gate stop; the cleanup belongs there",
         )
 
-    def test_both_worktrees_and_the_branch_are_removed(self):
-        """Removing the worktrees and leaving the branch still accumulates."""
-        phase7 = self.shell[7]
-        for artifact in ("$SCRATCH/pr-<N>", "$SCRATCH/base-<N>"):
-            self.assertIn(artifact, phase7, f"{artifact} is created in Phase 0 and never removed")
-        self.assertIn("git branch -D", phase7, "the fetched ref outlives the worktrees")
+    def test_every_artifact_phase_0_creates_is_removed(self):
+        """Removing the worktrees and leaving the branch still accumulates.
+
+        Read through `reachable`, because the names moved into `cleanup.py`'s
+        `WORKTREES` when Phase 7 was mechanised. `_code_only` strips docstrings and
+        comments, so the script's own explanation of the tuple cannot satisfy this
+        — only the tuple can. `tip-<N>` is in the list now: Phase 0 creates it when
+        the base was rewritten, and the prose used to ask the reader to add a line
+        for it, which is the kind of instruction that gets skipped.
+
+        Matched quote-agnostically: `_code_only` normalises source through
+        `ast.unparse`, so a double-quoted argv in the script arrives here
+        single-quoted and a literal match silently fails.
+        """
+        material = self.reachable(7)
+        for artifact in ("pr-{n}", "base-{n}", "tip-{n}"):
+            self.assertIn(artifact, material, f"{artifact} is created in Phase 0 and never removed")
+        self.assertRegex(
+            material,
+            r"""['"]branch['"],\s*['"]-D['"]""",
+            "the fetched ref outlives the worktrees",
+        )
+
+    def test_the_cleanup_exit_code_is_read_not_chained(self):
+        """`cleanup.py … && next` turns a finding into a swallowed error.
+
+        Exit 1 means residue was found and the worktree was still removed. It is
+        the same shape as Phase 5's `cmd | tail && next` trap, one phase over, and
+        the same shape as `gate_diff.py`'s 1-is-a-finding contract — so the phase
+        that consumes it has to say which of 0, 1 and 2 it is looking at.
+        """
+        phase7 = dict(self.phases)[7]
+        self.assertIn(
+            "do not chain on it",
+            phase7,
+            "Phase 7 must tell the reader that exit 1 is a finding, not a failure",
+        )
+        self.assertNotRegex(
+            self.shell[7],
+            r"cleanup\.py[^\n]*&&",
+            "chaining on cleanup.py hides the residue exit",
+        )
+
+    def test_phase_5_says_its_gates_may_dirty_the_tree(self):
+        """Otherwise the run tidies up and destroys the finding before Phase 7.
+
+        Phase 4 restores `base-<N>` after every gate run; nothing restores
+        `pr-<N>`, deliberately. A run that reads the dirt as its own mess and
+        `git checkout .`s it has thrown away the strongest row Phase 5 produces.
+        """
+        self.assertIn(
+            "do not tidy it yourself",
+            dict(self.phases)[5],
+            "Phase 5 must say the fix-mode residue is expected and is Phase 7's to report",
+        )
 
 
 class TestTheRequiredContextListIsNotSilentlyTruncated(SkillHarness):

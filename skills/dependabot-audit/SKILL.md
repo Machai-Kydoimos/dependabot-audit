@@ -242,7 +242,12 @@ test "$(git -C "$SCRATCH/pr-<N>" rev-parse HEAD)" = "$HEAD_SHA"
 git -C "$SCRATCH/pr-<N>" status --porcelain                       # must be empty
 ```
 
-If either check fails, `git worktree remove` it and re-add.
+If either check fails, remove it and re-add — with
+`python3 "$SCRIPTS/cleanup.py" --scratch "$SCRATCH" --pr <N>` rather than a bare
+`git worktree remove`. The second check fails precisely when the tree is dirty,
+and a plain `remove` refuses on exactly that, so the remedy would fail on the
+state it was written for — and a previous run's Phase 5 residue would be
+discarded unread rather than saved.
 
 **Phase 0 outputs.** Every later phase consumes these and nothing else:
 
@@ -808,6 +813,15 @@ The worktrees and the `pr-<N>` branch are cleaned up in Phase 7, not here — an
 audit that stops at Phase 1's gate never reaches this phase and still has to
 tidy up after itself.
 
+**Expect the gates to leave this tree dirty, and do not tidy it yourself.** Where
+the repo's gates are fix-mode — `ruff format`, `rumdl check --fix`, a `pre-commit`
+run that stages what it fixes — they rewrite tracked files here, and that is a
+*result*: the repo's own gates changed this tree at the proposed version, which is
+Phase 4's question reached from the other direction. Nothing restores `pr-<N>` the
+way `gate_diff.py` restores `base-<N>`, and that is deliberate. Phase 7 saves the
+diff and reports it; a `git checkout .` here destroys the finding before anyone
+sees it.
+
 ## Phase 6 — CI verification
 
 *Requires from Phase 0: `$HEAD_SHA`, `$BASE_SHA`, `$OWNER`, `$NAME`.*
@@ -1207,18 +1221,45 @@ audit reaches, including the one that ends at the gate.
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
-git worktree remove "$SCRATCH/pr-<N>"
-git worktree remove "$SCRATCH/base-<N>"
-git branch -D "pr-<N>"
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/cleanup.py" \
+  --scratch "$SCRATCH" --pr <N>
+echo "cleanup exit: $?"
 ```
 
-Remove exactly what Phase 0 created, and nothing else. Add `$SCRATCH/tip-<N>` if
-Phase 0 found the base rewritten; drop both worktree lines on an actions bump,
-where Phase 0 creates neither and only the branch is left to remove.
+**Read the exit code; do not chain on it.** `0` is clean, `2` is could-not-run, and
+**`1` means residue was found and the worktree was still removed** — a finding for
+the report, not a cleanup failure. `cleanup.py … && echo done` treats that finding
+as an error and hides it, the same shape as Phase 5's `cmd | tail && next`.
 
-Keeping them is reasonable when a follow-up run is likely — say so in the report,
-with the commands above, so the user knows what is there. Silently keeping them
-is what this step exists to prevent.
+The script removes exactly what Phase 0 created and nothing else, discovering which
+of `pr-<N>`, `base-<N>` and `tip-<N>` are actually there — so a rewritten base needs
+no extra line and an actions bump, which creates no worktree at all, needs none
+removed.
+
+**Why a script, when it was three commands.** Because the three commands said
+nothing about what does or does not dirty a worktree, and two separate audits
+therefore reasoned it out and reached the same wrong answer: that Phase 5's
+`uv sync` leaves a `.venv/` which makes `remove` refuse. It does not — `remove`
+gates on `git status --porcelain`, which omits *ignored* files, and uv, pytest,
+ruff and mypy each write a `.gitignore` containing `*` inside their own directory.
+A run that types the command re-derives that question every time; a run that calls
+the script never asks it.
+
+**The refusal that is real is a Phase 5 finding.** Phase 5 runs the repo's own
+gates in `$SCRATCH/pr-<N>`, and where those are fix-mode — `pre-commit` stages its
+own edits — tracked files end up modified or staged. Phase 4 mutates `base-<N>` and
+`gate_diff.py` restores it after every run; nothing restores `pr-<N>`. So the
+script writes the residue to `$SCRATCH/residue-<tree>.diff` **before** removing:
+`$SCRATCH` outlives the worktrees, so the evidence outlives the tree that held it.
+Forcing without writing would discard something the audit produced and had not yet
+reported, which is the loss `gate_diff.py`'s `restore()` declines `-x` to avoid.
+
+*"The repo's own gates rewrote N tracked files at the proposed version"* is the
+strongest row Phase 5 can produce. Put it in the report, with the path.
+
+Keeping the worktrees is reasonable when a follow-up run is likely — say so in the
+report, with the command above, so the user knows what is there. Silently keeping
+them is what this step exists to prevent.
 
 ## Phase 8 — Learning loop (the only thing worth persisting)
 

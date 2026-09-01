@@ -11,6 +11,97 @@ patch.
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-09-01
+
+Closes [#97](https://github.com/Machai-Kydoimos/dependabot-audit/issues/97) and
+[#95](https://github.com/Machai-Kydoimos/dependabot-audit/issues/95). Phase 7's
+tidy-up becomes a script, because the three commands it replaces said nothing
+about what does or does not dirty a worktree — and two separate audits therefore
+reasoned it out and reached the same wrong answer.
+
+**Minor, not patch.** Phase 7 changes what it does and gains a row it can report;
+Phase 5 gains a stated expectation it did not have.
+
+### Added
+
+- **`scripts/cleanup.py`** (#97) removes exactly what Phase 0 created — `pr-<N>`,
+  `base-<N>`, `tip-<N>` and the `pr-<N>` branch — discovering which are actually
+  present, so a rewritten base needs no extra line and an actions bump, which
+  creates no worktree at all, needs none removed. The prose used to ask the reader
+  to adjust the command list for both cases, which is the kind of instruction that
+  gets skipped.
+
+  **Why a script for three commands.** Prose is the weakest of the three levers,
+  and this trap kept recurring through it: on 2026-08-30 and again on 2026-09-01,
+  two different audits handed back the claim that Phase 5's `uv sync` leaves a
+  `.venv/` which makes `git worktree remove` refuse. It does not — `remove` gates
+  on `git status --porcelain`, which omits *ignored* files, and uv, pytest, ruff
+  and mypy each write a `.gitignore` containing `*` inside their own directory.
+  Measured on git 2.55.0 and uv 0.12.8 in a worktree of a repo with **no
+  `.gitignore` at all**, the plain form exits 0. A run that types the command
+  re-derives that question every time; a run that calls the script never asks it.
+
+- **The residue is written out before the tree goes.** `$SCRATCH/residue-<tree>.diff`
+  carries the porcelain output and `git diff HEAD`; untracked paths are listed and
+  not dumped. `$SCRATCH` outlives the worktrees, so the evidence outlives the tree
+  that held it — which is what makes the removal safe. Forcing without writing
+  would discard something the audit produced and had not yet reported, the loss
+  `gate_diff.py`'s `restore()` declines `-x` to avoid.
+
+  Per-tree rather than one file: `pr-<N>` dirty is Phase 5's gates, `base-<N>`
+  dirty means `gate_diff.py`'s restore did not hold, and those are different
+  findings that must not land in one buffer under one heading.
+
+- **Exit `1` means residue was found and the worktree was still removed** — a
+  finding for the report, not a cleanup failure. `0` is clean and `2` is
+  could-not-run, the same contract `gate_diff.py` uses. Phase 7 says to read the
+  code and not to chain on it: `cleanup.py … && next` swallows the finding, the
+  same shape as Phase 5's `cmd | tail && next` trap one phase over.
+
+### Fixed
+
+- **Phase 5's residue has somewhere to go** (#95). Phase 4 mutates `base-<N>` and
+  `gate_diff.py` restores it after every run; Phase 5 mutates `pr-<N>` and nothing
+  restored it, so a fix-mode gate — `rumdl check --fix`, `ruff format`, a
+  `pre-commit` run that stages what it fixes — left tracked files modified or
+  staged and Phase 7 exited 128 on them. Phase 5 now says the dirt is **expected
+  and is a result**, and that tidying it destroys the finding: *"the repo's own
+  gates rewrote N tracked files at the proposed version"* is Phase 4's question
+  reached from the other direction.
+
+- **Phase 0's reuse remedy no longer refuses on the state it was written for.**
+  *"If either check fails, `git worktree remove` it and re-add"* followed a check
+  that fails precisely when the tree is dirty — which is what a plain `remove`
+  refuses on. It now calls `cleanup.py`, so a previous run's residue is saved
+  rather than discarded unread.
+
+### Tests
+
+- **`tests/test_cleanup.py`**, 14 cases on real git worktrees: clean removal, a
+  missing path (exit 0, per #90's measurement), the actions-bump shape, a
+  rewritten base's `tip-<N>`, a self-ignoring `.venv`, un-ignored `__pycache__`,
+  a modified tracked file, a staged one, a dirty `base-<N>` getting its own file,
+  and the three exit codes including a crash reporting 2 rather than 1.
+
+- **One case asks `uv` rather than restating it.** CONTRIBUTING's rule is that a
+  fixture built from the rule can only ever agree with it, and the rule here is a
+  claim about what uv writes — so `test_a_real_uv_venv_does_not_count_either`
+  builds a real venv and skips where `uv` is absent. The hand-built equivalent
+  stays, because it is what CI on four interpreters actually runs.
+
+- **A guard retired itself, exactly as predicted, and the suite caught it.**
+  `reachable()`'s docstring warns that a guard scanning only a phase's own bash
+  goes green the moment its mechanism moves into a script. Mechanising Phase 7 did
+  that to `TestCleanupRunsOnEveryPath`, on the same commit — the pattern now
+  matches `cleanup.py` too, and the artifact list is read through `reachable()`,
+  where `_code_only` strips docstrings so the script's own prose about `WORKTREES`
+  cannot satisfy the assertion that the tuple must.
+
+- **Quote-agnostic argv matching.** `_code_only` normalises source through
+  `ast.unparse`, so a double-quoted argv in a script arrives single-quoted and a
+  literal match fails silently. Noted in the guard that hit it.
+
+
 ## [0.34.0] — 2026-09-01
 
 Closes [#93](https://github.com/Machai-Kydoimos/dependabot-audit/issues/93) and
