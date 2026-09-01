@@ -180,7 +180,7 @@ class TestResidueIsReportedAndSaved(CleanupHarness):
     def test_residue_is_written_before_the_tree_goes(self):
         self.add_worktrees("pr")
         self.dirty_tracked()
-        code, out = self.run_cleanup()
+        code, _ = self.run_cleanup()
         self.assertEqual(code, 1, "residue is a finding, not a cleanup failure")
         self.assertNotIn(f"pr-{PR}", self.worktrees(), "the tree must still be removed")
         saved = self.residue("pr")
@@ -223,27 +223,42 @@ class TestResidueIsReportedAndSaved(CleanupHarness):
 
 class TestItRefusesRatherThanGuessing(CleanupHarness):
     def test_a_non_repo_is_exit_2(self):
-        argv = ["cleanup.py", "--scratch", str(self.scratch), "--pr", PR, "--repo", str(self.scratch)]
+        argv = [
+            "cleanup.py",
+            "--scratch",
+            str(self.scratch),
+            "--pr",
+            PR,
+            "--repo",
+            str(self.scratch),
+        ]
         with (
             mock.patch.object(sys, "argv", argv),
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as raised,
         ):
-            with self.assertRaises(SystemExit) as raised:
-                main()
+            main()
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("not a git repository", err.getvalue())
 
     def test_a_missing_scratch_is_exit_2_not_a_silent_success(self):
-        argv = ["cleanup.py", "--scratch", str(self.scratch / "gone"), "--pr", PR,
-                "--repo", str(self.repo)]
+        argv = [
+            "cleanup.py",
+            "--scratch",
+            str(self.scratch / "gone"),
+            "--pr",
+            PR,
+            "--repo",
+            str(self.repo),
+        ]
         with (
             mock.patch.object(sys, "argv", argv),
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as raised,
         ):
-            with self.assertRaises(SystemExit) as raised:
-                main()
+            main()
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("re-derive $SCRATCH", err.getvalue())
 
@@ -253,8 +268,8 @@ class TestItRefusesRatherThanGuessing(CleanupHarness):
             mock.patch("cleanup.main", side_effect=RuntimeError("boom")),
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()) as err,
+            self.assertRaises(SystemExit) as raised,
         ):
-            with self.assertRaises(SystemExit) as raised:
-                cli()
+            cli()
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("bug, not a finding", err.getvalue())
