@@ -335,6 +335,15 @@ after nine commits of growth.
 - **Tool versions live in `.pre-commit-config.yaml` and nowhere else.** CI invokes
   the hooks rather than installing its own ruff and mypy, so there is no second pin
   to drift.
+- **`git add` a new file before you gate it, or the gate is lying.**
+  `pre-commit run --all-files` runs its hooks over `git ls-files`, so an untracked
+  file is invisible to every hook that takes filenames — ruff among them. mypy is
+  the exception and that is what makes this hard to spot: its `files = [...]` in
+  `pyproject.toml` walks the tree itself, so a new module gets type-checked while
+  going completely unlinted. Measured on an untracked probe with a deliberate
+  `SIM117` shape: `pre-commit run ruff-check --all-files` reports **Passed** while
+  it is untracked and **3 errors** the moment it is staged. Cost one red CI round
+  in 0.35.0, on a run whose local output had read green.
 
 ## Commits and releases
 
