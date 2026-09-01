@@ -11,6 +11,109 @@ patch.
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-09-01
+
+Closes [#93](https://github.com/Machai-Kydoimos/dependabot-audit/issues/93) and
+[#96](https://github.com/Machai-Kydoimos/dependabot-audit/issues/96), both raised
+from a Phase 8 hand-back of a `uv.lock` audit of PR #384. They are the same shape
+from two directions: a claim this procedure makes **about itself** that its own
+commands falsified, and nothing anywhere to catch it.
+
+**Minor, not patch.** Phase 3 changes what it audits and what it runs to do it,
+and Phase 8 gains a class the hand-back did not have.
+
+### Fixed
+
+- **Phase 3 audits the lockfile, and no longer executes the PR** (#93). The only
+  recipe was `uv run --with pip-audit pip-audit --skip-editable`, and `uv run`
+  syncs the project first — installing it editable and building any sdist in the
+  resolution. Measured on uv 0.12.8 against a project whose `setup.py` writes a
+  file when it runs: the file appears, and `pip-audit`'s own output names the
+  project as `distribution marked as editable`.
+
+  `--no-execute` runs Phases 0–3 and 6–7 and says *"every one of those is a
+  network read"*. So the mode that exists for **a PR you have no reason to trust
+  yet** ran that PR's build code — with no `MAY_EXECUTE` gate and no banner, both
+  of which Phases 4 and 5 carry.
+
+  The phase now exports and audits the lockfile: `uv export --frozen` into
+  `$SCRATCH`, then `uvx pip-audit -r … --no-deps --disable-pip`. No resolution, no
+  `pip`, no environment. **Verified in both directions**, because an auditor that
+  cannot report dirty is worse than none: a clean export exits 0, and
+  `jinja2==2.11.3` through the same command exits 1 with four advisories.
+
+  Two further gaps closed with it. The recipe never said **which tree** — run in
+  the user's checkout it audits the currently installed set and reports clean
+  about a dependency set that is not the one under audit, the same silent-failure
+  shape as the interpreter trap already documented beside it. And it audited **one
+  resolution**; the export emits every fork with its marker, which is the scope
+  `uv sync --locked` asserts and the install does not.
+
+- **Phase 2's config differential stopped syncing the project too** (#93). Found
+  by the new guard rather than by reading — `uv run <tool> check` is the same
+  defect in the same `--no-execute` set, and it had been there since 0.32.0. It
+  now reads `uv run --no-project --with <tool>==<locked>`, the spelling Phase 4
+  already used. Measured on uv 0.12.8: plain `uv run` produces the build trace and
+  a `.venv`; `--no-project` produces neither.
+
+- **The `--no-execute` claim now says what it depends on.** *"Every one of those
+  is a network read"* is a property of each phase's commands, not of its number,
+  and a phase in that set which gains a command has to be checked against it. The
+  paragraph says so, and the suite now enforces it.
+
+### Added
+
+- **A hand-back row carries its evidence, or it is `unproven`** (#96). Phase 8's
+  deviation list classified as **plugin defect**, **prose gap** or **correct**,
+  with no requirement to say how the class was reached — so a row's classification
+  carried the authority of a measurement while resting on an inference. It is the
+  only output in this plugin that classifies without citing; Phase 7's report has
+  a verdict table and a confidence rule that is *"derived, not felt"*.
+
+  A `plugin defect` row now names the command that failed and the exit status it
+  returned. Where the run went straight to a workaround and never issued the form
+  the procedure specifies, the class is the new **`unproven`** — the deviation is
+  still real and still handed back, but its cause was inferred and the row says so.
+
+- **"Did this happen?" before "is this mechanism right?"** The cheapest check is
+  searching the session's own history for the command the row says failed. Where
+  it was never issued, that settles the row in seconds, before any measurement.
+
+- **An `unproven` row is a question, not a ticket.** The reader-facing half, and
+  the one that actually broke: the same claim — that Phase 7's `git worktree
+  remove` fails because Phase 5's `uv sync` leaves a `.venv/` — arrived on
+  2026-08-30 and again on 2026-09-01 from two different audits, each with a stated
+  mechanism, neither having run the plain command. Measured on git 2.55.0 and uv
+  0.12.8 in a worktree of a repo with **no `.gitignore` at all**: `remove` exits 0.
+  It gates on `git status --porcelain`, which omits *ignored* files, and uv writes
+  a `.gitignore` containing `*` inside `.venv/`. The second row labelled itself
+  unproven and became an issue anyway.
+
+### Tests
+
+- **`TestNoExecutePhaseBuildsTheAuditedProject`** holds every phase in the
+  `--no-execute` set to running nothing that builds or installs the audited
+  project, reading `reachable()` so it follows a phase into its ecosystem
+  reference and into any script the phase is mechanised into later. It found the
+  Phase 2 instance above on its first run, which is the argument for it.
+
+- **The anti-vacuity check is pinned to literals, not to the document.** A pattern
+  that matches nothing satisfies a negative guard in silence, so the discrimination
+  is asserted against the two commands that shipped and the three that replaced
+  them. A live check that the pattern still fires on Phase 5 sits beside it.
+
+- **The guard scans code, not comments.** Its first version fired on a comment in
+  `uv-lock.md` § Phase 2 warning against the very command it forbids — the failure
+  `reachable()`'s own docstring names, reproduced by the guard written to use it.
+  Whole-line comments are dropped before matching, and the explanation moved out of
+  the fence into the prose where it reads better anyway.
+
+- **Mutation checking caught a dead guard before it shipped.** The
+  "did this happen?" assertion was written as an alternation and stayed green with
+  half its rule deleted. It now binds both halves — the question and the place to
+  look — and each half fails the guard on its own.
+
+
 ## [0.33.0] — 2026-08-30
 
 Closes [#90](https://github.com/Machai-Kydoimos/dependabot-audit/issues/90) and

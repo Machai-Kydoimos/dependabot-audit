@@ -61,6 +61,14 @@ procedure's value, and it is the right default for a PR you have no reason to
 trust yet. Use it when the user asks, and when Phase 0 classifies the PR as one
 the bots did not open. Say in the report which phases did not run.
 
+**That claim is a property of each phase's commands, not of its number**, and it
+has already been false once: until 0.34.0 the `uv.lock` recipe for Phase 3 was
+`uv run --with pip-audit …`, which syncs the project — installing it editable and
+building any sdist in the resolution — so the mode that exists for a PR you do not
+trust ran that PR's build code. A phase in this set that gains a command has to be
+checked against this sentence, which is what `tests/test_skill_prose.py` now does
+mechanically.
+
 ## Arguments
 
 `/dependabot-audit <PR> [--no-execute] [--comment]`, and the same words said in
@@ -698,6 +706,8 @@ that and asserting it.
 ## Phase 3 — Known vulnerabilities
 
 *Requires: the Phase 1 output for this ecosystem.*
+*Runs under `--no-execute`, so nothing here may execute the PR's code — and for
+`uv.lock` that is a property of the auditor's flags, not of the phase.*
 
 **The question: what does the world already know is wrong with this?** Expect it
 to agree with Phase 2 only sometimes — that divergence is the point, not a
@@ -705,7 +715,7 @@ contradiction. The method differs by ecosystem; the question does not.
 
 | Ecosystem | Method |
 |---|---|
-| `uv.lock` | `references/uv-lock.md` § Phase 3 — the OSV batch is **already done** by the Phase 1 script, so read that result rather than re-querying; what remains is the ecosystem's own auditor, and `pip-audit` audits the wrong interpreter if invoked casually |
+| `uv.lock` | `references/uv-lock.md` § Phase 3 — the OSV batch is **already done** by the Phase 1 script, so read that result rather than re-querying; what remains is the ecosystem's own auditor — and the obvious invocation of it **executes the PR's code**, in a phase `--no-execute` runs |
 | GitHub Actions | `references/actions.md` § Phase 3 — GHSA carries an `actions` ecosystem, and the obvious port of the `uv.lock` query reports **clean on a known-compromised action** |
 
 That second row is why this phase has a guard in the test suite. *"Not
@@ -1251,12 +1261,35 @@ So, separately from what the audit found about the PR, hand back:
   gap it filled;
 - **every plugin file read directly rather than invoked as written.**
 
-Classify each as **plugin defect**, **prose gap**, or **correct**. All three are
-real answers and `correct` is the common one: no procedure enumerates every repo
+Classify each as **plugin defect**, **prose gap**, **unproven**, or **correct**.
+All four are real answers and `correct` is the common one: no procedure enumerates every repo
 it will meet, and improvising is usually the right call. The goal is not to
 suppress the improvisation but to stop it being invisible — a workaround that
 *works* is precisely the one nobody reports, which is how the shadowing shipped
 in 0.2.1 and survived to 0.23.0.
+
+**A `plugin defect` row carries its evidence, or it is not that row.** Name the
+command that failed and the exit status it returned. Where the run went straight
+to a workaround and never issued the form this file specifies, the class is
+**`unproven`**: the deviation is real and still worth handing back, but its
+*cause* was inferred, and a row that does not say so is read as measured.
+
+That distinction has cost two rounds. On 2026-08-30 and again on 2026-09-01, two
+different audits handed back the same claim — that Phase 7's `git worktree
+remove` fails because Phase 5's `uv sync` leaves a `.venv/` — each with a stated
+mechanism, neither having run the plain command. Measured on git 2.55.0 and uv
+0.12.8, in a worktree of a repo with **no `.gitignore` at all**: `remove` exits
+**0**. It gates on `git status --porcelain`, which omits *ignored* files, and uv
+writes a `.gitignore` containing `*` inside `.venv/`. The mechanism was never
+there, and both rows read as though it had been observed.
+
+**The cheapest check is "did this happen?", not "is this mechanism right?"** —
+search this session's own history for the command the row says failed. Where it
+was never issued, that settles the row in seconds, before any measurement.
+
+**And an `unproven` row is a question, not a ticket.** Verify it before filing.
+Both rounds above became issues on the strength of a mechanism that reads as
+observation; the second had labelled *itself* unproven and was filed anyway.
 
 Read it off what you actually ran. Reconstructing the list from the phase
 headings returns a clean sheet every time, because the headings are what you

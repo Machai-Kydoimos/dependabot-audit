@@ -265,20 +265,31 @@ row is.
 Then the claim rests on a config line, and a config line is an assertion about a
 *file* while the verdict is about the *tool*. Run it both ways:
 
+**`--no-project` is load-bearing**, not tidiness: a plain `uv run` syncs the
+audited project first, installing it editable and building any sdist in the
+resolution. Phase 2 runs under `--no-execute`, so the tool comes from PyPI at the
+locked version instead.
+
 ```bash
-uv run <tool> check <one representative file>              # as this repo runs it
-uv run <tool> check --no-config <the same file>            # with the config out
+uv run --no-project --with <tool>==<locked> <tool> check <a representative file>
+uv run --no-project --with <tool>==<locked> <tool> check --no-config <the same file>
 ```
+
+Measured on uv 0.12.8 against a project whose `setup.py` writes a file when it
+runs: plain `uv run` produces that file and a `.venv`; `uv run --no-project`
+produces neither. Pin `<locked>` to the version the lockfile carries today — that
+is what makes it the same tool the repo runs, and the differential meaningless if
+it is not.
 
 Measured on `rumdl` 0.2.59's destructive `MD013` fix — *"stop reflow from joining
 a setext heading into its underline"* — in a repo running `rumdl check --fix` on
 every Markdown commit, where the claim was `disable = ["MD013", "MD036"]`:
 
 ```
-$ uv run rumdl check README.md
+$ uv run --no-project --with rumdl==0.2.59 rumdl check README.md
 Success: No issues found in 1 file (6ms)
 
-$ uv run rumdl check --no-config README.md
+$ uv run --no-project --with rumdl==0.2.59 rumdl check --no-config README.md
 Issues: Found 32 issues in 1 file (14ms)
 ```
 
@@ -295,22 +306,62 @@ ecosystem's own auditor. **The OSV half is already done** — the Phase 1 script
 it — so read that result instead of issuing a second query. What remains is the
 auditor.
 
-**Auditor trap.** `pip-audit` audits the environment of the interpreter it runs
-under. Activating a virtualenv does **not** redirect a `pip-audit` installed
-elsewhere — it will happily audit the system Python and report on distro
-packages. Symptom: package names in the output the project never depended on. Run
-it inside the project environment:
+**Audit the lockfile, not an environment**, and write the export *outside* the
+worktree — it is not the PR's file, and an untracked file in `$SCRATCH/pr-<N>` is
+residue Phase 7 then has to account for.
 
 ```bash
-uv run --with pip-audit pip-audit --skip-editable
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+cd "$SCRATCH/pr-<N>"                          # the PR's tree — the set under audit
+uv export --frozen --format requirements.txt --no-emit-project \
+  -o "$SCRATCH/pr-<N>-requirements.txt"       # --all-packages for a workspace
+uvx pip-audit -r "$SCRATCH/pr-<N>-requirements.txt" --no-deps --disable-pip
 ```
 
-`--skip-editable` is required when the project installs itself editable, and
-`--strict` re-escalates that skip into a fatal error — do not combine them.
-Default service is PyPI's advisory DB; `-s osv` selects OSV.
+**Three of those flags are this phase's contract, not tidiness.** `--no-deps` and
+`--disable-pip` together mean no resolution and no `pip` at all, so nothing is
+installed and no build backend runs; `--frozen` reads the lockfile rather than
+updating it. Measured on uv 0.12.8: the audited tree's `setup.py` does not run and
+no `.venv` appears. **Phase 3 runs under `--no-execute`**, where this procedure has
+promised the PR's code will not run — so the flags are what make that promise
+true. Default service is PyPI's advisory DB; `-s osv` selects OSV.
 
-`pip-audit --locked` does not necessarily parse `uv.lock`; auditing the synced
-environment is the reliable path.
+**Verified in both directions**, because an auditor that cannot report dirty is
+worse than none: a clean export exits 0 with *"No known vulnerabilities found"*,
+and `jinja2==2.11.3` through the same command exits **1** with four advisories and
+their fix versions.
+
+**The export covers every fork; a synced environment covers one.** `uv export`
+emits a pinned line per fork, each carrying its marker:
+
+```
+rpds-py==0.27.1   ; python_full_version <  '3.10'
+rpds-py==2026.6.3 ; python_full_version >= '3.11'
+```
+
+So the audit sees the 3.9 fork's older release even though this interpreter will
+never install it — the scope `uv sync --locked` asserts and the install does not,
+which is the whole reason this phase reads the lockfile. **Do not flatten the
+markers.** Both pins in one file with the markers stripped is `ResolutionImpossible`,
+and de-duplicating to one pin per name silently drops the forks it removed.
+
+**The auditor trap, for the case where you audit an environment anyway.**
+`pip-audit` audits the environment of the interpreter it runs under. Activating a
+virtualenv does **not** redirect a `pip-audit` installed elsewhere — it will
+happily audit the system Python and report on distro packages. Symptom: package
+names in the output the project never depended on. Running it inside the project
+environment fixes that, and `uv run --with pip-audit pip-audit --skip-editable` is
+the form — **but `uv run` syncs the project first**, installing it editable and
+building any sdist in the resolution. That executes the PR's code, so it belongs
+behind `MAY_EXECUTE` with Phases 4 and 5, not here. `--skip-editable` suppresses
+the *reporting* of the editable install, not the install; `--strict` re-escalates
+that skip into a fatal error — do not combine them.
+
+`pip-audit --locked` does not necessarily parse `uv.lock`, which is why the export
+is the path rather than pointing `pip-audit` at the lockfile directly.
 
 ## Phase 4 — Behavior change
 

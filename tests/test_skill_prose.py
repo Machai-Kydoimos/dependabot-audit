@@ -3269,3 +3269,167 @@ class TestPhase2CanReachAChangelogAtAll(SkillHarness):
             r"[Ss]ay which rung produced the row|which rung answered",
             "Phase 2 must report which rung produced the row, as Phase 5 reports which install ran",
         )
+
+
+class TestNoExecutePhaseBuildsTheAuditedProject(SkillHarness):
+    """`--no-execute` says Phases 0-3 and 6-7 are network reads. Two of them were not.
+
+    Until 0.34.0 `references/uv-lock.md` § Phase 3 gave one command —
+    `uv run --with pip-audit pip-audit --skip-editable` — and § Phase 2's config
+    differential gave `uv run <tool> check`. `uv run` syncs the project before it
+    runs anything, so both installed the audited tree editable and built any sdist
+    in its resolution. Measured on uv 0.12.8 against a project whose `setup.py`
+    writes a file when executed: plain `uv run` produces that file and a `.venv`;
+    `uv run --no-project` produces neither, and `uv export` never materialises an
+    environment at all.
+
+    So the mode that exists for a PR you have no reason to trust ran that PR's
+    build code — with no `MAY_EXECUTE` gate and no banner, both of which Phases 4
+    and 5 carry.
+
+    What this detects is narrower than "executes something": it is *builds or
+    installs the audited project*. Phase 4 runs the repo's own gates and is
+    supposed to, under `MAY_EXECUTE`; it stays clean here because it already
+    spells every invocation `uv run --no-project`. The pattern is also the set of
+    commands this plugin actually uses, not a proof that no other command builds
+    a project — a phase in this set that gains a new tool has to be added to it,
+    which is what the `--no-execute` paragraph now tells the reader.
+    """
+
+    NO_EXECUTE = (0, 1, 2, 3, 6, 7)
+
+    # `uv run --no-project` supplies the tool from PyPI and never touches the
+    # audited project, which is why Phase 2's differential and Phase 4's
+    # gate_diff invocations are spelled that way. Bare `uv run` is the defect.
+    EXECUTES = re.compile(
+        r"\buv run\b(?!\s+--no-project\b)|\buv sync\b|\bpip install\b|\bpre-commit run\b"
+    )
+
+    @staticmethod
+    def _uncommented(shell: str) -> str:
+        """Drop whole-line `#` comments before matching.
+
+        `reachable` strips comments out of *scripts* for exactly this reason, and
+        bash fences need the same treatment: the first version of this guard fired
+        on a comment in `uv-lock.md` § Phase 2 that warns against the very command
+        it forbids — the failure the harness docstring above already names.
+
+        Whole-line only. A trailing `#` can sit inside a quoted string (`--jq
+        '"#\\(.number)"'`), and cutting there would corrupt the line rather than
+        clean it. A trailing comment that names a build command is possible and
+        would be missed; a whole-line explanation is what actually happens.
+        """
+        return "\n".join(line for line in shell.splitlines() if not line.lstrip().startswith("#"))
+
+    def test_no_no_execute_phase_builds_the_audited_project(self):
+        for number in self.NO_EXECUTE:
+            code = self._uncommented(self.reachable(number))
+            hits = sorted(set(self.EXECUTES.findall(code)))
+            self.assertEqual(
+                hits,
+                [],
+                f"Phase {number} runs under --no-execute, which promises a network "
+                f"read; {hits} builds and installs the audited tree",
+            )
+
+    def test_the_pattern_still_discriminates(self):
+        """Anti-vacuity, pinned to literals rather than to the document.
+
+        A pattern that matches nothing satisfies the guard above in silence. The
+        strings below are the two forms that actually shipped and the three the
+        fix replaced them with, so a refactor that stops matching fails here
+        rather than going green on a Phase 3 that had regained `uv run`.
+        """
+        for bad in (
+            "uv run --with pip-audit pip-audit --skip-editable",
+            "uv run <tool> check --no-config <the same file>",
+            "uv sync --locked --no-build --no-install-project",
+        ):
+            self.assertRegex(bad, self.EXECUTES, f"{bad!r} builds the project and must match")
+        for ok in (
+            "uv run --no-project --with ruff==<locked> ruff format .",
+            "uv export --frozen --format requirements.txt --no-emit-project",
+            'uvx pip-audit -r "$SCRATCH/pr-<N>-requirements.txt" --no-deps --disable-pip',
+        ):
+            self.assertNotRegex(ok, self.EXECUTES, f"{ok!r} does not touch the project")
+
+    def test_the_pattern_still_finds_a_real_violation_in_the_document(self):
+        """Phase 5 installs frozen and says so; if it stops matching, so has the pattern."""
+        self.assertRegex(
+            self._uncommented(self.reachable(5)),
+            self.EXECUTES,
+            "Phase 5 is documented as the phase that installs the PR; a pattern that "
+            "no longer matches it cannot be trusted over Phases 0-3",
+        )
+
+    def test_phase_3_names_the_tree_it_reads(self):
+        """An unstated tree audits the pre-bump environment and reports clean."""
+        self.assertIn(
+            "$SCRATCH/pr-<N>",
+            self.material(3),
+            "Phase 3 must name the tree it audits; run in the user's checkout it "
+            "reports on the currently installed set, which is not the one under audit",
+        )
+
+
+class TestTheDeviationHandBackCarriesItsEvidence(SkillHarness):
+    """A `plugin defect` row that never ran the command still reads as measured.
+
+    The same claim arrived on 2026-08-30 and again on 2026-09-01, from two
+    different audits: that Phase 7's `git worktree remove` fails because Phase 5's
+    `uv sync` leaves a `.venv/`. Both stated a mechanism and neither ran the plain
+    command. Both were wrong — `remove` gates on `git status --porcelain`, which
+    omits *ignored* files, and uv writes a `.gitignore` containing `*` inside
+    `.venv/`, so the plain form exits 0. The second row labelled *itself* unproven
+    and was filed as a probable defect anyway.
+
+    Consistency only, per this file's header: that Phase 8 carries the rule is
+    checkable here. Whether a run follows it is behavioural, and belongs to the
+    replay gate — which is where both instances above were actually caught.
+    """
+
+    def phase8(self) -> str:
+        return dict(self.phases)[8]
+
+    def test_unproven_is_one_of_the_classes(self):
+        """Three classes leave an inferred cause nowhere to go but `plugin defect`."""
+        body = self.phase8()
+        for cls in ("plugin defect", "prose gap", "unproven", "correct"):
+            self.assertIn(cls, body, f"the deviation classes must include {cls!r}")
+
+    def test_a_plugin_defect_row_names_its_command_and_exit_status(self):
+        self.assertRegex(
+            self.phase8(),
+            r"exit status",
+            "a `plugin defect` row must name the command that failed and the exit "
+            "status it returned, or it is asserting a cause it inferred",
+        )
+
+    def test_the_first_check_is_whether_it_happened(self):
+        r"""Both halves, because an alternation is satisfied by either.
+
+        The first draft of this guard was `did this happen\?|search this
+        session's own history` and stayed green with the question deleted — the
+        rule is the question *and* where to look for the answer, and a guard that
+        accepts half of it does not hold the rule.
+        """
+        body = self.phase8()
+        self.assertIn(
+            "did this happen?",
+            body,
+            "the cheapest verification is whether the command was ever issued, not "
+            "whether the mechanism is right",
+        )
+        self.assertIn(
+            "search this session's own history",
+            body,
+            "the question needs the place to look, or it is advice rather than a check",
+        )
+
+    def test_an_unproven_row_is_verified_before_it_is_filed(self):
+        self.assertRegex(
+            self.phase8(),
+            r"question, not a ticket",
+            "an unproven row that reaches the issue tracker unverified is how the "
+            "same wrong cause was filed twice",
+        )
