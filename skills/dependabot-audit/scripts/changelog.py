@@ -127,10 +127,19 @@ FIX_WORDED = re.compile(
 )
 
 # How many unreconciled rows reach the terminal. The rest go to the evidence
-# file. A wall of 266 rows is the same failure as silence -- the reader's eye
-# slides off it -- and ruff 0.16.2...0.16.5 produces exactly that, with the two
-# marked rows at positions 8 and 13. Ranked first, capped second, so the cap can
-# only ever cut the tail.
+# file. A wall of rows is the same failure as silence -- the reader's eye slides
+# off it -- and ruff 0.16.2...0.16.5 produces exactly that at 266.
+#
+# Ranked first, capped second, so the cap can only ever cut the tail. Measured on
+# rumdl v0.2.60...v0.2.62: the two destructive-shaped fixes come back from the API
+# at positions 4 and 5 of 5, and the ranking puts them at 1 and 2.
+#
+# An earlier version of this comment cited ruff's own marked rows "at positions 8
+# and 13". Those were `Avoid composite Salsa keys` and `Avoid deadlock`, which the
+# narrowing described above deliberately stopped marking -- so the comment was
+# describing a superseded regex, and contradicting the one twenty lines up. That
+# range now has **zero** marked rows, which is why its wall needs the
+# multi-product note rather than a marker.
 SHOWN = 40
 
 # `fix(scope): description` / `fix!: description` / `fix: description`.
