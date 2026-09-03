@@ -140,29 +140,30 @@ package that is three steps, and each has a way of failing quietly.
 
 **The repo is in PyPI's metadata, not guessable from the package name.** The
 Simple API the Phase 1 script uses carries artifacts and nothing else, so this is
-the one place to reach for the JSON API:
+the one place the JSON API is the right call. `changelog.py` reads it, and two
+things about how it reads it are load-bearing.
 
-```bash
-PKG=<name>; VER=<version>
-REPO=$(python3 - "$PKG" <<'PY'
-import json, sys, urllib.request
-d = json.load(urllib.request.urlopen(f"https://pypi.org/pypi/{sys.argv[1]}/json", timeout=30))
-for url in (d["info"].get("project_urls") or {}).values():
-    if url and "github.com/" in url:
-        print("/".join(url.split("github.com/")[1].strip("/").split("/")[:2])); break
-PY
-)
+**The host is compared, never searched for.** `project_urls` is written by the
+package author — the party this plugin exists to *not* trust — so a substring
+test on `"github.com/"` hands the audit whatever repository that author names.
+Measured against the version of this block that shipped from 0.33.0 until 0.36.0,
+and against this script's own first cut:
 
-# Do NOT construct the tag. Match it — and capture the list before filtering it,
-# so a failed lookup is a failed lookup and not an empty answer.
-TAGS=$(gh api "repos/$REPO/releases" --paginate --jq '.[].tag_name') \
-  || { echo "release list unavailable for $REPO — a lookup failure, not an absent release" >&2; exit 2; }
-TAG=$(printf '%s\n' "$TAGS" | grep -Fx -e "$VER" -e "v$VER" | head -1)
-```
+| `project_urls` entry | Repo the audit would have read |
+|---|---|
+| `https://evil.example.invalid/github.com/attacker/lookalike` | `attacker/lookalike` |
+| `https://example.invalid/?q=github.com/attacker/repo` | `attacker/repo` |
+| `https://github.com/../../users/octocat` | `../..`, walking out of `repos/` |
+
+The first two point this phase's entire changelog read at a repository the
+package author controls: tidy release notes, no unreconciled fixes, a clean
+currency row. Reported by CodeQL as `py/incomplete-url-substring-sanitization`
+on the PR that mechanised it, which is the only reason the prose copy was found.
 
 **Constructing the tag is the quiet failure.** Projects disagree about the `v`
-prefix and change their minds mid-life. Measured 2026-08-30, on the three tools
-in one bump:
+prefix and change their minds mid-life. The script matches against the published
+list and falls back to probing **both** spellings against the git ref, reporting
+which answered. Measured 2026-08-30, on the three tools in one bump:
 
 | Project | Release tag for the audited version | Note |
 |---|---|---|
@@ -174,24 +175,77 @@ A guessed tag returns "release not found", which reads exactly like "this versio
 has no notes" — so the audit reports an absence of evidence as evidence of
 absence, for a version whose notes are right there.
 
-**Then the ladder, in order. Say which rung produced the row:**
+**Then read all three sources, and reconcile them. `changelog.py` does it:**
 
-| Rung | Command | When it runs out |
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/changelog.py" \
+  --scratch "$SCRATCH" --package <pkg> --from <locked> --to <proposed>
+echo "changelog exit: $?"
+```
+
+Add `--write-mode` when this repo runs the tool with `--fix`, `--write` or `-i`.
+It escalates how a destructive fix is reported and changes nothing about what is
+looked for — the range is fetched either way, because gating the *call* on that
+judgement asks the auditor to be right about write mode before it has the
+evidence.
+
+**Read the exit code; do not chain on it.** `0` the prose names every fix in the
+range, `1` it does not and the unreconciled commits are listed, `2` could not
+run. `1` is a finding, so `&&` swallows exactly the case the call is for. Use
+`--repo-slug owner/repo` instead of `--package` where the project is not on PyPI
+or its metadata carries no GitHub link.
+
+| Source | What it is | Where it runs out |
 |---|---|---|
-| 1. release notes | `gh release view "$TAG" --repo "$REPO"` | the project publishes none — check `gh api repos/$REPO/releases --jq length`, and `0` means *never*, not *not yet* |
-| 2. the repo's changelog | fetch `CHANGELOG.md` and find the section for **this exact version** | the project writes entries per *minor* release, so a patch has no section |
-| 3. the commit range | `gh api repos/$REPO/compare/<tag-before>...<tag> --jq '.commits[].commit.message'` | the tags themselves are missing, which is worth reporting |
+| 1. release notes | what the project chose to announce | it publishes none — `0` releases means *never*, not *not yet* |
+| 2. the repo's changelog | what it chose to write down | it writes entries per *minor* release, so a patch has no section |
+| 3. the commit range | **what actually landed** | the tags themselves are missing, which is worth reporting |
+| the three against each other | whether 1 and 2 cover 3 | never — this is the rung with no exit condition |
 
-Measured on `mypy` 2.3.0 → 2.3.1, which needs all three rungs: zero releases, a
-`CHANGELOG.md` whose headings run `Next Release`, `Mypy 2.3`, `Mypy 2.2` with no
-`2.3.1` between them, and then six commits in the range — a crash fix on
-overload unpacking and three `mypyc` fixes, which is the content the phase came
-for.
+**Until 0.36.0 these were a fallback chain, stopped at the first that answered,
+and that is the defect (#94).** Every exit condition above the last is an
+*absence*, so a rung returning real, well-formed content ended the ladder — and
+there was no rung whose exit condition was *"this one answered, and its answer is
+incomplete"*. Measured on `rumdl` v0.2.60…v0.2.62, the bump it was found in:
+rung 1 answers for both versions, rung 2 answers for both, each says one
+`### Added` bullet, and the range holds **18 commits, five of them `fix(…)`** —
+two being `stop rewriting Rust source when formatting doc comments`, which wrote
+`# [derive(Debug)]` to disk, and `stop reading a lazy continuation as a setext
+underline`. A run that honored the ladder as written reported "two additive
+releases" and was wrong about the only interesting thing in the bump.
 
-**"No changelog" is not a finding; "rung 3, six commits" is.** Report which rung
-answered, the same way Phase 5 reports which install ran. A patch release from a
-project that tags without releasing is ordinary — mypy is in the `dev` group of
-most repos this plugin audits — so a row that goes quiet here goes quiet often.
+**The obvious heuristic does not save it.** *"Does this project document its
+fixes at all?"* returns a confident yes — 0.2.56, 0.2.57, 0.2.59 and 0.2.60 all
+carry a `### Fixed` section. Only the versions under audit had none, because the
+release automation lists `feat` and drops `fix`. Nothing in rung 1's output says
+so, which is why this is worse than a lookup that fails: **nothing fails.**
+
+Two things the script does that a careful reading kept getting wrong, both
+measured rather than reasoned:
+
+- **It finds the changelog by listing the repo root**, rather than assuming
+  `CHANGELOG.md`. A guessed name 404s, and a 404 reads exactly like "this project
+  keeps no changelog" — the tag trap above, one file over.
+- **It says which classifier ran.** Where the project writes conventional
+  commits it reads only fix types; where it does not, it filters nothing —
+  because a filter keyed on `fix(` reports **zero fixes** for `mypy`
+  v2.3.0…v2.3.1, a range carrying four. That is this plugin's own failure class,
+  rebuilt inside the tool written to remove it, and it is what the first version
+  of the script shipped.
+
+**"No changelog" is not a finding; "the prose named one change, the range carried
+five" is.** Report which sources answered and what the reconciliation said, the
+same way Phase 5 reports which install ran. A patch release from a project that
+tags without releasing is ordinary — mypy is in the `dev` group of most repos
+this plugin audits — so a row that goes quiet here goes quiet often.
+
+The script writes both halves to `$SCRATCH/changelog-<repo>-<from>-<to>.md`.
+**Read it**: a `Security` entry outranks every vulnerability database, ships with
+no CVE, and no count in the script's output substitutes for seeing one.
 
 ### When the changelog entry names a dependency
 

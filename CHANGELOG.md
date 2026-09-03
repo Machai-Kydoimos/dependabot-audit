@@ -11,6 +11,153 @@ patch.
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-09-01
+
+Closes [#94](https://github.com/Machai-Kydoimos/dependabot-audit/issues/94) and
+[#101](https://github.com/Machai-Kydoimos/dependabot-audit/issues/101). Phase 2's
+changelog ladder stopped at the first rung that answered, and every one of its
+exit conditions was an *absence* — so a rung returning real, well-formed content
+ended the read while five fix commits never entered the audit.
+
+**Minor, not patch.** Phase 2 gains a source it always reads and a row it can
+report; Phase 0 and Phase 6 gain a derivation they only implied.
+
+### Added
+
+- **`scripts/changelog.py`** (#94) reads all three sources and reconciles them.
+  The rungs were never a fallback chain: **prose is what the project chose to
+  say, and the commit range is what actually landed.** Measured on `rumdl`
+  v0.2.60…v0.2.62, the bump this was found in — rung 1 answers for both versions,
+  rung 2 answers for both, each says one `### Added` bullet, and the range holds
+  18 commits, five of them `fix(…)`. Two are `stop rewriting Rust source when
+  formatting doc comments`, which wrote `# [derive(Debug)]` to disk, and `stop
+  reading a lazy continuation as a setext underline`, in a tool the audited repo
+  runs as `rumdl check --fix` on every Markdown commit. A run honoring the ladder
+  as written reported "two additive releases" and was wrong about the only
+  interesting thing in the bump.
+
+  **The obvious heuristic does not save it.** *"Does this project document its
+  fixes at all?"* returns a confident yes: 0.2.56, 0.2.57, 0.2.59 and 0.2.60 all
+  carry a `### Fixed` section. Only the versions under audit had none, because
+  the release automation lists `feat` and drops `fix`. This is 0.33.0's failure
+  class with the absence moved out of the tooling and into the upstream project's
+  notes, where no exit status can reach it — **nothing fails.**
+
+  Exit `0` the prose names every fix, `1` it does not and they are listed, `2`
+  could not run. The evidence — both halves — goes to
+  `$SCRATCH/changelog-<repo>-<from>-<to>.md`, because no count substitutes for
+  reading a `Security` heading.
+
+- **`--write-mode` escalates a finding and never gates the search.** #94 proposed
+  making the range mandatory only where the repo runs the tool in write mode; the
+  script fetches it always. Gating the *call* on that judgement asks the auditor
+  to be right about write mode before it has the evidence, and one wrong guess
+  restores the silence the script exists to remove. One `compare` call is what
+  rung 3 already cost when it ran.
+
+- **A third row in Phase 2's scope test** (#94), where the entry names a **file
+  type** or a **document shape** rather than a setting. No config key exists to
+  grep, so "no config line matches" reads as `inert here`. Grep the tree instead
+  — and **do not pipe it into `wc`**: `git grep` exits `1` on no match and `128`
+  when it could not run, both printing nothing, so `| wc -l` reports `0` at exit 0
+  either way and turns `underivable` into `inert here`. Measured on git 2.55.0.
+  The counted sentence moved from "two cases" to "three", which CONTRIBUTING
+  already records the cost of forgetting.
+
+- **Phase 0 derives the workflow list instead of naming `<ci>`** (#101), at both
+  refs, so "diff the two lists" has two lists to diff. `ls-tree` on a missing
+  directory exits **128** and says so rather than printing nothing at exit 0, so a
+  repo with no workflows stays distinguishable from a read that failed. Phase 6
+  and `actions.md` § Phase 5 asked the same question under a second spelling
+  (`<changed>`); all three are now `<workflow>`, so the second and third are
+  visibly the first.
+
+### Changed
+
+- **`reachable()` now follows scripts named in an ecosystem reference.** It
+  followed only those named in `SKILL.md`, while `audit.py`, `gate_diff.py` and
+  `changelog.py` are all invoked from `references/uv-lock.md` — so their code was
+  in no phase's `reachable()`, and a guard about any of them was reading the
+  invocation line alone. That is the silent retirement the function's own
+  docstring warns about, sitting inside the function that warns about it.
+
+  It also needed `_code_only(printed=False)` for negative assertions only: what a
+  script *prints* is output, not a call, and `audit.py`'s advice to run
+  `uv run python -V` made the `--no-execute` guard fire on Phase 1 — the guard
+  that catches a phase executing the audited project, defeated by a phase
+  mentioning it. Opt-in, because Phase 6 asserts on printed text on purpose.
+
+- **Two ref-pinning guards widened to the property rather than the command.**
+  `git ls-tree "<ref>:<path>"` and `git diff "<ref>...<ref>" -- <path>` are pinned
+  exactly as `git show "<ref>:<path>"` is; a `show`-only pattern called both
+  working-tree reads.
+
+### Security
+
+- **The GitHub repository was resolved with an unanchored substring test**, in
+  the prose since 0.33.0 and in this script's first cut. `project_urls` is
+  written by the package author — the party this plugin exists to *not* trust —
+  so `if "github.com/" in url` hands the audit whatever repository that author
+  names. Measured:
+
+  | `project_urls` entry | Repo the audit would have read |
+  |---|---|
+  | `https://evil.example.invalid/github.com/attacker/lookalike` | `attacker/lookalike` |
+  | `https://example.invalid/?q=github.com/attacker/repo` | `attacker/repo` |
+  | `https://github.com/../../users/octocat` | `../..`, walking out of `repos/` |
+
+  The first two point Phase 2's entire changelog read at a repository the package
+  controls: tidy release notes, no unreconciled fixes, a clean currency row. The
+  reconciliation added above is a verdict input Phase 7 reads, so this was worse
+  after #94 than before it — the feature made the target worth attacking.
+
+  Now the host is **compared**, never searched for, and both path segments are
+  validated (which is what rejects `..`, since the slug is interpolated into a
+  `gh api repos/<slug>/…` path). `--repo-slug` goes through the same check: it
+  reaches the same API path, and a typo that silently answers about something
+  else is the failure this phase is about.
+
+  Caught by CodeQL as `py/incomplete-url-substring-sanitization`, high severity,
+  on the PR that mechanised the ladder. **The prose copy was found only because
+  the script copy was flagged** — and that copy is now deleted rather than fixed,
+  because a second implementation of what `changelog.py` already does is how one
+  of them keeps the bug.
+
+### Fixed
+
+- **An empty release window was reported as "this project publishes no releases
+  for these versions"** whatever caused it. Three causes reach it — the target
+  has no release, the *start* has no release, or the two are not in the order the
+  caller believes (a downgrade, or a backported patch line) — and only the first
+  makes that sentence true. A backport got told the project publishes nothing, by
+  the tool written to stop absence of evidence reading as evidence of absence.
+  `gap()`'s own comment claimed it said which; nothing did, and the branch had no
+  test. It now returns the reason with the window, and the reason is printed.
+
+- **Every commit body was fetched and discarded.** `commits()` asks for whole
+  messages because *"the body is where a fix says what it corrupted"* — rumdl's
+  Rust-source fix names `# [derive(Debug)]` only there — and the terminal then
+  told the reader to go and fetch the range again. The evidence file now carries
+  the full message for each **destructive-shaped** row, which are the ones
+  Phase 7 takes the verdict from; the rest stay subjects, because a body for all
+  266 of ruff's would be the wall that file exists to replace.
+
+- **`changelog.py`'s own first version reported `python/mypy` v2.3.0…v2.3.1 as
+  carrying no fixes.** It carries four. Filtering on `fix(` is only honest where
+  the project did the labelling, and mypy labels nothing — so the script now says
+  **which classifier ran**, and filters nothing when the project did not. Caught
+  by running it against the range the reference already cites, not by reading it.
+
+- **`section_for` found no changelog section in a file that has one per release.**
+  A generated heading links to a compare range carrying the *previous* version, so
+  the raw line matches the wrong one. Caught by replaying the script live; the
+  offline suite now pins it in both directions.
+
+- **`--jq '.commits[].commit.message'` runs eighteen messages together** with no
+  record boundary, landing one commit's subject inside the last one's body.
+  `@json` escapes the newlines so one line is one message. The same fix was needed
+  in `integration/`, where `--jq .body` returned unparseable raw text.
+
 ## [0.35.0] — 2026-09-01
 
 Closes [#97](https://github.com/Machai-Kydoimos/dependabot-audit/issues/97) and
@@ -4005,7 +4152,10 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.35.0...v0.36.0
+[0.35.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.34.0...v0.35.0
+[0.34.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.30.1...v0.31.0

@@ -207,11 +207,25 @@ whatever branch happened to be there:
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
+# Derive the workflow list before reading it, at both refs. A repo can have
+# several, and a guessed `ci.yml` either fails loudly on a repo that spells it
+# `tests.yml` or — worse — succeeds and silently narrows the gate list to one.
+git ls-tree --name-only "pr-<N>:.github/workflows/";    echo "pr list exit: $?"
+git ls-tree --name-only "$BASE_SHA:.github/workflows/"; echo "base list exit: $?"
+
 git show "pr-<N>:.github/dependabot.yml" 2>/dev/null || git show "pr-<N>:renovate.json"
-git show "pr-<N>:.github/workflows/<ci>.yml"       # the gates Phase 5 reproduces
 git show "pr-<N>:.pre-commit-config.yaml"
-git show "$BASE_SHA:.github/workflows/<ci>.yml"    # the gates Phase 4 measures with
+
+# Then every name each list gave, at its own ref. Not one file: `<workflow>`
+# stands for the whole list, and Phase 6 asks for the same list narrowed to what
+# the diff touched.
+git show "pr-<N>:.github/workflows/<workflow>"       # the gates Phase 5 reproduces
+git show "$BASE_SHA:.github/workflows/<workflow>"    # the gates Phase 4 measures with
 ```
+
+`ls-tree` on a directory that is not there exits **128** and says so, rather than
+printing nothing at exit 0 — so a repo with no workflows is distinguishable from
+a read that failed, which is the distinction the two lists exist to support.
 
 **Each phase's gates come from the tree it runs them in**, and the two trees are
 not the same one: Phase 5 reproduces in `$SCRATCH/pr-<N>`, Phase 4 measures in
@@ -692,13 +706,36 @@ the same question Phase 4 asks of an actions bump, where `references/actions.md`
 calls the answer "inert here", a result and not silence.
 
 **The grep answers it only when the change is in the tool's own surface**, and
-two cases fall outside that. Both are ordinary, and both return a confident
-`inert here` that was never established:
+three cases fall outside that. All three are ordinary, and all three return a
+confident `inert here` that was never established:
 
 | The entry names | Why the config cannot answer it | What does |
 |---|---|---|
 | a **dependency** rather than a rule or a flag | it is not in this repo's config, and for a compiled wheel it is not even in this repo's *ecosystem* — a Rust crate inside a Python package, where the advisory lives on crates.io and every PyPI-side scanner is correctly clean | `references/uv-lock.md` § Phase 2 — read the shipped set out of the wheel's own SBOM. `references/actions.md` § Phase 2 for the tag-line question |
 | a rule this repo **disables** | the claim is then about the config *file*, and the verdict is about the *tool*. Config is interpreted: another file can win, a key can be spelled for a different version, a section can go unread | run the gate twice, once with the config and once without, and read the difference |
+| a **file type** or a **document shape** rather than a setting | there is no config key to grep for. `stop rewriting Rust source when formatting doc comments` is about `.rs` files, and `stop reading a lazy continuation as a setext underline` is about a blockquote followed by a setext underline — neither is a line any config could carry, and "no config line matches" reads as `inert here` | grep the **content** of the tree instead, below |
+
+**The third row is the one with no command in the table**, because its commands
+contain a pipe and a table cell cannot carry one — an escaped `\|` renders
+correctly and reaches *this* reader, who reads the raw file, as a backslash that
+breaks the regex:
+
+```bash
+git grep -lE '^(=+|-{2,})[ \t]*$' -- '*.md'; echo "shape scan exit: $?"
+git ls-files '*.rs';                         echo "type scan exit: $?"
+```
+
+**Read the exit code, and do not pipe these into `wc`.** `git grep` exits `1` on
+no match and `128` when it could not run, and both print nothing — so
+`git grep … | wc -l` reports `0` at exit 0 either way, turning "could not run"
+into `inert here`, which is the failure this whole row exists to prevent. `1` is
+a real zero; `128` is `underivable`.
+
+Exposure is how many files carry the shape, and **zero is a finding like any
+other** — the same `inert here` the first two rows earn by running something,
+rather than by finding nothing to grep. Both commands come from a run that
+improvised them unaided, because the phase said "grep this repo's config" and no
+config line could answer.
 
 That second row is Phase 6's rule one phase over. A red check does not carry a
 verdict until it is attributed; a config line does not carry `inert` until the
@@ -836,11 +873,20 @@ triggered only by `push: tags:` or `schedule:` never runs on a PR, so every chec
 on it comes from *other* workflows and none of them execute the changed line:
 
 ```bash
-# for each workflow the diff touched, read its triggers. Captured, not piped:
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# `<workflow>` is Phase 0's derived list, narrowed to what this PR's diff
+# touched — the same derivation, the same token, one filter added.
+git diff --name-only "$BASE_SHA...pr-<N>" -- '.github/workflows/'
+echo "changed-workflow list exit: $?"
+
+# Then, for each name it gave, read its triggers. Captured, not piped:
 # `sed` succeeds on empty input, so a failed read prints nothing at exit 0 and
 # reads as "this workflow has no pull_request trigger" — the reassuring answer.
-TRIGGERS=$(git show "pr-<N>:.github/workflows/<changed>.yml") \
-  || { echo "cannot read <changed>.yml at pr-<N>" >&2; exit 2; }
+TRIGGERS=$(git show "pr-<N>:<workflow>") \
+  || { echo "cannot read <workflow> at pr-<N>" >&2; exit 2; }
 printf '%s\n' "$TRIGGERS" | sed -n '/^on:/,/^[a-z]/p'
 ```
 

@@ -44,6 +44,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import ClassVar
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "skills/dependabot-audit"
@@ -133,15 +134,42 @@ def tables(body: str) -> list[list[str]]:
     return found
 
 
-def _code_only(source: str) -> str:
+def _code_only(source: str, *, printed: bool = True) -> str:
     """A Python module's executable text, with comments and docstrings removed.
 
     An AST round-trip drops comments for free; docstrings have to be taken off
     each scope explicitly. Both matter for the same reason: a guard asserting
     that a phase *asks GitHub which checks are required* must not be satisfied by
     a docstring that merely says so.
+
+    `printed=False` additionally drops the string constants a script hands to
+    `print()`. **That is for negative assertions only, and it is not the default.**
+    What a script prints is output, not a call — `audit.py` advises the reader to
+    run ``uv run python -V`` inside the synced environment, and once `reachable()`
+    began following scripts named in the ecosystem references, that sentence made
+    the `--no-execute` guard fire on Phase 1: the guard that catches a phase
+    *executing* the audited project, defeated by a phase *mentioning* it. Same
+    failure the harness docstring names, one artifact over.
+
+    It stays opt-in because printed text is exactly what several positive guards
+    are about — Phase 6's hedge is asserted as `CONSISTENT WITH` in `reachable(6)`
+    precisely so the hedge reaches the reader of the output and not only the
+    reader of the prose. Stripping it by default silently retired that guard,
+    which is how this parameter came to exist rather than a blanket rule.
     """
     tree = ast.parse(source)
+    if not printed:
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "print"
+            ):
+                node.args = [
+                    arg
+                    for arg in node.args
+                    if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str))
+                ]
     for node in ast.walk(tree):
         if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -195,7 +223,7 @@ class SkillHarness(unittest.TestCase):
         # phase number -> the shell in it, concatenated
         cls.shell = {n: "\n".join(bash_blocks(body)) for n, body in cls.phases}
 
-    def reachable(self, number: int) -> str:
+    def reachable(self, number: int, *, printed: bool = True) -> str:
         """What Phase N actually *runs*: its shell, plus every script it invokes.
 
         A guard that scans only the phase's own bash silently retires itself the
@@ -220,13 +248,23 @@ class SkillHarness(unittest.TestCase):
         module docstring names `isRequired`, `totalCount` and `check-runs` while
         explaining them, so deleting all three from the actual query left every
         guard green. A rule must not be satisfiable by a comment claiming it.
+
+        **A script named in an ecosystem reference counts too.** Until 0.36.0
+        this followed scripts named in `SKILL.md`'s own body and nowhere else,
+        while `audit.py`, `gate_diff.py` and `changelog.py` are all invoked from
+        `references/uv-lock.md` — so their code was in no phase's `reachable()`
+        and a guard about any of them was reading the invocation line alone. That
+        is the retirement this docstring warns about, sitting in the function
+        that warns about it.
         """
         parts = [self.shell[number]]
+        named = dict(self.phases)[number]
         for name, section in self._handoffs(number):
             del name
             parts.extend(bash_blocks(section))
-        for path in _scripts_named_in(dict(self.phases)[number]):
-            parts.append(_code_only(path.read_text(encoding="utf-8")))
+            named += "\n" + section
+        for path in _scripts_named_in(named):
+            parts.append(_code_only(path.read_text(encoding="utf-8"), printed=printed))
         return "\n".join(parts)
 
     def _handoffs(self, number: int) -> list[tuple[str, str]]:
@@ -1176,7 +1214,16 @@ class TestTheRepoConfigIsReadAtARef(SkillHarness):
     # Files whose *content the audit interprets*: the gates it reproduces, and
     # the bot config that decides whether a currency gap is lag or a hold.
     INTERPRETED = ("workflows/", ".pre-commit-config", "dependabot.yml", "renovate.json")
-    AT_A_REF = re.compile(r'git show "(?:pr-<N>|\$\{?BASE_SHA\}?|\$\{?DEFAULT\}?):')
+    # The property is **being pinned**, not which plumbing does the pinning.
+    # `git show` reads a file at a ref, `git ls-tree` lists a directory at one —
+    # both in `<ref>:<path>` form — and `git diff <ref>...<ref> -- <path>` names
+    # two refs and reads neither working tree. 0.36.0 added one of each while
+    # deriving the workflow list, and a `show`-only pattern called both
+    # working-tree reads.
+    AT_A_REF = re.compile(
+        r'git (?:show|ls-tree[^"\n]*) "(?:pr-<N>|\$\{?BASE_SHA\}?|\$\{?DEFAULT\}?):'
+        r'|git diff[^"\n]*"\$\{?BASE_SHA\}?\.{2,3}pr-<N>"'
+    )
 
     def test_phase_0_reads_the_gate_list_at_a_ref(self):
         self.assertRegex(
@@ -3207,6 +3254,70 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
             "closed for a red check by attributing it",
         )
 
+    COUNTS: ClassVar[dict[str, int]] = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+    }
+
+    def _scope_table(self) -> list[str]:
+        for table in tables(dict(self.phases)[2]):
+            if any("Why the config cannot answer it" in row for row in table):
+                return [row for row in table if row.startswith("| ") and "---" not in row]
+        self.fail("Phase 2 has no scope-test table")
+
+    def test_the_counted_sentence_matches_the_table_it_counts(self):
+        """CONTRIBUTING's own trap: *"The rule named two of the four until
+        0.29.0."* A counted list stops covering what it was written for the
+        moment a row is added, and the sentence keeps reading as complete.
+
+        0.36.0 added the third row — an entry naming a **file type** or a
+        **document shape** rather than a setting, where no config key exists to
+        grep and "no config line matches" reads as `inert here`. Found by a run
+        that improvised `git grep` over `*.md` and a count of `.rs` files.
+        """
+        rows = len(self._scope_table()) - 1  # the header is a row too
+        found = re.search(
+            r"\b(one|two|three|four|five|six) cases? fall outside", dict(self.phases)[2]
+        )
+        self.assertIsNotNone(found, "Phase 2 no longer counts the cases the grep cannot answer")
+        assert found is not None
+        self.assertEqual(
+            self.COUNTS[found.group(1)],
+            rows,
+            f"the sentence says {found.group(1)} cases and the table has {rows} rows",
+        )
+
+    def test_the_third_case_greps_the_tree_rather_than_the_config(self):
+        """The affected path is a file type and a document shape, so exposure is
+        how many files carry it — and zero is a finding like any other."""
+        phase2 = self.material(2)
+        self.assertRegex(
+            phase2,
+            r"git grep -lE .*\*\.md.*\n.*git ls-files",
+            "Phase 2 must give the content greps, not only say to grep content",
+        )
+        self.assertRegex(
+            phase2,
+            r"(?is)`1` is a real zero; `128` is `underivable`|exits `1` on\s*\n?no match and `128`",
+            "and it must separate no-match from could-not-run, or the third row "
+            "rebuilds the very confusion it was added to remove",
+        )
+
+    def test_the_third_case_does_not_pipe_the_count(self):
+        """`git grep … | wc -l` prints 0 at exit 0 whether it matched nothing or
+        could not run, which turns `underivable` into `inert here`. The class-wide
+        pipe guard already forbids it; this says the prose warns about it too,
+        because the reader is the one who will reach for `wc`."""
+        self.assertIn(
+            "do not pipe these into `wc`",
+            dict(self.phases)[2],
+            "the reader has to be told why the obvious shortening is wrong",
+        )
+
 
 class TestPhase0ClearsAStaleWorktreeRegistration(SkillHarness):
     """`$SCRATCH` lives under `$TMPDIR`, so it disappears between audits.
@@ -3270,32 +3381,83 @@ class TestPhase2CanReachAChangelogAtAll(SkillHarness):
     """
 
     def _ladder(self) -> str:
-        for _, section in self._handoffs(2):
-            for block in bash_blocks(section):
-                if "project_urls" in block:
-                    return block
-        self.fail("Phase 2 documents no way to find the project's repository")
+        """What Phase 2 *runs* to find the repo and the tag, not what it says.
+
+        This used to return the bash block whose heredoc re-implemented the
+        resolution in six lines. 0.36.0 deleted that block: it was a second
+        implementation of what `changelog.py` already did, and it carried the
+        same `"github.com/" in url` substring test — so fixing the flaw in one
+        copy would have left it live in the other. Re-anchored to `reachable`,
+        which follows the script, rather than re-anchored to nothing.
+        """
+        # Asserted before the return, and on the *prose*: `reachable(2)` only
+        # contains the script's code because the prose names it, so this gives
+        # a deleted invocation its own message instead of four regex misses.
+        self.assertIn(
+            "changelog.py",
+            "\n".join(block for _, section in self._handoffs(2) for block in bash_blocks(section)),
+            "Phase 2 documents no way to find the project's repository",
+        )
+        return self.reachable(2)
 
     def test_the_tag_is_matched_against_the_release_list_not_constructed(self):
         """Guessing the prefix returns "release not found", which reads exactly
         like "this version has no notes"."""
-        block = self._ladder()
-        self.assertIn("tag_name", block, "the tag comes from the release list")
+        code = self._ladder()
+        self.assertIn("tag_name", code, "the tag comes from the release list")
         self.assertRegex(
-            block,
-            r"grep -Fx.*-e \"\$VER\".*-e \"v\$VER\"",
+            code,
+            r"for candidate in \(version, f'v\{version\}'\)",
             "both spellings must be matched against what the project actually "
             "published, rather than one of them assumed",
         )
 
+    def test_the_repo_url_is_matched_on_its_host_not_by_substring(self):
+        """`project_urls` is written by the package author, who is exactly the
+        party this plugin exists to not trust.
+
+        `"github.com/" in url` resolved `https://evil.invalid/github.com/a/b` to
+        `a/b`, pointing the whole phase at a repository the package chooses —
+        tidy notes, no unreconciled fixes, a clean currency row. It shipped in
+        the prose from 0.33.0 and in this script's first cut, and CodeQL caught
+        it as `py/incomplete-url-substring-sanitization`.
+        """
+        code = self._ladder()
+        self.assertRegex(
+            code,
+            r"hostname not in \('github\.com', 'www\.github\.com'\)",
+            "the host must be compared, never searched for",
+        )
+        self.assertNotRegex(
+            code,
+            r"'github\.com/' in url",
+            "the substring test is the defect, not a second line of defence",
+        )
+
     def test_a_failed_lookup_is_not_read_as_an_absent_release(self):
         """The same distinction Phase 0 draws for every derived output, at the
-        point where the two look identical: an empty tag."""
-        block = self._ladder()
-        self.assertIn(
-            "a lookup failure, not an absent release",
-            block,
-            "a failed `gh api` must exit, not fall through to 'no release for this version'",
+        point where the two look identical: an empty answer.
+
+        The bash block used to carry this as a `|| { ...; exit 2; }` and a
+        sentence. The script carries it as a type: `_gh` returns `None` on
+        failure and `""` on a call that succeeded with no rows, and the release
+        list goes through the wrapper that exits on `None`. Same property, and
+        the guard follows it rather than following the sentence that described
+        it -- `python/mypy` really does publish zero releases, so `""` here has
+        to stay a real answer.
+        """
+        code = self._ladder()
+        # DOTALL on both: these span a function body, and `assertRegex` compiles
+        # a bare string with no flags.
+        self.assertRegex(
+            code,
+            re.compile(r"def releases\(slug: str\).*?_gh_hard\(", re.DOTALL),
+            "the release list must go through the wrapper that exits on failure",
+        )
+        self.assertRegex(
+            code,
+            re.compile(r"def _gh_hard\(.*?if out is None:\s+fail\(", re.DOTALL),
+            "and that wrapper has to actually exit, not return an empty string",
         )
 
     def _uv_lock_phase2(self) -> str:
@@ -3311,17 +3473,240 @@ class TestPhase2CanReachAChangelogAtAll(SkillHarness):
                 return section
         self.fail("Phase 2 no longer hands off to uv-lock.md")
 
-    def test_all_three_rungs_are_named(self):
-        section = self._uv_lock_phase2()
-        for rung in ("gh release view", "CHANGELOG.md", "/compare/"):
-            self.assertIn(rung, section, f"the ladder is missing {rung}")
+    def _source_table(self) -> list[str]:
+        """The table that says what the three sources are, not the section.
 
-    def test_the_row_says_which_rung_answered(self):
-        """ "No changelog" is not a finding; "rung 3, six commits" is."""
+        Anchored here because the section discusses release notes in four places,
+        so a guard scanning the whole of it stayed green when the table's own row
+        was renamed — mutation-checked, and that is the only place a reader looks
+        to learn what the three are.
+        """
+        for table in tables(self._uv_lock_phase2()):
+            if any("runs out" in row for row in table):
+                return table
+        self.fail("uv-lock.md § Phase 2 has no source table")
+
+    def test_all_three_sources_are_named_in_the_table(self):
+        """The reader has to know what the three are, whoever fetches them."""
+        rows = "\n".join(self._source_table())
+        for source in ("release notes", "changelog", "commit range"):
+            self.assertIn(source, rows, f"the source table no longer names {source}")
+
+    def test_all_three_sources_are_actually_reached(self):
+        """And the mechanism has to exist, not merely be described.
+
+        Read from `reachable`, so mechanising the ladder into `changelog.py`
+        moved the assertion rather than retiring it — which is what happened in
+        0.36.0, and what this method's harness docstring says to expect.
+        """
+        code = self.reachable(2)
+        for call in ("/releases", "/contents", "/compare/"):
+            self.assertIn(call, code, f"nothing Phase 2 runs asks for {call}")
+
+    def test_the_report_says_which_sources_answered(self):
+        """ "No changelog" is not a finding; "the prose named one, the range
+        carried five" is."""
         self.assertRegex(
             self._uv_lock_phase2(),
-            r"[Ss]ay which rung produced the row|which rung answered",
-            "Phase 2 must report which rung produced the row, as Phase 5 reports which install ran",
+            r"[Rr]eport which sources? answered|which rung answered|[Ss]ay which rung",
+            "Phase 2 must report which sources answered, as Phase 5 reports which install ran",
+        )
+
+
+class TestARungThatAnsweredCanStillBeIncomplete(SkillHarness):
+    """#94. The ladder's stopping rule was *"did source N produce text?"*; the
+    phase's question is *"what behavior changed across this range?"*
+
+    Those diverge whenever a project generates release notes from a **subset** of
+    its commits. Measured on `rumdl` v0.2.60…v0.2.62: rung 1 answers for both
+    versions, rung 2 answers for both, and five `fix(…)` commits — two of them
+    `stop …` entries in a tool the audited repo runs as `--fix` on every Markdown
+    commit — never entered the audit. **Nothing failed**, which is why no exit
+    status anywhere could reach it, and why this is worse than #91's absence.
+
+    The guards below are on `uv-lock.md` § Phase 2 alone. `actions.md` § Phase 2
+    carries its own `compare` call for the tag-line question, and a guard reading
+    every reference at once is satisfied by that one while saying nothing about
+    this.
+    """
+
+    def _section(self) -> str:
+        for name, section in self._handoffs(2):
+            if name == "uv-lock.md":
+                return section
+        self.fail("Phase 2 no longer hands off to uv-lock.md")
+
+    def test_the_ladder_has_an_exit_that_is_incompleteness_and_not_absence(self):
+        """Every exit condition used to be an absence — the project publishes
+        none, the patch has no section, the tags are missing — so a source that
+        returned real content ended the ladder. The reconciliation is the one
+        with no exit condition, and the prose has to say so."""
+        self.assertRegex(
+            self._section(),
+            r"(?is)\|[^|\n]*\bagainst each other\b[^|\n]*\|[^|\n]*\|[^|\n]*\bnever\b",
+            "the source table needs a row for reconciling the three, whose "
+            "'where it runs out' is never — otherwise every exit is an absence "
+            "again and a source that answered ends the read",
+        )
+
+    def test_the_range_is_read_whatever_the_write_mode_judgement_says(self):
+        """`--write-mode` escalates a finding; it must not gate the call that
+        finds one. Gating the fetch asks the auditor to be right about write mode
+        before it has the evidence, and a wrong guess restores the silence."""
+        self.assertRegex(
+            self._section(),
+            r"(?is)changes nothing about what is looked for|"
+            r"the range is fetched either way|never whether it is \*?looked for",
+            "Phase 2 must say the compare range is read regardless of write mode",
+        )
+
+    def test_the_write_mode_flag_is_documented_where_it_is_passed(self):
+        self.assertIn("--write-mode", self.reachable(2))
+        self.assertRegex(
+            self._section(),
+            r"--fix.*--write.*-i|--fix`, `--write` or `-i`",
+            "the reader has to know which repo condition sets the flag",
+        )
+
+    def test_the_classifier_is_named_the_way_the_source_is(self):
+        """A count of fixes means something different depending on who did the
+        labelling, so the output says which ran. `python/mypy` v2.3.0…v2.3.1
+        carries four fixes and no conventional commits; a filter keyed on `fix(`
+        called it clean, which is this plugin's own failure class rebuilt inside
+        the tool written to remove it."""
+        self.assertRegex(
+            self._section(),
+            r"(?is)says which classifier ran|which classifier",
+            "the prose must say that the script reports which classifier it used",
+        )
+        self.assertIn(
+            "classifier",
+            self.reachable(2),
+            "and the script has to print it, or it lives only where the reader "
+            "of the output never sees it",
+        )
+
+    def test_the_worked_example_is_the_bump_it_was_found_in(self):
+        """Kept concrete and kept checkable: `integration/` holds the live half,
+        and goes red when rumdl changes how it generates notes."""
+        section = self._section()
+        self.assertIn("v0.2.60…v0.2.62", section)
+        self.assertRegex(
+            section,
+            r"18 commits.*five of them|five of them `fix",
+            "the example has to carry the counts, or it is an anecdote",
+        )
+
+    def test_the_evidence_file_is_pointed_at_for_the_security_read(self):
+        """No count substitutes for seeing a `Security` heading: a privately
+        disclosed fix ships with no CVE and every scanner reports clean."""
+        self.assertRegex(
+            self._section(),
+            r"(?is)`\$SCRATCH/changelog-.*`.*\n?.*Security",
+            "Phase 2 must name the file it wrote and say to read it for Security",
+        )
+
+
+class TestAPlaceholderForARepositoryPathIsDerived(SkillHarness):
+    """#101. `git show "pr-<N>:.github/workflows/<ci>.yml"` never said how to
+    learn `<ci>`, so every run invented a way to list the directory or guessed a
+    filename — and the guess is quiet in the direction that matters. A repo whose
+    workflow is `tests.yml` makes `ci.yml` exit non-zero and at least loud; a repo
+    with **several** workflows has no single right answer, and picking one
+    silently narrows the gate list that Phase 4 and Phase 5 both consume.
+
+    The same gap appeared three times under two spellings — Phase 0's `<ci>`,
+    Phase 6's `<changed>`, `actions.md` § Phase 5's `<changed>` — which is also
+    why 0.36.0 made them one token: a reader who solves it in Phase 0 could not
+    see that Phase 6 was asking the same question.
+
+    **Narrow on purpose.** #101 also proposed the general form, that no
+    placeholder anywhere is left underived. Measured across both references and
+    `SKILL.md`, 37 placeholders appear in a fence and never in their phase's
+    prose — `<owner>`, `<N>`, `<sha>` and the rest, all of them answered by
+    Phase 0's outputs table or by context. A guard with 37 exceptions is a guard
+    that gets weakened until it discriminates nothing, so this one is about the
+    class that actually bit: a placeholder standing for a **path in the
+    repository**, which cannot be answered from context because only the tree
+    knows.
+    """
+
+    # `<tok>` sitting inside a repository path: `.github/workflows/<workflow>`,
+    # `pr-<N>:<workflow>`, `--workflow <workflow>`. `<N>` is the audited PR and
+    # comes from the argument, so it is never the token in question.
+    PATH_TOKEN = re.compile(r"<(?!N>)([a-z][a-z0-9_-]*)>")
+    # Something in the same block that asks the tree what is there.
+    DERIVES = re.compile(r"git ls-tree --name-only|git diff --name-only|git ls-files")
+
+    def _blocks_naming_a_workflow(self) -> list[tuple[str, int, str]]:
+        """Every block that names a workflow, however it spells the path.
+
+        `<workflow>` is in the selector because Phase 6 reads
+        `git show "pr-<N>:<workflow>"` — the placeholder stands for the whole
+        path there, so a selector keyed on `workflows/` skipped the block
+        entirely and the derivation guard passed on a phase it never looked at.
+        Mutation-checked by deleting Phase 6's derivation, which went green.
+        """
+        found = [
+            (file, number, code)
+            for file, number, code in _every_block()
+            if "workflows/" in code or "--workflow " in code or "<workflow>" in code
+        ]
+        self.assertTrue(found, "no block reads a workflow any more")
+        return found
+
+    def test_every_block_that_names_a_workflow_derives_the_list_first(self):
+        for file, number, code in self._blocks_naming_a_workflow():
+            self.assertRegex(
+                code,
+                self.DERIVES,
+                f"{file} Phase {number} names a workflow file without asking the "
+                f"tree which workflows exist. A guessed name either fails loudly "
+                f"or — worse — succeeds and narrows the gate list to one",
+            )
+
+    def test_the_placeholder_is_one_token_across_every_phase_that_asks(self):
+        """Two spellings for one derivation is how the second one stops looking
+        like the first."""
+        tokens = set()
+        for _, _, code in self._blocks_naming_a_workflow():
+            tokens |= {t for t in self.PATH_TOKEN.findall(code) if "workflow" in t or t == "ci"}
+        self.assertEqual(
+            tokens,
+            {"workflow"},
+            "the workflow placeholder must be spelled the same everywhere it is "
+            "asked for, or the same question reads as three different ones",
+        )
+
+    def test_phase_0_derives_the_list_at_both_refs(self):
+        """A gate on only one side of the bump is itself a finding, and Phase 0
+        already says to diff the two lists — which needs two lists."""
+        block = next(
+            code
+            for _, number, code in self._blocks_naming_a_workflow()
+            if number == 0 and "ls-tree" in code
+        )
+        # Asserted on the `ls-tree` line, not on the ref appearing anywhere: the
+        # block also does `git show "$BASE_SHA:.github/workflows/<workflow>"`,
+        # which satisfied a looser assertion while the base *listing* was gone —
+        # so the guard passed on exactly the half-derived state it exists for.
+        for ref in ("pr-<N>", r"\$BASE_SHA"):
+            self.assertRegex(
+                block,
+                rf'git ls-tree --name-only "{ref}:\.github/workflows/"',
+                f"Phase 0 does not list the workflows at {ref}, so it cannot diff "
+                f"the two lists — and a gate on one side of the bump is a finding",
+            )
+
+    def test_the_derivation_is_loud_when_it_cannot_run(self):
+        """`ls-tree` on a missing directory exits 128 and says so, rather than
+        printing nothing at exit 0 — measured on git 2.55.0. The prose has to
+        carry that, because "no workflows" and "could not read" are the two
+        answers the gate list must not confuse."""
+        self.assertRegex(
+            self.material(0),
+            r"(?is)ls-tree[^.]*?exits \*\*128\*\*|exits \*\*128\*\* and says so",
+            "Phase 0 must say that a failed listing is loud, not empty",
         )
 
 
@@ -3377,7 +3762,7 @@ class TestNoExecutePhaseBuildsTheAuditedProject(SkillHarness):
 
     def test_no_no_execute_phase_builds_the_audited_project(self):
         for number in self.NO_EXECUTE:
-            code = self._uncommented(self.reachable(number))
+            code = self._uncommented(self.reachable(number, printed=False))
             hits = sorted(set(self.EXECUTES.findall(code)))
             self.assertEqual(
                 hits,
@@ -3410,7 +3795,7 @@ class TestNoExecutePhaseBuildsTheAuditedProject(SkillHarness):
     def test_the_pattern_still_finds_a_real_violation_in_the_document(self):
         """Phase 5 installs frozen and says so; if it stops matching, so has the pattern."""
         self.assertRegex(
-            self._uncommented(self.reachable(5)),
+            self._uncommented(self.reachable(5, printed=False)),
             self.EXECUTES,
             "Phase 5 is documented as the phase that installs the PR; a pattern that "
             "no longer matches it cannot be trusted over Phases 0-3",

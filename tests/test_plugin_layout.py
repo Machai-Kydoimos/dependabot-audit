@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import unittest
+from typing import ClassVar
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / ".claude-plugin/plugin.json"
@@ -92,6 +94,75 @@ class TestNothingShadowsASkill(unittest.TestCase):
             plugin_name(),
             command_names(),
             f"commands/{plugin_name()}.md shadows the plugin's own skill address",
+        )
+
+
+class TestTheChangelogIndexIsComplete(unittest.TestCase):
+    """A `## [x.y.z]` heading with no link reference renders as literal text.
+
+    Markdown resolves `[0.34.0]` against a definition at the bottom of the file;
+    without one the brackets stay on the page and the compare link is gone. It is
+    silent in the only place it matters — the rendered view — and it had been
+    silent for two releases: 0.34.0 and 0.35.0 both shipped headings with no
+    definition, and `[Unreleased]` still compared from v0.33.0, so the "what has
+    landed since the last release" link spanned three of them.
+
+    Both directions, because a definition left behind after a heading is renamed
+    is the same defect pointing the other way.
+    """
+
+    text: ClassVar[str]
+
+    VERSION_HEADING = re.compile(r"^## \[(\d+\.\d+\.\d+)\]", re.MULTILINE)
+    VERSION_DEF = re.compile(r"^\[(\d+\.\d+\.\d+)\]:", re.MULTILINE)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    def test_every_version_heading_has_a_link_reference(self):
+        headings = set(self.VERSION_HEADING.findall(self.text))
+        defined = set(self.VERSION_DEF.findall(self.text))
+        self.assertEqual(
+            sorted(headings - defined),
+            [],
+            "these versions have a heading and no link definition, so they render "
+            "as literal bracketed text with no compare link",
+        )
+
+    def test_no_link_reference_outlives_its_heading(self):
+        headings = set(self.VERSION_HEADING.findall(self.text))
+        defined = set(self.VERSION_DEF.findall(self.text))
+        self.assertEqual(sorted(defined - headings), [], "these link definitions name no section")
+
+    def test_unreleased_compares_from_the_newest_release(self):
+        """It is the link a reader follows to see what has landed since the last
+        release. Left stale it spans several, and says the opposite of that."""
+        newest = max(
+            self.VERSION_HEADING.findall(self.text), key=lambda v: [int(p) for p in v.split(".")]
+        )
+        # Compiled with re.M explicitly: `assertRegex` compiles a bare string
+        # without flags, so `^`/`$` would only ever match the whole document.
+        wanted = re.compile(
+            rf"^\[Unreleased\]: \S+/compare/v{re.escape(newest)}\.\.\.HEAD$", re.MULTILINE
+        )
+        self.assertRegex(
+            "\n".join(ln for ln in self.text.splitlines() if ln.startswith("[Unreleased]:")),
+            wanted,
+            f"[Unreleased] must compare from v{newest}, the newest release in this file",
+        )
+
+    def test_the_newest_heading_matches_the_shipped_version(self):
+        """The manifest is what the harness installs; the changelog is what the
+        reader is told was installed."""
+        newest = max(
+            self.VERSION_HEADING.findall(self.text), key=lambda v: [int(p) for p in v.split(".")]
+        )
+        manifest = json.loads((ROOT / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            manifest["version"],
+            newest,
+            "plugin.json and CHANGELOG.md disagree about which version this is",
         )
 
 
