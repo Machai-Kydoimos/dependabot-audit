@@ -171,6 +171,15 @@ written.
   written for. It now selects on the verdict cell and checks every match.
   Mutation-checked afterwards against the defect it was written for.
 
+- **Both shipped plugin descriptions still claimed two ecosystems**, and the whole
+  suite passed. `plugin.json` and `marketplace.json` carry the text a user reads
+  in `/plugin` *before* installing, and they were read for their `name` and never
+  for what they claim — so the one statement of scope a user sees first was the
+  one nothing checked. `test_plugin_layout.py` now asserts the two manifests agree
+  word for word and that every covered ecosystem is named wherever scope is
+  stated, `SKILL.md`'s frontmatter included. It understated the plugin rather than
+  overstating it, which is why nobody would have reported it.
+
 - **Two new guards that went green under mutation, caught before they shipped.**
   One asserted a phrase over the whole of `render`'s output and was satisfied by a
   different `print` higher up; it now slices at the row. The other asserted the
