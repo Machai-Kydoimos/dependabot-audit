@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "dependabot-audit",
-      "description": "Audit a Dependabot or Renovate PR and produce an evidence-backed merge recommendation. Verifies uv.lock and GitHub Actions end to end; any other ecosystem gets the ecosystem-independent phases and a stated boundary. Read-only: it reports, it never merges.",
+      "description": "Audit a Dependabot or Renovate PR and produce an evidence-backed merge recommendation. Verifies uv.lock, GitHub Actions and pre-commit hooks end to end; any other ecosystem gets the ecosystem-independent phases and a stated boundary. Read-only: it reports, it never merges.",
       "author": {
         "name": "Richard Graham"
       },

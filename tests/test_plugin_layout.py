@@ -168,3 +168,63 @@ class TestTheChangelogIndexIsComplete(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheShippedDescriptionMatchesTheSkill(unittest.TestCase):
+    """Three files state this plugin's scope, and two of them are not prose.
+
+    `plugin.json` and `marketplace.json` carry the description a user reads in
+    `/plugin` before installing anything, and `SKILL.md`'s frontmatter carries
+    the one the model reads when deciding whether the skill applies. Nothing
+    connected them.
+
+    0.38.0 added `pre-commit` as a covered ecosystem and updated `SKILL.md`,
+    every phase's method table, the boundary sentence, both scripts' refusal
+    messages and the README -- and left both manifests saying "Verifies uv.lock
+    and GitHub Actions end to end". The whole suite passed, because the manifests
+    were read for their `name` and never for what they claim.
+
+    That is the worst place for the claim to rot: it is the only one a user sees
+    *before* installing, and it understates the plugin rather than overstating
+    it, so nobody reports it.
+    """
+
+    MARKETPLACE: ClassVar[pathlib.Path] = ROOT / ".claude-plugin/marketplace.json"
+    SKILL: ClassVar[pathlib.Path] = ROOT / "skills/dependabot-audit/SKILL.md"
+
+    # Every ecosystem name that must appear wherever the scope is stated. Adding
+    # one here is the whole cost of adding an ecosystem to this check.
+    COVERED: ClassVar[tuple[str, ...]] = ("uv.lock", "GitHub Actions", "pre-commit")
+
+    def _manifest_descriptions(self) -> dict[str, str]:
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        market = json.loads(self.MARKETPLACE.read_text(encoding="utf-8"))
+        entries = [p for p in market["plugins"] if p["name"] == manifest["name"]]
+        self.assertEqual(len(entries), 1, "the marketplace lists this plugin once")
+        return {
+            "plugin.json": manifest["description"],
+            "marketplace.json": entries[0]["description"],
+        }
+
+    def test_the_two_manifests_agree_word_for_word(self):
+        """They are copies, and a copy edited in one place is the ordinary way
+        this drifts. Neither is derived from the other at build time."""
+        got = self._manifest_descriptions()
+        self.assertEqual(
+            got["plugin.json"],
+            got["marketplace.json"],
+            "the installed description and the one shown before installing differ",
+        )
+
+    def test_every_covered_ecosystem_is_named_where_scope_is_stated(self):
+        stated = self._manifest_descriptions()
+        stated["SKILL.md frontmatter"] = self.SKILL.read_text(encoding="utf-8").split("---")[1]
+        for where, text in stated.items():
+            for ecosystem in self.COVERED:
+                with self.subTest(where=where, ecosystem=ecosystem):
+                    self.assertIn(
+                        ecosystem,
+                        text,
+                        f"{where} states this plugin's scope and does not name "
+                        f"`{ecosystem}`, which every phase has a method for",
+                    )
