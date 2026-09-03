@@ -23,7 +23,7 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.0
+    rev: v2.3.1
     hooks:
       # mirrors-mypy builds an isolated environment, which is normally the reason
       # to avoid it: a project's own dependencies are missing from it and
