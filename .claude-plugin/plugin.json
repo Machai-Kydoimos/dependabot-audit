@@ -1,7 +1,7 @@
 {
   "name": "dependabot-audit",
   "description": "Audit a Dependabot or Renovate PR and produce an evidence-backed merge recommendation. Verifies uv.lock and GitHub Actions end to end; any other ecosystem gets the ecosystem-independent phases and a stated boundary. Read-only: it reports, it never merges.",
-  "version": "0.36.0",
+  "version": "0.37.0",
   "author": {
     "name": "Richard Graham"
   }
