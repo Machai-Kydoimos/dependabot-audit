@@ -4,10 +4,11 @@ No network: `_gh` is the single seam every GitHub call goes through, so the fake
 below drive the real tag matching, section extraction, classification and
 reconciliation, and only the subprocess is replaced.
 
-**Every fixture here is recorded from the live API, not written to fit the rule.**
-That is the trap this file exists downstream of: a reconciliation rule tested
-against changelogs invented from the rule can only agree with itself. The
-subjects, release bodies and changelog sections below are verbatim from
+**Every fixture the reconciliation is judged on is recorded from the live API,
+not written to fit the rule.** That is the trap this file exists downstream of: a
+reconciliation rule tested against changelogs invented from the rule can only
+agree with itself. The subjects, release bodies and changelog sections below are
+verbatim from
 
     gh api repos/rvben/rumdl/compare/v0.2.60...v0.2.62 --jq '.commits[].commit.message'
     gh api repos/rvben/rumdl/releases/tags/v0.2.61 --jq .body
@@ -18,6 +19,13 @@ recorded 2026-09-01. The live half of the same claims is in
 `integration/test_live_changelog_sources.py`, which goes red when the world moves
 -- these stay green, because they are about this script's reading of what the
 world said that day.
+
+**Four fixtures are synthetic, and say so in their names**: `example/wall`,
+`example/backport`, the `astral-sh/ruff` stub, and `ROWS`. They test structure
+rather than judgement -- the cap, the ranking, the tag prefix, an empty window --
+where real data would be arbitrary and the property under test is not about the
+world at all. Keeping the two kinds apart is the point: an invented changelog may
+never decide whether the reconciliation is right.
 
     python3 -m unittest discover -s tests -v
 """
@@ -149,16 +157,23 @@ RUMDL_59_60 = [
     "fix(deps): update h2 to 0.4.16",
     "chore: bump version to v0.2.60",
 ]
+# Full 40-character hashes, as the API actually emits them. A first version
+# abbreviated the URLs, which `normalise` happens to strip either way -- so the
+# test passed while the fixture had stopped being what the world sends, and a
+# future change to that regex would have been checked against a shortened form
+# nobody publishes.
 RUMDL_NOTES_59 = (
     "\n### Fixed\n\n"
-    "- **MD033**: ignore escaped HTML tag openers ([eaa4075](https://github.com/rvben/rumdl/commit/eaa4075))\n"
-    "- **config**: match absolute patterns through symlinks ([5dd6158](https://github.com/rvben/rumdl/commit/5dd6158))\n"
+    "- **MD033**: ignore escaped HTML tag openers "
+    "([eaa4075](https://github.com/rvben/rumdl/commit/eaa4075d665f8174256ddbeb21ecb8d64f34525a))\n"
+    "- **config**: match absolute patterns through symlinks "
+    "([5dd6158](https://github.com/rvben/rumdl/commit/5dd615823eb3128009dd0534829f18e96a73a2c6))\n"
     "- **MD013**: stop reflow from joining a setext heading into its underline "
-    "([9ec9e17](https://github.com/rvben/rumdl/commit/9ec9e17))\n"
+    "([9ec9e17](https://github.com/rvben/rumdl/commit/9ec9e17458f45c6e621de3352a678870c71441e3))\n"
 )
 RUMDL_NOTES_60 = (
     "\n### Fixed\n\n- **deps**: update h2 to 0.4.16 "
-    "([a650302](https://github.com/rvben/rumdl/commit/a650302))\n"
+    "([a650302](https://github.com/rvben/rumdl/commit/a6503022a5b0268138fbec2068d8e9a7abd27e64))\n"
 )
 
 # --- recorded: python/mypy, the range the reference already cites ------------
