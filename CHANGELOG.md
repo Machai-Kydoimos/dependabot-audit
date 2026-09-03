@@ -11,6 +11,104 @@ patch.
 
 ## [Unreleased]
 
+## [0.38.0] — 2026-09-03
+
+Closes [#110](https://github.com/Machai-Kydoimos/dependabot-audit/issues/110) and
+[#111](https://github.com/Machai-Kydoimos/dependabot-audit/issues/111), both
+raised by live runs against this repository's own bump PRs.
+
+**Minor, not patch.** Phase 6 gains a question it did not ask, Phase 7 gains a
+fourth verdict, and Phase 0's worktree rule changes on which runs it fires.
+
+### Added
+
+- **Phase 6 now asks whether the base moved under the check results** (#110), and
+  `ci_state.py` answers it. CI runs on `refs/pull/<N>/merge` — the base merged
+  with the head — so a fix landing on the default branch invalidates every result
+  on the PR, with **no event on the PR to re-trigger them**. Attribution cannot
+  see this: it compares the head against `pr-<N>^` and *both of those commits are
+  unchanged*, so the row reads `attributable`, correctly, about a merge that no
+  longer exists.
+
+  Observed on this repo's #99. The fix for what the red check caught merged to
+  `main` as `09911c1` at 2026-09-03T17:43:31Z; the red `Lint & type-check` had
+  started 2026-09-01T01:14:41Z, **2d 16h earlier**, so it could not have contained
+  its own fix. A report that stopped at Phase 6 carried a substantive Hold on a PR
+  whose only blocker had already been repaired.
+
+  **The comparison is a timestamp, not a ref, and that is the finding inside the
+  finding.** The obvious signal is the merge ref — compare `refs/pull/<N>/merge`'s
+  base parent against the branch tip, which is what the issue proposed. Measured,
+  it does not work: `refs/pull/<N>/merge` and `potentialMergeCommit` are recomputed
+  *lazily*, and querying `mergeable` is what pokes them, so by the time either is
+  read it names the current base while the check results still do not. Commit
+  dates are not recomputed by being read. `baseRef`'s tip committed after a
+  settled check started means that check could not have contained it — no local
+  `git`, which is what let this go into `ci_state.py` rather than staying prose.
+
+  Three states, and the third is load-bearing as usual: a settled context with no
+  start time, or an unreadable base tip, is **underivable** rather than "current".
+  A *queued* context has no start time either and never will until it starts, so
+  it is excluded — reading it as underivable would fire on every PR with a pending
+  job and retire the signal.
+
+  Verified in both directions live: silent on #99 as it stands (base tip 18:39:15Z,
+  checks 18:43:34Z), and firing on `cli/cli` #14196, whose seven contexts predate
+  the current `trunk` by 15d 20h.
+
+- **A fourth verdict, `Hold, pending a re-run`** (#110). "Red, and the base still
+  explains it" and "red, but the base has moved" are different recommendations:
+  the first owes the reader a cause, the second owes a commit and an action.
+  Phase 7's table gains two rows for the distinction, above the `attributable`
+  row so the first-match read reaches them. Collapsing the two is what produced
+  the Hold above.
+
+### Changed
+
+- **Phase 0 creates the worktrees on a condition, not on an ecosystem** (#111).
+  The old rule said *an actions bump consumes neither worktree*. That is true and
+  it is not the reason: what makes them pointless is that **Phases 4 and 5 will
+  not run**, which is equally true of an uncovered ecosystem, a `pull` tier, a
+  non-bot author, `--no-execute`, and Phase 1 finding anything. Every input is on
+  disk before the decision — `discover.py` writes `$ECOSYSTEM`, `$SCOPE_GATE` and
+  `$MAY_EXECUTE` one command earlier.
+
+  Two live runs deviated from the old rule independently, each reasoning out the
+  uncovered-ecosystem case and each writing it up rather than acting on it. The
+  Phase 0 outputs table carried the same rule in its own words and is updated with
+  it, because a reader following the table alone got whichever statement was not
+  changed.
+
+  **`--no-execute` is not `$MAY_EXECUTE`**, and #111's own text conflated them.
+  `discover.py` derives `MAY_EXECUTE` from the author, the cross-repository check
+  and `push`; it never sees the flag. The rule now names both inputs.
+
+- **Phase 6 separates reading the simulated merge from re-gating it.** #110 held
+  that `git merge-tree --write-tree` "works under `--no-execute` for any gate that
+  is itself read-only". Half right: reading a file out of the written tree is
+  read-only and always available, but *running* the repo's gate against it
+  executes the bumped tool, which is the whole of `$MAY_EXECUTE`. Recorded as
+  written, that would have put a Phase 5 action inside the flag that exists to
+  forbid it.
+
+### Fixed
+
+- **A prose guard that stopped discriminating when a row moved.** Phase 7's
+  attributable-row guard took the first row mentioning `attributable` and
+  returned, so the new stale-base rows — inserted above it, and about *not*
+  reporting a red as attributable — satisfied it on behalf of the row it was
+  written for. It now selects on the verdict cell and checks every match.
+  Mutation-checked afterwards against the defect it was written for.
+
+- **Two new guards that went green under mutation, caught before they shipped.**
+  One asserted a phrase over the whole of `render`'s output and was satisfied by a
+  different `print` higher up; it now slices at the row. The other asserted the
+  rollup query's field names, which occur more than once in the same reachable
+  code, so deleting any one from the query passed — removed rather than kept as
+  coverage, with the negative result recorded in the test. `SkillHarness` gains
+  `flat()`, because `SKILL.md` is hard-wrapped and three guards matching more than
+  a few words failed on their own fixed prose.
+
 ## [0.37.0] — 2026-09-03
 
 Closes [#104](https://github.com/Machai-Kydoimos/dependabot-audit/issues/104),
@@ -4259,7 +4357,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.37.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.38.0...HEAD
+[0.38.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.34.0...v0.35.0

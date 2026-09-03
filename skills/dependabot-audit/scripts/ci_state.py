@@ -39,6 +39,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 from datetime import datetime
 from typing import Any, NoReturn
 
@@ -66,13 +67,19 @@ query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
   repository(owner:$owner, name:$name) {
     pullRequest(number:$number) {
       mergeable mergeStateStatus reviewDecision
+      baseRef { name target { ... on Commit { oid committedDate } } }
       commits(last:1) { nodes { commit { oid committedDate statusCheckRollup { state
         contexts(first:100, after:$cursor) {
           totalCount
           pageInfo { hasNextPage endCursor }
           nodes {
-            ... on CheckRun      { name    conclusion isRequired(pullRequestNumber:$number) }
-            ... on StatusContext { context state      isRequired(pullRequestNumber:$number) }
+            # The start time is `base_drift`'s only input, and the two shapes
+            # name the same thing differently. Wrapped, not shortened: the
+            # columns are what make the two lines comparable at a glance.
+            ... on CheckRun      { name    conclusion startedAt
+                                   isRequired(pullRequestNumber:$number) }
+            ... on StatusContext { context state      createdAt
+                                   isRequired(pullRequestNumber:$number) }
           }
         } } } } }
     }
@@ -211,6 +218,9 @@ def _context(node: dict[str, Any]) -> dict[str, Any] | None:
         "result": (result or "PENDING").upper(),
         "required": bool(node.get("isRequired")),
         "kind": "CheckRun" if node.get("name") else "StatusContext",
+        # The two shapes name it differently, and reading only `startedAt` leaves
+        # every StatusContext permanently underivable in `base_drift` below.
+        "started": node.get("startedAt") or node.get("createdAt") or "",
     }
 
 
@@ -266,9 +276,17 @@ def rollup(owner: str, name: str, number: int) -> dict[str, Any]:
             # hasNextPage without a cursor cannot be followed. Say so rather than
             # looping forever or reporting the partial list as complete.
             break
+    base = pull.get("baseRef") or {}
+    base_target = base.get("target") or {}
     return {
         "head_oid": head_oid,
         "head_committed": head_committed,
+        # The branch this PR merges *into*, as it is now — not `$BASE_SHA`, which
+        # is where the PR branched off and does not move. `base_drift` needs the
+        # tip, because a fix landing there invalidates the checks below.
+        "base_ref": base.get("name") or "",
+        "base_oid": base_target.get("oid") or "",
+        "base_committed": base_target.get("committedDate") or "",
         "rollup_state": state,
         "merge_state": pull.get("mergeStateStatus") or "",
         "mergeable": pull.get("mergeable") or "",
@@ -380,6 +398,72 @@ def attribute(
     }
 
 
+def base_drift(report: dict[str, Any]) -> dict[str, Any]:
+    """Did these check results include the base branch as it is **now**?
+
+    CI runs on `refs/pull/<N>/merge` — the base merged with the head — so a commit
+    landing on the default branch invalidates every result on the PR, with no
+    event on the PR to re-trigger them. `attribute()` cannot see this: its
+    comparison is the head against `pr-<N>^` and **both of those commits are
+    unchanged**. It labels the row `attributable`, correctly, about a merge that
+    no longer exists.
+
+    Observed on this plugin's own #99. The fix for what the check caught merged to
+    `main` as `09911c1` at 2026-09-03T17:43:31Z; the red `Lint & type-check` on the
+    PR had started at 2026-09-01T01:14:41Z, **2d 16h earlier**, so it could not
+    have contained its own fix. A report that stopped at Phase 6 carried a
+    substantive Hold on a PR whose only blocker had already been repaired.
+
+    **Why a timestamp and not the merge ref.** `potentialMergeCommit` and
+    `refs/pull/<N>/merge` are recomputed lazily, and *querying* `mergeable` is
+    what pokes them — so by the time either is read it usually names the current
+    base while the check results still do not. Measured on the same PR: the
+    parents of `potentialMergeCommit` had already caught up. Commit dates are not
+    recomputed by being read, and this needs no local git, which keeps the
+    no-fetch property this script is written to.
+
+    Three states, and the third is the one that matters. "Could not compare" must
+    not arrive as "every check included the current base" — the same asymmetry as
+    `$SCOPE_GATE` and the truncated context list above.
+    """
+    when = report.get("base_committed") or ""
+    settled = [c for c in report["contexts"] if c["result"] in FAILING | PASSING]
+    unknown: dict[str, Any] = {
+        "state": "underivable", "stale": [], "behind": "",
+        "why": "", "base_ref": report.get("base_ref") or "",
+        "base_oid": report.get("base_oid") or "", "base_committed": when,
+    }  # fmt: skip
+    if not when:
+        return {**unknown, "why": "the base branch's tip was not readable"}
+    # A queued context has no start time and never will until it starts, so
+    # reading that as underivable would fire on every PR with a pending job and
+    # retire the signal. A context that has *concluded* and still has no start
+    # time is a comparison genuinely not made.
+    blind = [c["name"] for c in settled if not c["started"]]
+    if blind:
+        return {
+            **unknown,
+            "why": f"no start time for {', '.join(sorted(blind))}, which have concluded",
+        }
+    stale = [c["name"] for c in settled if c["started"] < when]
+    if not stale:
+        return {
+            **unknown,
+            "state": "no",
+            "why": "every settled check started after the base branch last moved",
+        }
+    return {
+        **unknown,
+        "state": "yes",
+        "stale": sorted(stale),
+        "behind": interval(when, min(c["started"] for c in settled if c["name"] in stale)),
+        "why": (
+            f"{report.get('base_ref') or 'the base branch'} moved to "
+            f"{(report.get('base_oid') or '')[:9]} after these checks started"
+        ),
+    }
+
+
 def analyse(report: dict[str, Any]) -> dict[str, Any]:
     """Findings, and the three states, without deciding the verdict.
 
@@ -399,6 +483,12 @@ def analyse(report: dict[str, Any]) -> dict[str, Any]:
     # GitHub has computed it. Not "nothing blocks" — not established.
     report["merge_state_underivable"] = report["merge_state"] in ("", "UNKNOWN")
     report["findings"] = bool(report["required_red"]) or report["blocked"]
+    # Deliberately after `findings` and deliberately not part of it. Drift
+    # qualifies rows; it never invents one. A default branch that moved while an
+    # all-green PR sat there carries no finding about the bump, and folding it in
+    # would exit 1 on every audit of an active repository — which is how a signal
+    # stops being read.
+    report["base_drift"] = base_drift(report)
     return report
 
 
@@ -422,6 +512,27 @@ def render(report: dict[str, Any]) -> None:
     if report["merge_state_underivable"]:
         print("  !! mergeStateStatus is UNKNOWN: computed lazily, and this is also what")
         print("     a merged PR returns. That is *not established*, not 'nothing blocks'.")
+
+    drift = report["base_drift"]
+    if drift["state"] == "yes":
+        print(f"\n  !! THE BASE MOVED UNDER THESE RESULTS — {drift['why']}")
+        print("     CI runs on refs/pull/<N>/merge, so every result below predates")
+        print(f"     {drift['base_oid'][:9]} by {drift['behind']} and describes a merge")
+        print("     that no longer exists. Nothing on the PR re-triggers it.")
+        # Wrapped, and not truncated to the first few. Measured on `cli/cli`
+        # #14196, where seven context names ran to 190 characters on one line and
+        # the warning above them stopped being readable.
+        print("     Started before it:")
+        # `break_on_hyphens=False`: check names are full of them, and
+        # `close-from-default-branch` split across two lines reads as two
+        # different checks.
+        for line in textwrap.wrap(", ".join(drift["stale"]), width=66, break_on_hyphens=False):
+            print(f"       {line}")
+        print("     Simulate the merge and re-gate before a red row carries a Hold, or")
+        print("     a green one carries a merge — see Phase 6's fourth trap.")
+    elif drift["state"] == "underivable":
+        print(f"\n  !! BASE STALENESS UNDERIVABLE — {drift['why']}.")
+        print("     Not 'these results include the current base': never established.")
 
     for ctx in report["required"]:
         mark = "OK " if ctx["result"] in PASSING else "BAD"
@@ -463,6 +574,15 @@ def render(report: dict[str, Any]) -> None:
         if attr["weakened"]:
             print("       Say the weakened basis out loud; passing it off as the")
             print("       parent's answer is the failure this comparison exists to avoid.")
+        if ctx["name"] in report["base_drift"]["stale"]:
+            # The label above is still correct — both commits it compares are
+            # unchanged. What it cannot say is that the result describes a merge
+            # that has been superseded, and that is what a reader takes the Hold
+            # from.
+            print("       AND THE BASE MOVED: this result is for a merge that no longer")
+            print("       exists, so the label above is right about two commits that did")
+            print("       not change and silent about the one that did. Procedural, not")
+            print("       substantive, until the merged tree is re-gated.")
 
     if report["red"] and report["parent_names"]:
         missing = [c["name"] for c in report["red"] if c["name"] not in report["parent_names"]]
