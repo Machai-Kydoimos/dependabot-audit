@@ -321,6 +321,40 @@ class TestTheParserRefusesRatherThanGuesses(PreCommitHarness):
         with self.assertRaises(Unparsed):
             parse_hooks("- id: x\n  files:\n    - a\n    - b\n")
 
+    def test_a_comment_is_stripped_without_eating_a_value(self):
+        """`" #"` and not `"#"`, which is the YAML rule rather than a guess: an
+        inline comment must be preceded by whitespace.
+
+        It matters on `entry`, which is behavioural and is the field that caught
+        `mirrors-prettier` dropping `--list-different`. A strip that ate part of
+        a command would invent a behaviour change on one side of the comparison
+        and hide one on the other, and both are silent.
+        """
+        for name, text, expected in (
+            ("inline comment", "- id: x\n  entry: black  # go fast\n", "black"),
+            ("hash inside a value", "- id: x\n  entry: sed -e 's/#a/b/'\n", "sed -e 's/#a/b/'"),
+            ("hash with no space", "- id: x\n  entry: black --p#q\n", "black --p#q"),
+        ):
+            with self.subTest(name):
+                self.assertEqual(parse_hooks(text)["x"]["entry"], expected)
+
+    def test_a_standalone_comment_line_is_skipped(self):
+        """`ruff-pre-commit` carries one (`# Legacy alias`). Read as content it is
+        a line with no colon, which the parser refuses -- so the whole file would
+        become underivable over a comment.
+
+        Both positions, because they take different branches: an *indented*
+        comment is emptied by the inline strip and caught as blank, while one at
+        column 0 with no space before the `#` survives that strip and needs the
+        `startswith` check. Mutating either alone leaves the other passing.
+        """
+        for name, text in (
+            ("indented", "- id: x\n  # a note\n  language: python\n"),
+            ("column 0", "# a note\n- id: x\n  language: python\n"),
+        ):
+            with self.subTest(name):
+                self.assertEqual(parse_hooks(text)["x"], {"id": "x", "language": "python"})
+
     def test_a_dedent_inside_an_item_raises(self):
         """A line less indented than the item it sits in is not a field of that
         item, and treating it as one silently attaches a value to the wrong hook.
