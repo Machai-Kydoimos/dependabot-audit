@@ -20,7 +20,13 @@ repos:
       # then reformatted.
       - id: ruff-check
         args: [--fix]
+      # `extend-exclude` in pyproject.toml does not reach the fixtures: the hook
+      # passes filenames explicitly, and integration/fixtures/ruff-md-fences/
+      # ships its own pyproject.toml, which is the nearest config for files
+      # inside it and shadows this repo's. Excluding here filters the paths
+      # before ruff resolves any config at all. See #107.
       - id: ruff-format
+        exclude: ^integration/fixtures/
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v2.3.1

@@ -15,10 +15,18 @@
 target-version = "py311"        # tomllib
 line-length = 100
 # The ruff replay fixture is deliberately mis-formatted Python inside Markdown
-# fences: it is the input whose reformatting the test measures. Left included,
-# this repo's own `ruff format` hook would tidy it on the next commit and the
-# test would pass against a fixture with nothing left to find — the evidence
-# erased by the tool it is evidence about.
+# fences: it is the input whose reformatting the test measures. Tidied, the test
+# would pass against a fixture with nothing left to find — the evidence erased by
+# the tool it is evidence about.
+#
+# This setting is not what prevents that. It governs ruff's own discovery, so a
+# bare `ruff format .` skips the fixtures; it does **not** reach the pre-commit
+# hook, which passes filenames explicitly and resolves config per file, and
+# `integration/fixtures/ruff-md-fences/pyproject.toml` shadows this file for
+# everything under that directory. Measured: with the nearest config,
+# `ruff format --check --force-exclude <fixture>.md` reformats; forced to this
+# one via `--config pyproject.toml` it reports no files. The hook-level
+# `exclude:` in .pre-commit-config.yaml is what actually protects them (#107).
 extend-exclude = ["integration/fixtures"]
 
 [tool.ruff.lint]
