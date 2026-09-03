@@ -171,6 +171,22 @@ written.
   written for. It now selects on the verdict cell and checks every match.
   Mutation-checked afterwards against the defect it was written for.
 
+- **`SECURITY.md` did not list the ecosystem this version added**, and it is the
+  one with the broadest execution surface. `pre-commit run` **builds each hook's
+  environment at run time** — installing from PyPI or npm and then executing the
+  hook over your files, at the `rev:` the PR proposes, from a repository neither
+  the user nor this plugin controls. There is no `--no-build` equivalent; what
+  narrows it is `--hook <id>`, and the fact that Phases 1 and 4 answer *what
+  changed* from the network without running anything. The per-phase table gains
+  the row too, because "a frozen install" did not describe it.
+
+- **Phase 0's new worktree table said "Four paths" over five rows**, in the same
+  edit that added the table. Every guard written for that change asserted what the
+  rule *says* and none could count, so `test_skill_prose.py` gains one that reads
+  the stated number and the table it sits above — a number beside the thing it
+  counts is the cheapest prose defect to make, and the tables here are already
+  parsed.
+
 - **Both shipped plugin descriptions still claimed two ecosystems**, and the whole
   suite passed. `plugin.json` and `marketplace.json` carry the text a user reads
   in `/plugin` *before* installing, and they were read for their `name` and never

@@ -26,6 +26,7 @@ is the largest thing it does that cannot be undone.
 |---|---|
 | 4 | the repo's gates, at a version taken from the diff under audit, through a shell |
 | 5 | a frozen install (npm lifecycle scripts, sdist builds, `build.rs`) and the PR's own test suite, from the PR's tree |
+| 4, 5 | for a `pre-commit` bump: **the hook itself**, at the `rev:` the PR proposes — see the row below, because it is not a frozen install |
 
 Phases 0–3 and 6–8 are network reads and `git` queries and execute nothing.
 
@@ -39,9 +40,20 @@ removed.
 | Ecosystem | What an install runs | How to narrow it |
 |---|---|---|
 | **PyPI / uv** | any sdist in the resolution builds, running `setup.py` or the PEP 517 backend | `uv sync --locked --no-build --no-install-project` |
+| **pre-commit** | `pre-commit run` **builds each hook's environment at run time**, installing from PyPI or npm and then executing the hook over your files — at the `rev:` the PR proposes, from a repository neither you nor this plugin controls | nothing equivalent to `--no-build`. Narrow the *blast radius* instead: `--hook <id>` runs one hook, and Phases 1 and 4 read the hook definition over the network without running anything |
 | npm | `preinstall` / `install` / `postinstall` scripts — the standard supply-chain vector | `npm ci --ignore-scripts` |
 | Cargo | every crate's `build.rs` | **nothing** — there is no flag |
 | Go | nothing at install time; `go build` does not run third-party build hooks | not needed |
+
+**The `pre-commit` row is the one to read twice, because it is not a removed
+recipe — it is a supported ecosystem.** A `rev:` bump proposes new code on a third
+party's repository, and running the hook is what executes it. Two things follow.
+Phases 1 and 4 answer *what changed* from the network alone, so the highest-yield
+question here — did the hook's definition move — is settled **before** anything
+runs. And Phase 5 is where it does run, behind `$MAY_EXECUTE` with the rest.
+
+A hook whose `language` is not `python` also drags in that language's toolchain
+and its own registry; the plugin reports that boundary rather than crossing it.
 
 This is the half of a removed recipe that fails *safe*. A warning that is ignored
 costs nothing; a verification that is wrong reports green.

@@ -186,8 +186,8 @@ path argument, and clears `pr-<N>` and `base-<N>` together.
 
 **Create the worktrees only where Phase 4 or Phase 5 will run.** They are the two
 phases that need a tree; every other read here reaches the PR through
-`git show` at a ref. Four paths run neither, and the condition is the phases
-rather than any one of the four:
+`git show` at a ref. Five paths run neither, and the condition is the phases
+rather than any one of the five:
 
 | Condition | Already on disk as | Why neither phase runs |
 |---|---|---|
