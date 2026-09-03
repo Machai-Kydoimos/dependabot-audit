@@ -160,15 +160,10 @@ package author controls: tidy release notes, no unreconciled fixes, a clean
 currency row. Reported by CodeQL as `py/incomplete-url-substring-sanitization`
 on the PR that mechanised it, which is the only reason the prose copy was found.
 
-**Do not construct the tag; match it.** Projects disagree about the `v` prefix
-and change their minds mid-life, and a guessed tag returns "release not found",
-which reads exactly like "this version has no notes". The script matches against
-the published list, falls back to probing **both** spellings against the git ref,
-and reports which answered.
-
 **Constructing the tag is the quiet failure.** Projects disagree about the `v`
-prefix and change their minds mid-life. Measured 2026-08-30, on the three tools
-in one bump:
+prefix and change their minds mid-life. The script matches against the published
+list and falls back to probing **both** spellings against the git ref, reporting
+which answered. Measured 2026-08-30, on the three tools in one bump:
 
 | Project | Release tag for the audited version | Note |
 |---|---|---|
@@ -232,9 +227,9 @@ so, which is why this is worse than a lookup that fails: **nothing fails.**
 Two things the script does that a careful reading kept getting wrong, both
 measured rather than reasoned:
 
-- **It matches the tag and never builds one**, and it finds the changelog by
-  listing the repo root rather than assuming `CHANGELOG.md`. A guessed name 404s,
-  and a 404 reads exactly like "this project keeps no changelog".
+- **It finds the changelog by listing the repo root**, rather than assuming
+  `CHANGELOG.md`. A guessed name 404s, and a 404 reads exactly like "this project
+  keeps no changelog" — the tag trap above, one file over.
 - **It says which classifier ran.** Where the project writes conventional
   commits it reads only fix types; where it does not, it filters nothing —
   because a filter keyed on `fix(` reports **zero fixes** for `mypy`

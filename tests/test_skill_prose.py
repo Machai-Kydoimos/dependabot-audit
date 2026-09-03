@@ -3390,13 +3390,15 @@ class TestPhase2CanReachAChangelogAtAll(SkillHarness):
         copy would have left it live in the other. Re-anchored to `reachable`,
         which follows the script, rather than re-anchored to nothing.
         """
-        code = self.reachable(2)
+        # Asserted before the return, and on the *prose*: `reachable(2)` only
+        # contains the script's code because the prose names it, so this gives
+        # a deleted invocation its own message instead of four regex misses.
         self.assertIn(
             "changelog.py",
             "\n".join(block for _, section in self._handoffs(2) for block in bash_blocks(section)),
             "Phase 2 documents no way to find the project's repository",
         )
-        return code
+        return self.reachable(2)
 
     def test_the_tag_is_matched_against_the_release_list_not_constructed(self):
         """Guessing the prefix returns "release not found", which reads exactly

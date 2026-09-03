@@ -32,7 +32,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(
@@ -47,6 +47,7 @@ from changelog import (
     candidates,
     cli,
     described,
+    gap,
     github_slug,
     labelled,
     main,
@@ -792,6 +793,115 @@ class TestThePackageCannotChooseWhichRepositoryAnswersForIt(unittest.TestCase):
         self.assertIn("is not an owner/repo pair", err.getvalue())
 
 
+class TestAnEmptyWindowSaysWhyItIsEmpty(unittest.TestCase):
+    """Three causes, three answers -- the first version gave one.
+
+    `gap()` returned a bare `[]` whether the target had no release, the versions
+    were out of order, or the project published nothing, and `main` printed
+    *"this project publishes no releases for these versions"* for all three. Two
+    of those are false, and one of them is false about a project that visibly
+    does publish releases.
+
+    That is this plugin's own failure class -- an absence of evidence reported as
+    evidence of absence -- inside the tool written to remove it, which is the
+    second time in one sprint. The comment in `gap()` even claimed it said so.
+    Found by reading the function against its own docstring, and the branch had
+    no test at all.
+    """
+
+    ROWS: ClassVar[list[dict[str, str]]] = [
+        {"tag": "v3.0.0", "body": "", "at": "2026-03-01T00:00:00Z"},
+        {"tag": "v2.0.0", "body": "", "at": "2026-02-01T00:00:00Z"},
+        {"tag": "v1.0.0", "body": "", "at": "2026-01-01T00:00:00Z"},
+    ]
+
+    def test_the_ordinary_window_carries_no_note(self):
+        window, why = gap(self.ROWS, "v1.0.0", "v3.0.0")
+        self.assertEqual([r["tag"] for r in window], ["v3.0.0", "v2.0.0"])
+        self.assertEqual(why, "", "a window that sliced cleanly needs no explanation")
+
+    def test_a_target_with_no_release_says_so(self):
+        window, why = gap(self.ROWS, "v1.0.0", "v9.9.9")
+        self.assertEqual(window, [])
+        self.assertIn("no published release for v9.9.9", why)
+
+    def test_a_start_with_no_release_gathers_the_target_and_says_so(self):
+        """`python/mypy` reaches this every time it tags without releasing."""
+        window, why = gap(self.ROWS, "v0.1.0", "v3.0.0")
+        self.assertEqual([r["tag"] for r in window], ["v3.0.0"])
+        self.assertIn("no published release for v0.1.0", why)
+
+    def test_versions_out_of_order_are_not_reported_as_no_releases(self):
+        """The false one. A downgrade or a backported patch line got told the
+        project publishes nothing."""
+        window, why = gap(self.ROWS, "v3.0.0", "v1.0.0")
+        self.assertEqual(window, [])
+        self.assertIn("downgrade or a backported line", why)
+        self.assertNotIn("publishes no releases", why)
+
+    def test_the_reason_reaches_the_terminal(self):
+        """A note `main` does not print explains nothing."""
+        repo = Repo(
+            "example/backport",
+            releases=[("v3.0.0", "### Added\n\n- three\n"), ("v1.0.0", "### Added\n\n- one\n")],
+            files={},
+            commits=["fix: something the notes never mention"],
+        )
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as scratch:
+            argv = [
+                "changelog.py",
+                "--scratch",
+                scratch,
+                "--repo-slug",
+                repo.slug,
+                "--from",
+                "3.0.0",
+                "--to",
+                "1.0.0",
+            ]
+            with (
+                mock.patch("changelog._gh", fake_gh(repo)),
+                mock.patch.object(sys, "argv", argv),
+                contextlib.redirect_stdout(out),
+            ):
+                main()
+        printed = out.getvalue()
+        self.assertIn("downgrade or a backported line", printed)
+        self.assertNotIn("publishes no releases", printed)
+
+    def test_the_range_is_still_read_when_the_window_cannot_be_sliced(self):
+        """The prose half is the fallible half; `compare` asks about two refs and
+        does not consult the release list at all."""
+        repo = Repo(
+            "example/backport",
+            releases=[("v3.0.0", "### Added\n\n- three\n"), ("v1.0.0", "### Added\n\n- one\n")],
+            files={},
+            commits=["fix: something the notes never mention"],
+        )
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as scratch:
+            argv = [
+                "changelog.py",
+                "--scratch",
+                scratch,
+                "--repo-slug",
+                repo.slug,
+                "--from",
+                "3.0.0",
+                "--to",
+                "1.0.0",
+            ]
+            with (
+                mock.patch("changelog._gh", fake_gh(repo)),
+                mock.patch.object(sys, "argv", argv),
+                contextlib.redirect_stdout(out),
+            ):
+                status = main()
+        self.assertEqual(status, 1, "the fix in the range is still a finding")
+        self.assertIn("something the notes never mention", out.getvalue())
+
+
 class TestAFailedCallIsNotAnEmptyAnswer(unittest.TestCase):
     """The seam's own contract, tested one layer below the seam.
 
@@ -849,6 +959,42 @@ class TestTheEvidenceOutlivesTheTerminal(ChangelogHarness):
         self.assertIn("evidence saved to", out)
         self.assertIn("update h2 to 0.4.16", evidence)
         self.assertIn("Security", evidence)
+
+    def test_a_marked_row_carries_its_full_commit_message(self):
+        """`commits()` fetches whole messages because *"the body is where a fix
+        says what it corrupted"* — and the first version dropped every body and
+        told the terminal reader to go fetch the range again. rumdl's Rust-source
+        fix names `# [derive(Debug)]` only in the body.
+        """
+        repo = self.rumdl_61_62()
+        repo.commits = [
+            *RUMDL_61_62[:8],
+            "fix(cli): stop rewriting Rust source when formatting doc comments\n\n"
+            "`rumdl fmt lib.rs` wrote `# [derive(Debug)]` to disk and the file\n"
+            "stopped being Rust.",
+            *RUMDL_61_62[9:],
+        ]
+        _, out, evidence = self.run_main(repo, "--from", "0.2.60", "--to", "0.2.62")
+        self.assertIn("## destructive-fix shape -- full commit message", evidence)
+        self.assertIn("wrote `# [derive(Debug)]` to disk", evidence)
+        self.assertNotIn(
+            "wrote `# [derive(Debug)]` to disk",
+            out,
+            "the body belongs in the file; the terminal shows the ranked subjects",
+        )
+
+    def test_an_unmarked_row_does_not_carry_a_body(self):
+        """Only the rows Phase 7 takes the verdict from. A body for all 266 of
+        ruff's would be the wall this file exists to replace."""
+        repo = self.rumdl_61_62()
+        repo.commits = [
+            "fix(MD057): respect closed-world self-reference policy\n\nA long body.",
+            "chore: bump version to v0.2.62",
+        ]
+        _, _, evidence = self.run_main(repo, "--from", "0.2.60", "--to", "0.2.62")
+        self.assertIn("respect closed-world self-reference policy", evidence)
+        self.assertNotIn("A long body.", evidence)
+        self.assertNotIn("destructive-fix shape -- full commit message", evidence)
 
     def test_a_clean_run_still_writes_the_file(self):
         status, _, evidence = self.run_main(

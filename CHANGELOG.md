@@ -125,6 +125,23 @@ report; Phase 0 and Phase 6 gain a derivation they only implied.
 
 ### Fixed
 
+- **An empty release window was reported as "this project publishes no releases
+  for these versions"** whatever caused it. Three causes reach it — the target
+  has no release, the *start* has no release, or the two are not in the order the
+  caller believes (a downgrade, or a backported patch line) — and only the first
+  makes that sentence true. A backport got told the project publishes nothing, by
+  the tool written to stop absence of evidence reading as evidence of absence.
+  `gap()`'s own comment claimed it said which; nothing did, and the branch had no
+  test. It now returns the reason with the window, and the reason is printed.
+
+- **Every commit body was fetched and discarded.** `commits()` asks for whole
+  messages because *"the body is where a fix says what it corrupted"* — rumdl's
+  Rust-source fix names `# [derive(Debug)]` only there — and the terminal then
+  told the reader to go and fetch the range again. The evidence file now carries
+  the full message for each **destructive-shaped** row, which are the ones
+  Phase 7 takes the verdict from; the rest stay subjects, because a body for all
+  266 of ruff's would be the wall that file exists to replace.
+
 - **`changelog.py`'s own first version reported `python/mypy` v2.3.0…v2.3.1 as
   carrying no fixes.** It carries four. Filtering on `fix(` is only honest where
   the project did the labelling, and mypy labels nothing — so the script now says

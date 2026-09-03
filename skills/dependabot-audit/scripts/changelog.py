@@ -348,8 +348,10 @@ def match_tag(version: str, published: list[str], slug: str) -> str | None:
     return None
 
 
-def gap(published: list[dict[str, str]], from_tag: str, to_tag: str) -> list[dict[str, str]]:
-    """The releases from `from_tag` (exclusive) to `to_tag` (inclusive).
+def gap(
+    published: list[dict[str, str]], from_tag: str, to_tag: str
+) -> tuple[list[dict[str, str]], str]:
+    """(the releases from `from_tag` exclusive to `to_tag` inclusive, why it is short).
 
     Sliced out of the API's own newest-first ordering rather than by parsing
     versions, so no PEP 440 comparison has to be right for this to be. When
@@ -357,21 +359,31 @@ def gap(published: list[dict[str, str]], from_tag: str, to_tag: str) -> list[dic
     are gathered -- which costs prose, never the range: `compare` is a call about
     two refs and does not consult this list at all. The fallible half of the
     ladder is the half the finding does not rest on.
+
+    **The second return value is the fix for this function's own defect.** An
+    empty window has three causes and they are not the same answer, but the first
+    version returned a bare `[]` for all of them and `main` printed *"this project
+    publishes no releases for these versions"* -- true for one cause and false for
+    the other two. A backported patch line got told the project publishes nothing,
+    by the tool written to stop absence of evidence reading as evidence of absence.
+    The comment here even claimed it said so; nothing did.
     """
     tags = [row["tag"] for row in published]
     if to_tag not in tags:
-        return []
+        return [], f"no published release for {to_tag}"
     top = tags.index(to_tag)
     if from_tag not in tags:
-        return [published[top]]
+        return [published[top]], f"no published release for {from_tag}; only {to_tag}'s notes"
     bottom = tags.index(from_tag)
     if bottom <= top:
         # Newest-first, so `from` at or above `to` means the versions are not in
-        # the order the caller believes -- a downgrade, or a backported patch
-        # line. Saying so beats returning an empty gap that reads as "nothing
-        # was released in between".
-        return []
-    return published[top:bottom]
+        # the order the caller believes -- a downgrade, or a backported patch line.
+        return [], (
+            f"{from_tag} is not older than {to_tag} in the published order -- "
+            "a downgrade or a backported line, so no window can be sliced. "
+            "The commit range below is unaffected; it asks about two refs."
+        )
+    return published[top:bottom], ""
 
 
 def changelog_at(slug: str, tag: str) -> tuple[str, str] | None:
@@ -610,6 +622,7 @@ def write_evidence(
     to_tag: str,
     blocks: list[str],
     missing: list[str],
+    bodies: dict[str, str],
 ) -> Path:
     """Save both halves of the comparison, so reading them is not a second fetch.
 
@@ -621,6 +634,18 @@ def write_evidence(
     The unreconciled list goes in the same file and **is never capped here**.
     The terminal shows the ranked head; this is the whole of it, so the cap
     shortens the reading and not the evidence.
+
+    **The destructive-shaped rows carry their full commit message.** `commits()`
+    fetches whole messages precisely because *"the body is where a fix says what
+    it corrupted"* -- rumdl's Rust-source fix names `# [derive(Debug)]` only
+    there -- and the first version of this file then dropped every body on the
+    floor and told the terminal reader to go and fetch the range again. A
+    docstring claiming what the code discards, in a file whose whole subject is
+    prose that does not match what landed.
+
+    Only the marked rows, because these are the ones Phase 7 takes the verdict
+    from; a body for all 266 of ruff's would be the wall this file exists to
+    replace.
     """
     out = scratch / f"changelog-{slug.replace('/', '-')}-{from_tag}-{to_tag}.md"
     header = [
@@ -638,6 +663,17 @@ def write_evidence(
             "",
             *(f"- {subject}" for subject in missing),
         ]
+    marked = [s for s in missing if DESTRUCTIVE.search(s) and bodies.get(s, "").strip()]
+    if marked:
+        tail += [
+            "",
+            f"## destructive-fix shape -- full commit message ({len(marked)})",
+            "",
+            "The shape SKILL.md Phase 2 sends you to find. The body is where the",
+            "data loss is described; the subject rarely names it.",
+        ]
+        for subject in marked:
+            tail += ["", f"### {subject}", "", "```", bodies[subject].strip(), "```"]
     out.write_text("\n".join(header + blocks + tail), encoding="utf-8")
     return out
 
@@ -681,13 +717,13 @@ def main() -> int:
     print()
 
     # --- rungs 1 and 2: what the project chose to say ------------------------
-    window = gap(published, from_tag, to_tag)
+    window, why = gap(published, from_tag, to_tag)
     blocks: list[str] = []
     for row in window:
         blocks.append(f"## rung 1 -- release notes, {row['tag']} ({row['at']})\n\n{row['body']}")
     print(f"rung 1 -- release notes: {len(window)} release(s) in the gap")
-    if not window:
-        print("         (none -- this project publishes no releases for these versions)")
+    if why:
+        print(f"         ({why})")
 
     found = changelog_at(slug, to_tag)
     sections = 0
@@ -709,6 +745,12 @@ def main() -> int:
     # --- rung 3: what actually landed ----------------------------------------
     messages = commits(slug, from_tag, to_tag)
     subjects, mode, chores = candidates(messages)
+    # Subject -> whole message, so the evidence file can carry the body of a
+    # marked row. First-wins: two commits can share a subject, and the earlier
+    # is the one the range lists first.
+    bodies: dict[str, str] = {}
+    for message in messages:
+        bodies.setdefault(subject_of(message), message)
     what = "of fix type" if mode == "conventional" else "after release chores"
     print(f"rung 3 -- commit range: {len(messages)} commit(s), {len(subjects)} {what}")
     if mode == "conventional":
@@ -726,7 +768,7 @@ def main() -> int:
     missing = sorted(
         (s for s in subjects if not reconciled(description_of(s), prose_lines)), key=rank
     )
-    saved = write_evidence(scratch, slug, from_tag, to_tag, blocks, missing)
+    saved = write_evidence(scratch, slug, from_tag, to_tag, blocks, missing, bodies)
     print(f"evidence saved to {saved}")
     print("Read it for `Security` sections -- no count here substitutes for that.")
     print()
