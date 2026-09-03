@@ -184,13 +184,30 @@ below does not reach it: that paragraph is keyed to `git worktree add` refusing,
 and Phase 0 never gets that far. `prune` is a no-op when state is clean, needs no
 path argument, and clears `pr-<N>` and `base-<N>` together.
 
-**An actions bump consumes neither worktree — do not create them for one.**
-`references/actions.md` reads the diff with `git show "pr-<N>:…"` throughout,
-Phase 4 reads release notes, and Phase 5's substitute is `gh run list`. Two
-worktrees added and removed for nothing, on every actions bump. The **fetch**
-stays either way: `git show` needs the ref, and Phase 7 still has a branch to
-remove. Where the ecosystem is not yet known, the scope diff settles it and costs
-one command.
+**Create the worktrees only where Phase 4 or Phase 5 will run.** They are the two
+phases that need a tree; every other read here reaches the PR through
+`git show` at a ref. Four paths run neither, and the condition is the phases
+rather than any one of the four:
+
+| Condition | Already on disk as | Why neither phase runs |
+|---|---|---|
+| an actions bump | `$ECOSYSTEM=github-actions` | `references/actions.md` reads the diff with `git show "pr-<N>:…"` throughout, Phase 4 reads release notes, and Phase 5's substitute is `gh run list` |
+| an ecosystem this plugin does not cover | `$ECOSYSTEM`, `$SCOPE_GATE=beyond` or `underivable` | Phase 1's boundary stops the audit before either |
+| a `pull` tier, a non-bot author, or a cross-repository head | `$MAY_EXECUTE=no` | both phases open by testing it for `yes` |
+| `--no-execute` | **not** `$MAY_EXECUTE` — the flag is yours, and `discover.py` never sees it | the arguments section defines the run as Phases 0–3 and 6–7 |
+| Phase 1 finding anything | `$SCOPE_GATE=beyond` | both phases name it as a reason to skip |
+
+Every row's input exists before the decision: `discover.py` writes `$ECOSYSTEM`,
+`$SCOPE_GATE` and `$MAY_EXECUTE` one command earlier, and the flag is a word in
+the invocation. **This rule used to name the ecosystem instead of the property**,
+and two live runs deviated from it independently — each reasoning out that an
+uncovered ecosystem consumes no worktree either, and each writing the gap up
+rather than acting on it (#111). Naming one of five conditions needed four more
+exceptions; the property is the same in all five, so it is stated once.
+
+The **fetch** stays on every path: `git show` needs the ref, Phase 6's merge
+simulation needs `pr-<N>`, and Phase 7 still has a branch to remove. Where the
+ecosystem is not yet known, the scope diff settles it and costs one command.
 
 And the part no script can read for you — the bot's configuration, which decides
 whether a currency gap in Phase 2 is lag or a deliberate hold, and the repo's
@@ -273,8 +290,8 @@ discarded unread rather than saved.
 | `$HEAD_SHA` | the full 40-character commit under audit |
 | `$BASE_SHA` | the merge base, from GitHub's own `compare` endpoint — never a local `git merge-base` against `$DEFAULT`, which collapses onto the head once the PR lands. **And whether it is the bot's branch point**, which is a separate answer |
 | `pr-<N>` | the fetched branch, registered in the **user's** repo |
-| `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it. Not created for an actions bump, which consumes no worktree |
-| `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below. Same exception |
+| `$SCRATCH/pr-<N>` | worktree at the PR's head — Phase 5 reproduces in it. **Created only where Phase 4 or Phase 5 will run**; the table above says how that is read off `$ECOSYSTEM`, `$SCOPE_GATE` and `$MAY_EXECUTE` before either phase is reached |
+| `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below. Same condition, and not a second exception |
 | the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
 | `$CREATED_AT` | when the PR was opened, ISO-8601. **Phase 2 compares release publish times against it** — the cooldown asks whether a release was three days old *then*, not now |
@@ -1119,6 +1136,63 @@ It is also the direction that costs least to be wrong in, and therefore gets
 least scrutiny: a false Hold looks conservative, so nobody goes back to check
 whether the bump was the cause.
 
+**A red check can be stale because the *base* moved, not the PR.** CI runs on
+`refs/pull/<N>/merge` — the base merged with the head — so a fix landing on the
+default branch invalidates every result here, with no event on the PR to
+re-trigger them. The labels above cannot see it: their comparison is the head
+against `pr-<N>^`, and **both of those commits are unchanged**. The row reads
+`attributable`, correctly, about a merge that no longer exists.
+
+The script detects it, and what it compares is a **timestamp, not a ref**: the
+base branch's tip committed *after* a settled check started means that check
+could not have contained it. It prints `THE BASE MOVED UNDER THESE RESULTS`,
+names every row that predates the tip, and marks those rows procedural. Measured
+on this plugin's own #99 — red `Lint & type-check` started 2026-09-01T01:14:41Z
+and the fix for what it caught landed on `main` 2d 16h later — and silent on the
+same PR after Dependabot rebased it, which is the half that keeps the signal
+worth reading.
+
+**Reading the merge ref instead does not work**, and it is the obvious thing to
+reach for. `refs/pull/<N>/merge` and `potentialMergeCommit` are recomputed
+lazily, and *querying* `mergeable` is what pokes them — so by the time either is
+read it usually names the current base while the check results still do not.
+Commit dates are not recomputed by being read, and the comparison needs no local
+`git`, which is what lets `ci_state.py` keep it.
+
+**Detecting it is the script's; settling it is yours.** Simulate the merge and
+read the result:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# Exit 1 is a conflicting merge — a real answer, and a different finding from
+# staleness. Do not read it as "could not run".
+MERGED=$(git merge-tree --write-tree "origin/$DEFAULT" "pr-<N>") \
+  || { echo "the merged tree conflicts — report that, not staleness" >&2; exit 1; }
+git show "$MERGED:<the file the failing check named>"
+```
+
+`--write-tree` writes a tree to the object store and prints its hash: nothing is
+checked out, nothing is merged, nothing from the PR is executed. **Reading out of
+that tree is read-only and available under `--no-execute`. Re-running the repo's
+gate against it is not** — a check-only gate still executes the bumped tool, which
+is the whole of `$MAY_EXECUTE`, so extracting the tree and gating it takes Phase 5's
+permission and belongs beside it in the report.
+
+Verified on #99 while writing this: `git merge-tree --write-tree origin/main
+pr-99` printed `7716296`, and reading `.pre-commit-config.yaml` out of that tree
+showed the bumped `rev: v0.16.5` **and** the `exclude: ^integration/fixtures/`
+that had landed on `main` underneath it — the reconciliation the red check could
+not have seen, in one command that ran no gate at all.
+
+**Say which kind of hold this is.** "Red, and the base still explains it" is a
+finding about the bump. "Red, and the base has moved" is a wait for a re-run, and
+the reader is owed the difference: the first names a cause, the second names a
+commit and an action. Phase 7's table has a row for each, and the second is
+**Hold, pending a re-run**.
+
 **Three CI-state traps the script cannot cover**, because each is about whether
 the answer is *current* rather than how to read it:
 
@@ -1186,6 +1260,12 @@ Verdicts are one of:
   on a **separate branch**. Never push onto the bot's branch; that stops it
   managing the PR.
 - **Hold** — a discrepancy, a regression, or a behavior change that breaks a gate.
+- **Hold, pending a re-run** — the PR cannot merge and nothing about the bump is
+  why: a result that describes a state which no longer exists. It is a *wait*,
+  not a finding, and the two are not interchangeable — this verdict owes the
+  reader the commit that invalidated the result and the action that settles it,
+  where **Hold** owes a cause. Reporting one as the other is how a report Holds a
+  bump on a defect somebody already fixed.
 
 ### Which evidence produces which verdict
 
@@ -1209,6 +1289,8 @@ there by exhaustion is indistinguishable in the report from no finding at all.
 | Actions: the tag rolled **behind** the proposed SHA | **Hold.** Close the bot's PR and replace it by hand; a bot cannot express a downgrade |
 | Phase 4: base differs, PR differs — the change is real and unabsorbed | **Hold** |
 | Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
+| A red required check the script marked **stale — the base moved under it** — and the simulated merge reads clean | **Hold, pending a re-run.** Name the base commit that invalidated it, say the merge was simulated and what the tree showed, and give the reader the re-run rather than a cause. The label on the row stays right about two commits that did not change and silent about the one that did, so do not report it as **attributable** |
+| A red required check the script marked **stale**, and the merged tree was **not** read | **Not a Hold on this bump** — the red is unattributed *and* may describe a merge that no longer exists, which are two separate reasons it cannot carry a verdict. Report the check, the base commit, and that the simulation was not made. If this row would decide the verdict, confidence is **low** |
 | A red **required** check labelled **attributable** | **Hold** — the PR cannot merge either way. But read the failing step's log at **both commits** before the report says the bump *caused* it: green-then-red is consistent with the bump, not proof, and the wider the interval the weaker the claim |
 | A red required check labelled **pre-existing** | **Not a Hold on this bump.** Report it as its own finding, take the verdict from the remaining evidence, and say the PR is unmergeable until someone fixes it |
 | A red required check labelled **underivable** | **Not a Hold on this bump** — nothing established the cause, and a Hold that rests on an unattributed red row is correct only by accident. Report the red check *and* that the comparison could not be made; the PR is unmergeable until it is fixed. If this row would decide the verdict, confidence is **low** |

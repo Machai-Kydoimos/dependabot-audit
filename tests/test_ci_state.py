@@ -33,14 +33,27 @@ from ci_state import cli, main
 HEAD = "h" * 40
 PARENT = "p" * 40
 BASE = "b" * 40
+# The base branch's tip, which is not $BASE_SHA: the merge base is where the
+# PR branched, this is where the branch it merges into has got to since.
+BASE_TIP = "t" * 40
 
 
-def check_run(name: str, conclusion: str, *, required: bool = False) -> dict[str, Any]:
-    return {"name": name, "conclusion": conclusion, "isRequired": required}
+# After `page`'s default `base_committed`, so the ordinary context began *after*
+# the base branch last moved and the staleness comparison stays quiet. A test
+# about a moved base moves the base, not this.
+STARTED = "2026-08-01T01:00:00Z"
 
 
-def status_context(context: str, state: str, *, required: bool = False) -> dict[str, Any]:
-    return {"context": context, "state": state, "isRequired": required}
+def check_run(
+    name: str, conclusion: str | None, *, required: bool = False, started: str | None = STARTED
+) -> dict[str, Any]:
+    return {"name": name, "conclusion": conclusion, "isRequired": required, "startedAt": started}
+
+
+def status_context(
+    context: str, state: str, *, required: bool = False, started: str | None = STARTED
+) -> dict[str, Any]:
+    return {"context": context, "state": state, "isRequired": required, "createdAt": started}
 
 
 def page(
@@ -53,8 +66,20 @@ def page(
     rollup_state: str = "SUCCESS",
     oid: str = HEAD,
     committed: str = "2026-08-01T00:00:00Z",
+    base_ref: str = "main",
+    base_oid: str | None = BASE_TIP,
+    base_committed: str | None = "2026-07-01T00:00:00Z",
 ) -> dict[str, Any]:
-    """One GraphQL response. `total` defaults to the node count (nothing truncated)."""
+    """One GraphQL response. `total` defaults to the node count (nothing truncated).
+
+    `base_committed` defaults to a month *before* the contexts start, which is the
+    ordinary case: the base branch has not moved since CI ran. A test asking about
+    a moved base pushes it past the start times, and `None` on either base field
+    is the shape a repository with an unreadable base ref returns.
+    """
+    target: dict[str, Any] | None = None
+    if base_oid is not None or base_committed is not None:
+        target = {"oid": base_oid, "committedDate": base_committed}
     return {
         "data": {
             "repository": {
@@ -62,6 +87,7 @@ def page(
                     "mergeable": "MERGEABLE",
                     "mergeStateStatus": merge_state,
                     "reviewDecision": review,
+                    "baseRef": {"name": base_ref, "target": target},
                     "commits": {
                         "nodes": [
                             {
@@ -676,3 +702,141 @@ class TestNoCallIsMadeForAnAnswerNothingReads(CiStateHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAStaleRedCanBelongToAMergeThatMoved(CiStateHarness):
+    """A red check can be invalidated by the **base** moving, with no event on
+    the PR to re-trigger it.
+
+    CI runs on `refs/pull/<N>/merge` — the base merged with the head — so a fix
+    landing on the default branch invalidates the result while nothing on the PR
+    changes. `attribute()` cannot see it: its comparison is the head against
+    `pr-<N>^`, and **both of those commits are unchanged**. It labels the row
+    `attributable`, correctly, about a merge that no longer exists.
+
+    Measured on this repo's own #99, which discriminates in both directions:
+
+        pre-fix head 0ab4088   Lint & type-check FAILURE, started 2026-09-01T01:14:41Z
+                               base tip 09911c1 landed  2026-09-03T17:43:31Z
+                               -> 2d 16h too early to contain its own fix
+
+        after the rebase       checks started           2026-09-03T18:43:34Z
+                               base tip 515653a landed  2026-09-03T18:39:15Z
+                               -> current; the comparison must stay quiet
+
+    A report that stopped at Phase 6 carried a substantive Hold on a PR whose
+    only blocker had already been repaired.
+
+    Why the timestamp and not the merge ref: `potentialMergeCommit` and
+    `refs/pull/<N>/merge` are both recomputed *lazily*, and querying `mergeable`
+    is what pokes them — so by the time this script reads one it usually names
+    the current base while the check results still do not. The commit dates are
+    not recomputed by being read.
+    """
+
+    def _moved(self, nodes, **kw):
+        """A base tip that landed *after* the contexts started."""
+        return page(nodes, base_committed="2026-08-02T00:00:00Z", **kw)
+
+    def test_a_base_that_landed_after_the_check_is_reported(self):
+        fake, _ = self._fake_gh(
+            [self._moved([check_run("Lint & type-check", "FAILURE", required=True)])],
+            runs={PARENT: [("Lint & type-check", "SUCCESS")]},
+            dates={PARENT: "2026-07-30T00:00:00Z"},
+        )
+        report = self._json(fake)
+        self.assertEqual(report["base_drift"]["state"], "yes")
+        self.assertIn("Lint & type-check", report["base_drift"]["stale"])
+
+    def test_the_attributable_row_says_the_merge_no_longer_exists(self):
+        """The label stays `attributable` — both commits it compares are
+        unchanged, so nothing about it is wrong. What is missing is that the
+        result describes a merge that has been superseded, and that is what a
+        reader takes the Hold from."""
+        fake, _ = self._fake_gh(
+            [self._moved([check_run("Lint & type-check", "FAILURE", required=True)])],
+            runs={PARENT: [("Lint & type-check", "SUCCESS")]},
+            dates={PARENT: "2026-07-30T00:00:00Z"},
+        )
+        _, out, _ = self._run(fake)
+        self.assertIn("ATTRIBUTABLE", out, "the label itself is still correct")
+        # Sliced at the row, not searched whole. The first draft of this asserted
+        # over the entire output and went green against a `render()` with the
+        # row-level line deleted -- the block-level warning higher up matched it.
+        # A guard satisfied by a different print is the "written from the fix"
+        # failure CONTRIBUTING names, and it took a mutation run to see it.
+        # `\s+` and not a space: `render` wraps, and this phrase straddles a
+        # newline. A literal-space regex reports the sentence as absent.
+        row = out[out.index("  RED  ") :].lower()
+        self.assertRegex(
+            row,
+            r"merge that no longer\s+exists",
+            "the red row survives with no sign that the base moved under it, which "
+            "is the report that Held #99 on a defect already fixed",
+        )
+        self.assertIn("procedural", row, "and it must say which kind of Hold that makes")
+
+    def test_a_base_older_than_the_checks_stays_quiet(self):
+        """The other half of the #99 measurement. A comparison that fires on
+        every PR of an active repository is one a reader learns to skip."""
+        fake, _ = self._fake_gh(
+            [page([check_run("Lint & type-check", "FAILURE", required=True)])],
+            runs={PARENT: [("Lint & type-check", "SUCCESS")]},
+            dates={PARENT: "2026-07-30T00:00:00Z"},
+        )
+        report = self._json(fake)
+        self.assertEqual(report["base_drift"]["state"], "no")
+        _, out, _ = self._run(fake)
+        self.assertNotRegex(out.lower(), r"base .*moved|merge that no longer exists")
+
+    def test_an_unreadable_base_is_underivable_rather_than_current(self):
+        """Third state, and it is the one that matters. "Could not compare" must
+        not arrive as "every check included the current base" — the same
+        asymmetry as `$SCOPE_GATE` and the truncated context list."""
+        fake, _ = self._fake_gh(
+            [page([check_run("t", "FAILURE", required=True)], base_oid=None, base_committed=None)]
+        )
+        report = self._json(fake)
+        self.assertEqual(report["base_drift"]["state"], "underivable")
+
+    def test_a_settled_context_with_no_start_time_is_underivable(self):
+        """A null `startedAt` on a check that has already concluded leaves the
+        comparison unmade for that row, and "unmade" is not "current"."""
+        fake, _ = self._fake_gh([page([check_run("t", "FAILURE", required=True, started=None)])])
+        report = self._json(fake)
+        self.assertEqual(report["base_drift"]["state"], "underivable")
+
+    def test_a_queued_context_with_no_start_time_does_not_force_underivable(self):
+        """A check that has not started has no start time and never will until it
+        does. Reading that as underivable would fire on every PR with a pending
+        job, which retires the signal."""
+        fake, _ = self._fake_gh([
+            page([
+                check_run("done", "SUCCESS", required=True),
+                check_run("queued", None, required=True, started=None),
+            ])
+        ])  # fmt: skip
+        report = self._json(fake)
+        self.assertEqual(report["base_drift"]["state"], "no")
+
+    def test_drift_alone_does_not_invent_a_finding(self):
+        """Exit 1 means the CI state carries a finding. An all-green PR on a repo
+        whose default branch moved has none, and flipping the code there would
+        make every audit of an active repository exit 1."""
+        fake, _ = self._fake_gh([self._moved([check_run("t", "SUCCESS", required=True)])])
+        code, out, _ = self._run(fake)
+        self.assertEqual(code, 0)
+        self.assertIn("base", out.lower(), "quiet exit, but the reader still gets told")
+
+    def test_a_status_context_is_compared_on_created_at(self):
+        """The two context shapes name the field differently — `CheckRun` has
+        `startedAt`, `StatusContext` has `createdAt` — and reading only the first
+        leaves every status context permanently underivable."""
+        fake, _ = self._fake_gh(
+            [self._moved([status_context("ci/legacy", "FAILURE", required=True)])],
+            statuses={PARENT: [("ci/legacy", "SUCCESS")]},
+            dates={PARENT: "2026-07-30T00:00:00Z"},
+        )
+        report = self._json(fake)
+        self.assertEqual(report["base_drift"]["state"], "yes")
+        self.assertIn("ci/legacy", report["base_drift"]["stale"])

@@ -303,6 +303,20 @@ class SkillHarness(unittest.TestCase):
         parts.extend(section for _, section in self._handoffs(number))
         return "\n".join(parts)
 
+    def flat(self, number: int) -> str:
+        """`material`, lowercased, with every run of whitespace collapsed to one
+        space.
+
+        `SKILL.md` is hard-wrapped, so any guard matching more than four or five
+        words in a row is matching across a newline — and the wrap point moves
+        whenever a word earlier in the paragraph changes. Three guards written
+        the obvious way failed on their own fixed prose, and `.{0,400}` between
+        two phrases silently matches nothing at all, because `re.search` has no
+        DOTALL here. Flatten once, in the harness, rather than sprinkling the
+        whitespace class through every guard.
+        """
+        return re.sub(r"\s+", " ", self.material(number)).lower()
+
     def _scan(self, pattern):
         """{match -> [phase numbers it appears in]}, in phase order."""
         found: dict[str, list[int]] = {}
@@ -840,19 +854,33 @@ class TestTheAttributableLabelIsHedgedLikeTheOthers(SkillHarness):
         )
 
     def test_phase_7s_hold_row_does_not_assert_causation_by_itself(self):
+        """The row that turns an attributable red into a bare **Hold**.
+
+        Selected on the *verdict* cell and not on the word "attributable"
+        anywhere in the row, and checked for every match rather than the first.
+        The looser version took whichever attributable row came first in the
+        table and stopped, so a later row inserted above it -- the stale-base
+        pair, whose whole content is "do not report this as attributable" --
+        satisfied the guard on behalf of the row it was written for.
+        """
+        found = 0
         for table in tables(dict(self.phases)[7]):
             for row in table:
-                if "attributable" in row.lower() and "hold" in row.lower():
-                    self.assertIn(
-                        "both commits",
-                        row.lower(),
-                        "an evidence table saying a check is red — true — while "
-                        "implying a cause it never established is the same "
-                        "family as the rewritten base and the hand-joined "
-                        "required list, and this is the row that acts on it",
-                    )
-                    return
-        self.fail("Phase 7 has no verdict row for an attributable red check")
+                cells = [c.strip().lower() for c in row.split("|")]
+                if len(cells) < 3 or "attributable" not in cells[1]:
+                    continue
+                if not cells[2].startswith("**hold**"):
+                    continue
+                found += 1
+                self.assertIn(
+                    "both commits",
+                    row.lower(),
+                    "an evidence table saying a check is red — true — while "
+                    "implying a cause it never established is the same "
+                    "family as the rewritten base and the hand-joined "
+                    "required list, and this is the row that acts on it",
+                )
+        self.assertTrue(found, "Phase 7 has no verdict row for an attributable red check")
 
 
 class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
@@ -4009,4 +4037,173 @@ class TestACountAttributedToAFileClassIsDerived(SkillHarness):
             r"unsplit",
             "the rule must leave quoting the tool's own number available, or it "
             "reads as a demand to re-derive every count in the report",
+        )
+
+
+class TestTheWorktreeCarveOutNamesTheCondition(SkillHarness):
+    """Phase 0 created two worktrees on paths that consume neither.
+
+    The carve-out was right and its condition was wrong: it said *an actions
+    bump*, when what makes the worktrees pointless is that **Phases 4 and 5 will
+    not run** -- which is also true of an uncovered ecosystem, of a `pull` tier,
+    of `--no-execute`, and of Phase 1 finding anything.
+
+    Two live runs on 2026-09-03 hit the uncovered-ecosystem case, neither created
+    the worktrees, and both wrote it up as a gap rather than acting on it -- the
+    shape #102 records as the one that precedes a defect. Filed as #111.
+    """
+
+    def carve_out(self) -> str:
+        return dict(self.phases)[0].lower()
+
+    def test_the_rule_is_stated_as_a_condition_on_the_phases(self):
+        self.assertRegex(
+            self.carve_out(),
+            r"only where phase 4 or phase 5 will run",
+            "Phase 0 states the worktree carve-out as an ecosystem rather than as "
+            "the property that makes it true, so every other path that skips both "
+            "phases has to be reasoned out again by each run",
+        )
+
+    def test_the_uncovered_ecosystem_path_is_covered(self):
+        """The case both deviations actually hit. A rule naming only actions
+        leaves it to the run, and both runs got it right and said so, which is
+        more maintainer attention than the fix costs."""
+        rule = self.carve_out()
+        start = rule.index("only where phase 4 or phase 5 will run")
+        table = rule[start : start + 2000]
+        self.assertIn(
+            "does not cover",
+            table,
+            "the carve-out never names the uncovered-ecosystem path, which is the "
+            "one this repo generates monthly and the one both deviations hit",
+        )
+        self.assertIn(
+            "--no-execute",
+            table,
+            "nor the flag path, which the arguments section already defines as Phases 0-3 and 6-7",
+        )
+
+    def test_the_flag_is_not_confused_with_the_permission_tier(self):
+        """`--no-execute` and `$MAY_EXECUTE` are different inputs and #111's own
+        text conflated them. `discover.py` sets `MAY_EXECUTE` from the author,
+        the cross-repository check and `push` -- it never sees the flag, so a
+        rule that reads the flag out of the variable is reading a value nothing
+        writes."""
+        rule = self.carve_out()
+        start = rule.index("only where phase 4 or phase 5 will run")
+        self.assertRegex(
+            rule[start : start + 2000],
+            r"the flag is yours|`discover\.py` never sees it|never sees it",
+            "the carve-out sources `--no-execute` from `$MAY_EXECUTE`, which "
+            "`discover.py` does not derive from the flag",
+        )
+
+    def test_the_outputs_table_does_not_keep_the_narrow_exception(self):
+        """The rule lives in two places -- the paragraph and the row that hands
+        each worktree to a later phase -- and a reader following the table alone
+        gets whichever one was not updated."""
+        for table in tables(dict(self.phases)[0]):
+            for row in table:
+                if "$SCRATCH/pr-<N>" in row or "$SCRATCH/base-<N>" in row:
+                    self.assertNotIn(
+                        "actions bump",
+                        row,
+                        "the Phase 0 outputs row still carves out the ecosystem "
+                        "rather than the condition, so the two statements of the "
+                        "same rule disagree",
+                    )
+
+
+class TestARedCheckCanBeStaleBecauseTheBaseMoved(SkillHarness):
+    """CI runs on `refs/pull/<N>/merge`, so the base can invalidate a result.
+
+    A fix landing on the default branch makes every check on the PR describe a
+    merge that no longer exists, and nothing on the PR re-triggers them.
+    Attribution cannot see it -- it compares the head against `pr-<N>^` and both
+    of those commits are unchanged -- so the row reads `attributable`, correctly,
+    about a merge that has been superseded.
+
+    Observed on this plugin's own #99: the fix merged to `main` as `09911c1` at
+    2026-09-03T17:43:31Z while the red `Lint & type-check` had started
+    2026-09-01T01:14:41Z, 2d 16h earlier. A report that stopped at Phase 6
+    carried a substantive Hold on a PR whose only blocker had been repaired.
+    Filed as #110.
+    """
+
+    def test_phase_6_names_the_trap(self):
+        self.assertRegex(
+            self.flat(6),
+            r"base\*? moved|base.{0,20}moved",
+            "Phase 6 never says a red check can be invalidated by the base, so a "
+            "run reads the attribution as the whole answer",
+        )
+
+    def test_the_comparison_is_a_timestamp_and_the_prose_says_why(self):
+        """The obvious signal is the merge ref, and it does not work: both
+        `refs/pull/<N>/merge` and `potentialMergeCommit` are recomputed lazily
+        and *querying* `mergeable` is what pokes them, so they name the current
+        base while the results still do not. Without the reason recorded, the
+        next reader reaches for the ref and measures nothing."""
+        self.assertRegex(
+            self.flat(6),
+            r"recomputed lazily",
+            "Phase 6 does not say why the merge ref is the wrong signal, so the "
+            "obvious replacement for the timestamp reads as an improvement",
+        )
+
+    def test_the_detection_is_in_the_script_not_only_the_prose(self):
+        """CONTRIBUTING: a trap a script refuses cannot be skipped, one in prose
+        is silently skipped. The comparison needs no local git, so nothing about
+        `ci_state.py` being network-only kept it out."""
+        code = self.reachable(6)
+        self.assertIn(
+            "base_drift",
+            code,
+            "the staleness check lives only in prose, which is the weakest of the "
+            "three levers and the one this repo shrank Phase 6 to get away from",
+        )
+        # Mutation-checked, and the results are worth recording because two of
+        # them are negative. Deleting `base_drift` and replacing the call with a
+        # constant leaves this green -- `render` still names the key, so the
+        # string survives. Asserting the query fields instead (`committedDate`,
+        # `startedAt`, `createdAt`) is no better: each occurs elsewhere in the
+        # same reachable code, so deleting any one from the query passes too.
+        #
+        # What it does catch is the case it exists for: `ci_state.py` at its
+        # pre-fix revision, prose written and script never touched. That is the
+        # forward-reference class this whole file is about. **Whether the
+        # mechanism still works is `test_ci_state.py`'s job** -- a constant in
+        # place of the call fails six cases there -- and adding assertions here
+        # that cannot fail would be coverage rather than a guard.
+
+    def test_the_verdict_vocabulary_carries_the_distinction(self):
+        """ "Red, and the base still explains it" and "red, but the base moved"
+        are different recommendations: the first owes a cause, the second owes a
+        commit and an action. Collapsing them is what Held #99."""
+        body = self.flat(7)
+        self.assertIn(
+            "hold, pending a re-run",
+            body,
+            "Phase 7 lists no verdict for a stale red, so the only word available "
+            "for one is Hold — which asserts a cause nothing established",
+        )
+        self.assertRegex(
+            body,
+            r"pending a re-run.{0,400}(wait|not a finding)",
+            "the fourth verdict is listed without saying how it differs from a "
+            "Hold, which is the whole reason it exists",
+        )
+
+    def test_reading_the_simulated_tree_is_separated_from_re_gating_it(self):
+        """#110 proposed that the whole check works under `--no-execute` "for any
+        gate that is itself read-only". Reading a tree is read-only; *running*
+        the bumped tool against it is execution, which is what `$MAY_EXECUTE`
+        gates. Recording the looser version would put a Phase 5 action inside a
+        flag that exists to forbid it."""
+        self.assertRegex(
+            self.flat(6),
+            r"re-running the repo's gate against it is not",
+            "Phase 6 offers the merge simulation without separating the read from "
+            "the re-gate, so a --no-execute run is invited to execute",
         )
