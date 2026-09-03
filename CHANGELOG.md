@@ -11,6 +11,113 @@ patch.
 
 ## [Unreleased]
 
+## [0.37.0] — 2026-09-03
+
+Closes [#104](https://github.com/Machai-Kydoimos/dependabot-audit/issues/104),
+[#105](https://github.com/Machai-Kydoimos/dependabot-audit/issues/105) and
+[#106](https://github.com/Machai-Kydoimos/dependabot-audit/issues/106) — three
+defects found by running this plugin against its own repository's open Dependabot
+PRs, #98 and #99. Both are `pre-commit` bumps, which is the ecosystem this plugin
+does not cover, so all three sit on the boundary path rather than in the verified
+one.
+
+**Minor, not patch.** Phase 1's boundary report gains two phases it never named,
+Phase 4 gains a step it did not require, and the report shape gains a rule about
+what a row may assert.
+
+### Changed
+
+- **Phase 1 now says which phases survive the boundary, and why** (#106). The
+  passage told an uncovered ecosystem to "say so and stop … do not improvise",
+  then fifteen lines later to report "what Phase 0's classification and Phase 6's
+  CI state established". That enumeration omitted Phases 2 and 3, which are
+  equally ecosystem-independent — so the two readings disagreed and **a run
+  taking either was equally compliant**.
+
+  Measured on #98: the run performed the currency read and the vulnerability
+  queries, established that v2.3.1 was the true latest of both the mirror and
+  `python/mypy` and that OSV and GHSA held nothing for `mypy` at any version, and
+  then spent a deviation row defending them as improvisation. On a PR with six
+  green required contexts that evidence is most of what a reader weighing a
+  boundary Hold has to go on.
+
+  The line is now stated as a property rather than a list: Phases 2 and 3 ask a
+  registry and an advisory database questions that are **falsifiable against the
+  same public source the reader can open**, and neither certifies that an
+  artifact is what the registry says it is. That certification is Phase 1's
+  alone, and it is what the boundary withholds. The Cargo failure the warning
+  comes from was an improvised *verifier* reporting green about artifact
+  integrity — not a currency read.
+
+- **Phase 4 must reconcile an exclusion the bump defeated** (#105). Where the
+  repo configures an exclusion covering files the bump newly reaches, and they
+  are rewritten anyway, the audit now establishes *why* before reporting the
+  cause. Two check-only runs settle it: once as the gate invokes the tool, once
+  forced to the repo-root manifest.
+
+  Measured on #99. `pyproject.toml` carried `extend-exclude = ["integration/fixtures"]`
+  with a comment saying it existed to stop `ruff format` tidying six Markdown
+  fixtures — "the evidence erased by the tool it is evidence about" — and it had
+  never done that job. `integration/fixtures/ruff-md-fences/pyproject.toml` is
+  the nearest config for files beneath it and shadows the root's. Forced to the
+  root, ruff reports `warning: No Python files found under the given path(s)`;
+  left to resolve normally, `1 file would be reformatted`. The old report named
+  the cause correctly and never reconciled it, **which sends the reader to the
+  wrong file**: the pattern is right, and the remedy is at the hook layer.
+
+  **The rule explicitly survives Phase 4 being skipped**, because the bump that
+  produced it was an ecosystem that skips Phase 4. The contradiction arrived in a
+  CI log instead. A Phase-4-only rule would not have fired on its own case.
+
+### Fixed
+
+- **A report could re-label a tool's count as a file class nobody measured**
+  (#104). `references/report-template.md` opened with "every row is something you
+  *ran*", which governs whether a row ran and not arithmetic performed inside
+  one — so it passed against this.
+
+  Measured on #99: `6 files reformatted, 23 files left unchanged` was reported as
+  "the other 23 markdown files it also newly scanned", on a tree holding 14 `.py`
+  and 15 `.md`. The unchanged 23 were 14 Python and **9** Markdown. The
+  conclusion it supported — that the repo's own documentation is newly in scope
+  and currently passes — was correct, and the evidence offered for it was 2.5x
+  larger than anything measured, in the one row a reader uses to size blast
+  radius. Either derive the split, or quote the tool's number unsplit; rows that
+  quote a tool verbatim are the ones worth keeping, so the rule is narrow on
+  purpose.
+
+### The replay
+
+`/dependabot-audit 99` under `claude -p --plugin-dir`, in a fresh context against
+the unreleased tree — verified from the transcript, whose first call resolves
+`discover.py` under the working tree rather than the installed 0.36.0 cache. 42
+tool calls, 2 denials, both multi-line commands re-issued as singles.
+
+| Changed here | What the run did with it |
+|---|---|
+| § Phase 1, the boundary enumeration | the deviation row for running Phases 2 and 3 is now classed **`correct`**, citing the new text. On #98 the identical work was a `prose gap` row |
+| § Phase 4, the reconciliation | performed, check-only, and reported in the Behavior-change row: run 1 `6 files would be reformatted`, run 2 forced to the root manifest `warning: No Python files found under the given path(s)`. The report's own words: *"the reconciliation SKILL.md owes there **was** performed"* |
+| § Phase 4, surviving a skipped Phase 4 | the row that carried it reads *"Phase 4 not run — uncovered ecosystem. The Phase 4-shaped observation arrived in the CI log instead"* |
+| § report shape, the count rule | *"The CI run's own summary line, quoted unsplit: `6 files reformatted, 23 files left unchanged`"* — and, separately derived, the nine newly-scoped Markdown files, `9 files already formatted` |
+
+**And the verdict changed, correctly.** #108 had landed the exclusion an hour
+earlier, so the red check was stale with respect to `main`. The run found that
+itself, simulated the merge with `git merge-tree --write-tree` rather than
+merging anything, measured the merged tree green, and returned *"hold —
+procedurally, until CI re-runs"* at **medium** confidence instead of the
+substantive Hold the same evidence produced before. Dependabot then rebased #99
+onto `main` while the follow-up issues were being written, and the PR went
+`CLEAN` — confirming the prediction the simulation had made.
+
+Two findings came out of the replay that are not fixed here, filed as
+[#110](https://github.com/Machai-Kydoimos/dependabot-audit/issues/110) — a red
+check can be stale because the base moved rather than the PR, which Phase 6's
+head-versus-parent comparison structurally cannot see — and
+[#111](https://github.com/Machai-Kydoimos/dependabot-audit/issues/111), Phase 0's
+worktree carve-out naming the ecosystem instead of the condition, now raised by
+two independent runs.
+
+
 ## [0.36.0] — 2026-09-01
 
 Closes [#94](https://github.com/Machai-Kydoimos/dependabot-audit/issues/94) and
@@ -4152,7 +4259,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.33.0...v0.34.0

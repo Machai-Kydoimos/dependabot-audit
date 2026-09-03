@@ -4,6 +4,19 @@ Evidence first, recommendation as its conclusion. Every row is something you
 *ran*, not something you assumed — if a phase was skipped, say so in the row
 rather than omitting it.
 
+**A count attributed to a class of file has to come from a command.** Quoting a
+gate's own summary is always safe; splitting one is not. `6 files reformatted, 23
+files left unchanged` says nothing about *which* 23, and re-reporting them as 23
+files of the type the finding happens to be about asserts a measurement nobody
+made. Either derive the split — one check-only invocation over that file list —
+or quote the number the tool printed, unsplit. Measured on a `ruff-pre-commit`
+v0.16.5 bump: the report called those 23 "markdown files", while the tree held 14
+`.py` and 15 `.md`, so the unchanged 23 were 14 Python and 9 Markdown. The
+conclusion it supported — that the repo's own documentation was newly in scope
+and passing — was correct, and the evidence offered for it was 2.5x larger than
+anything that had been measured. The rule is narrow on purpose: rows that quote a
+tool verbatim are the ones worth keeping.
+
 ---
 
 # Dependabot Audit — PR #\<N>

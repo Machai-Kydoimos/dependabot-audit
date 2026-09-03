@@ -621,8 +621,26 @@ and the refusal to report `CLEAN` on an empty selection.
 `Cargo.lock`, `poetry.lock`, `package-lock.json`, `Pipfile.lock`, `go.sum`,
 `go.mod`, `yarn.lock`, `pnpm-lock.yaml` or a `pyproject.toml`, it exits **2**
 naming the format. Report that as the boundary it is, not as a failed audit: the
-ecosystem-independent phases still ran, so say what Phase 0's classification and
-Phase 6's CI state established, and name plainly what was not checked.
+ecosystem-independent phases still ran, so say what Phase 0's classification,
+Phase 2's currency read, Phase 3's vulnerability queries and Phase 6's CI state
+established, and name plainly what was not checked.
+
+**Phases 2, 3 and 6 run for an uncovered ecosystem. Phases 1, 4 and 5 do not.**
+The line is not which phases happen to be ecosystem-independent — it is what a
+phase *asserts*. Phase 2 asks a registry which version is newest and Phase 3 asks
+a vulnerability database what it holds; both answers are falsifiable against the
+same public source the reader can open, and neither claims that an artifact is
+what the registry says it is. That claim is Phase 1's alone, and it is the one
+the boundary withholds. The Cargo failure above was an improvised **verifier**
+reporting green about artifact integrity — not a currency read, which is why the
+warning does not reach these two.
+
+Left unsaid, this cost a run a deviation row: on a `pre-commit` bump the
+enumeration above named only Phases 0 and 6, so running Phase 2 and Phase 3 had
+to be defended as improvisation. Both were load-bearing — the proposed version
+was the true latest of both the mirror and the tool it pins, and the advisory
+databases were empty at every version, which is most of what a reader weighing a
+boundary Hold has to go on.
 
 ## Phase 2 — Currency
 
@@ -801,6 +819,26 @@ Python fences inside Markdown. Nothing in the pass/fail answer moved. Diffing th
 two versions' *output* does not rescue it either, because a bump changes output
 format about as often as behavior — which is why `gate_diff.py` compares what
 each run did to the files.
+
+**A gate that rewrites files the repo excludes has defeated the exclusion, and
+that is a finding about the exclusion as much as about the tool.** Where the repo
+configures an exclusion covering files the bump newly reaches, and they were
+rewritten anyway, establish *why* before reporting the cause. Two check-only runs
+settle it: once as the gate invokes the tool, then again forced to the
+repo-root manifest with the tool's own `--config`-style flag. If only the second
+excludes the file, the root config is being shadowed — a manifest nested inside
+the excluded directory is the nearest one for files beneath it, so the root's
+exclusion is never consulted. Measured on a `ruff-pre-commit` v0.16.2 → v0.16.5
+bump, where `extend-exclude` was believed to protect six Markdown fixtures and
+never had: the nearest config reformatted them, the root config reported no files
+at all. Reported without that, the reader goes looking for a wrong exclusion
+pattern, and the remedy is in a different file from the one they open.
+
+**The contradiction can surface outside this phase.** An uncovered ecosystem
+skips Phase 4 entirely, and the same observation — a gate rewrote files the
+config declares out of scope — then arrives in a CI log instead. The
+reconciliation is owed there too. It is two read-only commands and it runs
+nothing from the PR, so `--no-execute` is not a reason to skip it.
 
 **"Inert here" is a result, not silence.** Reaching it deliberately is this phase
 working; reaching it by not looking is the failure.

@@ -3872,3 +3872,141 @@ class TestTheDeviationHandBackCarriesItsEvidence(SkillHarness):
             "an unproven row that reaches the issue tracker unverified is how the "
             "same wrong cause was filed twice",
         )
+
+
+class TestTheBoundaryNamesWhichPhasesSurviveIt(SkillHarness):
+    """An uncovered ecosystem left the reader to infer which phases still run.
+
+    Phase 1 said "say so and stop. Do not improvise a procedure from the shape of
+    the ones that are here", and fifteen lines later that the boundary report
+    should carry "what Phase 0's classification and Phase 6's CI state
+    established". That enumeration omitted Phases 2 and 3, which are also
+    ecosystem-independent, so two runs taking opposite paths both looked
+    compliant.
+
+    Measured on a live `pre-commit` bump: the run ran currency and vulnerability
+    checks, found the proposed version was the true latest of both the mirror and
+    the tool it pins and that the advisory databases were empty at every version,
+    and then had to spend a deviation row defending them as improvisation. The
+    failure mode here is silence, so the guard asks that the passage commits --
+    either way would fix it, and naming them is the way it was fixed.
+    """
+
+    def phase1(self) -> str:
+        return self.material(1).lower()
+
+    def test_the_boundary_names_phases_2_and_3(self):
+        body = self.phase1()
+        for token in ("phase 2", "phase 3"):
+            self.assertIn(
+                token,
+                body,
+                f"Phase 1's boundary passage never names {token}, so whether it runs "
+                "for an uncovered ecosystem is left to each run to decide",
+            )
+
+    def test_the_boundary_says_what_admits_them(self):
+        """A list without its reason is a list the next ecosystem cannot extend.
+
+        The property is that neither phase certifies artifact integrity -- which
+        is what separates them from the improvised Cargo verifier the warning is
+        actually about. Without it the enumeration reads as an arbitrary pair.
+        """
+        self.assertRegex(
+            self.phase1(),
+            r"falsifiab",
+            "the boundary lists which phases survive it but not the property that "
+            "admits them, so it cannot be applied to a phase not on the list",
+        )
+
+
+class TestADefeatedExclusionIsReconciled(SkillHarness):
+    """A gate rewrote files the repo's own config declared excluded.
+
+    Measured on `ruff-pre-commit` v0.16.2 -> v0.16.5: the hook's `types_or` gained
+    `markdown`, six Markdown fixtures were reformatted, and `extend-exclude` in
+    the root manifest -- whose comment said it existed to prevent exactly that --
+    did not stop it, because a manifest nested in the excluded directory is the
+    nearest config for files beneath it. The report named the cause correctly and
+    never reconciled it against the exclusion, which sends the reader to the
+    wrong file: the remedy is at the hook layer, not in the pattern they would go
+    and inspect.
+    """
+
+    def phase4(self) -> str:
+        return self.material(4).lower()
+
+    def test_phase_4_requires_the_exclusion_be_reconciled(self):
+        self.assertRegex(
+            self.phase4(),
+            r"exclusion",
+            "Phase 4 never mentions an exclusion being defeated, so a gate that "
+            "rewrites excluded files reads as ordinary reformatting",
+        )
+
+    def test_the_reconciliation_is_a_measurement_not_a_judgement(self):
+        """Two runs settle it; 'consider whether' would not.
+
+        The first draft of this rule said to "establish why" and stopped there,
+        which is the shape that produced the defect -- the run did establish a
+        why, just not this one.
+        """
+        self.assertRegex(
+            self.phase4(),
+            r"shadow",
+            "the rule names no mechanism, so it cannot distinguish a shadowed root "
+            "config from a wrong pattern -- the two remedies are in different files",
+        )
+
+    def test_the_rule_survives_phase_4_being_skipped(self):
+        """The bump that motivated it was an ecosystem that skips Phase 4.
+
+        The contradiction arrived from a CI log instead, so a rule that only
+        applies when Phase 4 runs would not have fired on the case it came from.
+        """
+        self.assertRegex(
+            self.phase4(),
+            r"--no-execute is not a reason to skip it|surface outside this phase",
+            "the reconciliation is owed even where Phase 4 does not run; without "
+            "that it misses the uncovered-ecosystem path it was written for",
+        )
+
+
+class TestACountAttributedToAFileClassIsDerived(SkillHarness):
+    """A report split a gate's summary line and re-labelled half of it.
+
+    `6 files reformatted, 23 files left unchanged` became "the other 23 markdown
+    files", on a tree holding 14 `.py` and 15 `.md` -- so the unchanged 23 were 14
+    Python and 9 Markdown. The conclusion it supported was right and the evidence
+    offered for it was 2.5x larger than anything measured, in the one row a reader
+    uses to size the blast radius.
+
+    The template's existing rule -- every row is something you ran -- governs
+    whether a row ran, not arithmetic performed inside one, which is why it
+    passed against this.
+    """
+
+    def setUp(self):
+        self.template = (PLUGIN / "references/report-template.md").read_text(encoding="utf-8")
+
+    def test_the_template_forbids_an_underived_split(self):
+        self.assertRegex(
+            self.template.lower(),
+            r"has to come from a command",
+            "the template does not say a count attributed to a file class must be "
+            "derived, so re-labelling a tool's summary line stays compliant",
+        )
+
+    def test_quoting_the_tool_unsplit_stays_allowed(self):
+        """The rule has to be narrow or it forbids the good behaviour too.
+
+        Most rows quote a tool's own output verbatim, which is exactly what the
+        report shape wants. A rule that demanded every number be re-derived would
+        make those rows non-compliant.
+        """
+        self.assertRegex(
+            self.template.lower(),
+            r"unsplit",
+            "the rule must leave quoting the tool's own number available, or it "
+            "reads as a demand to re-derive every count in the report",
+        )
