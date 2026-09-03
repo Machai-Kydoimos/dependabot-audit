@@ -13,16 +13,87 @@ patch.
 
 ## [0.38.0] — 2026-09-03
 
-Closes [#110](https://github.com/Machai-Kydoimos/dependabot-audit/issues/110) and
-[#111](https://github.com/Machai-Kydoimos/dependabot-audit/issues/111), both
+Closes [#109](https://github.com/Machai-Kydoimos/dependabot-audit/issues/109),
+[#110](https://github.com/Machai-Kydoimos/dependabot-audit/issues/110) and
+[#111](https://github.com/Machai-Kydoimos/dependabot-audit/issues/111), all three
 raised by live runs against this repository's own bump PRs.
 
-**Minor, not patch.** Phase 6 gains a question it did not ask, Phase 7 gains a
-fourth verdict, and Phase 0's worktree rule changes on which runs it fires.
+**Minor, not patch.** A third ecosystem is covered end to end, Phase 6 gains a
+question it did not ask, Phase 7 gains a fourth verdict, and Phase 0's worktree
+rule changes on which runs it fires.
 
-### Added
+### Added — `pre-commit` is a covered ecosystem (#109)
 
-- **Phase 6 now asks whether the base moved under the check results** (#110), and
+**Half of this plugin's only live exercise landed on the refusal path.**
+`.github/dependabot.yml` configures `github-actions` and `pre-commit` and says
+these PRs are "the only end-to-end exercise this plugin gets". One of the two was
+verified end to end; the other reached Phase 1's boundary every month and stopped.
+#98's report put it plainly — *"a Hold I would not defend on the merits, only on
+the procedure"* — and a gate that always says Hold is one the reader learns to
+discount.
+
+**What made it worth covering rather than documenting is that a `rev:` bump has
+real checkable content.** `scripts/precommit.py` derives three things no other
+phase could:
+
+- **the pin**, resolved to a commit and classified `immutable` / `mutable` /
+  `underivable`. A `rev:` is a git ref on someone else's repository — no artifact
+  hash, so this reports *immutability*, never integrity, exactly as
+  `references/actions.md` does for `uses:`;
+- **the requirement**, read from the hook repository's own packaging.
+  `mirrors-mypy` pins `mypy==2.3.1` in `setup.py`; `ruff-pre-commit` pins
+  `ruff==0.16.5` in `pyproject.toml`. *That* is the dependency, and pointing
+  Phases 2 and 3 at it puts them back on covered ground;
+- **the hook definition**, diffed field by field between the two revs.
+
+The third is the one that earns the script. Measured on `ruff-pre-commit`
+v0.16.2 → v0.16.5, which is this repo's #99:
+
+```
+!! ruff-format.types_or  [behavioural]
+     before: [python, pyi, jupyter]
+     after:  [python, pyi, jupyter, markdown]
+```
+
+One word in one list, and the hook began rewriting every Markdown file in the
+repository. **`ruff` itself did not change in any way its changelog reports**, so
+a per-package view of `ruff` returns *current* and *clean* — correctly, about the
+wrong artifact. Finding that by hand took a day.
+
+**Not a lockfile procedure with the names changed**, which is the objection the
+removal of npm, Cargo and Go was about. Where the claim cannot be made, it is
+refused rather than approximated:
+
+- a hook whose `language` is not `python` has its requirement derived and its
+  registry named as **not covered** — npm is the boundary again, one layer in;
+- `.pre-commit-hooks.yaml` is parsed by a deliberately small grammar that
+  **raises** on anything outside it, and the raw text is still handed to the
+  reader. A parser that skips what it does not recognise reports "no fields
+  changed" about a file it did not read — this plugin's own thesis one level
+  down. Verified against four live mirrors that disagree on every cosmetic
+  detail: two-space and four-space continuations, quoted keys, and a folded
+  scalar;
+- `install_requires` is read by **AST**, not regex, and a computed entry makes the
+  answer `underivable` rather than a partial list read as whole;
+- an unrecognised hook field counts as **behavioural**, deliberately: `pre-commit`
+  gains keys, and a new selector must not arrive as cosmetic because a list
+  predates it.
+
+`discover.py` classifies the ecosystem and gates its scope on `rev:` lines, the
+way it already does on `uses:`. The two line-based gates now share one
+implementation rather than a copy each. A diff also moving `args:`,
+`additional_dependencies:` or `repo:` is `beyond` — those change what the hook
+does, and `repo:` is not a bump at all.
+
+Both live PRs are the fixtures and they are complementary: #99 is a defect the
+verifier must catch, #98 a clean bump it must not flag. `integration/` replays
+both against the real repositories, because the hermetic fixtures are only
+evidence that the parser reads what was copied out of the files the day it was
+written.
+
+### Added — Phase 6 asks whether the base moved (#110)
+
+- **Phase 6 now asks whether the base moved under the check results**, and
   `ci_state.py` answers it. CI runs on `refs/pull/<N>/merge` — the base merged
   with the head — so a fix landing on the default branch invalidates every result
   on the PR, with **no event on the PR to re-trigger them**. Attribution cannot

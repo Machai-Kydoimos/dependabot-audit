@@ -87,6 +87,23 @@ def uses_bump(action: str = "actions/checkout") -> str:
     )
 
 
+def rev_bump(old: str = "v0.16.2", new: str = "v0.16.5") -> str:
+    """The whole content of an ordinary `pre-commit` bump's diff.
+
+    Copied from this repo's own #99, which is the shape Dependabot's `pre-commit`
+    ecosystem emits: one `rev:` line, in one file, with context either side.
+    """
+    return (
+        "@@ -14,7 +14,7 @@\n"
+        " repos:\n"
+        "   - repo: https://github.com/astral-sh/ruff-pre-commit\n"
+        f"-    rev: {old}\n"
+        f"+    rev: {new}\n"
+        "     hooks:\n"
+        "       - id: ruff-check\n"
+    )
+
+
 class DiscoverHarness(unittest.TestCase):
     def _fake(
         self,
@@ -823,3 +840,117 @@ class TestThePhase1ScopeGateIsDerivedRatherThanJudged(DiscoverHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAPreCommitBumpIsClassifiedAndGated(DiscoverHarness):
+    """`.pre-commit-config.yaml` reached Phase 1 as `unknown` / `beyond`.
+
+    Reported that way it says the bump *reached into source*, which is a finding
+    about the PR. What had actually happened is that the plugin had no rule for
+    the ecosystem -- the same confusion `UNSUPPORTED_LOCKFILES` exists to prevent
+    one file type along, and the reason a Cargo bump is named rather than lumped
+    in with `unknown`.
+
+    This repo generates one such PR a month by construction: `.github/dependabot.yml`
+    configures `github-actions` and `pre-commit`, and says these PRs are "the only
+    end-to-end exercise this plugin gets". Half of that exercise landed on the
+    refusal path. Filed as #109, and both live PRs are the fixtures -- #99 is a
+    real defect the gate must not swallow, #98 a clean bump it must not flag.
+    """
+
+    BOT_SHA = "1" * 40
+
+    def _bot_pr(self, files: list[dict[str, Any]], **kw: Any) -> Any:
+        fake, _ = self._fake(
+            commits=[commit(self.BOT_SHA, BOT)],
+            commit_files={self.BOT_SHA: files},
+            **kw,
+        )
+        return fake
+
+    def test_a_config_only_bump_is_the_pre_commit_ecosystem(self):
+        fake = self._bot_pr([changed(".pre-commit-config.yaml", rev_bump())])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["ecosystem"], "pre-commit")
+
+    def test_a_lone_rev_line_is_clean_scope(self):
+        """#99's actual diff. Before this it was `beyond` over an empty list,
+        which is the one verdict a reader cannot act on -- it reaches the report
+        as "this bump reaches past the manifest" naming nothing."""
+        fake = self._bot_pr([changed(".pre-commit-config.yaml", rev_bump())])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "clean")
+        self.assertEqual(report["scope"]["beyond"], [])
+
+    def test_a_changed_arg_is_beyond_the_pin(self):
+        """The gate reads *lines*, like the actions one and unlike the lockfile
+        one. A bump that also edits `args:` or `additional_dependencies:` changes
+        what the hook does, and that is not something a version bump may do
+        quietly."""
+        patch = (
+            "@@ -14,8 +14,8 @@\n"
+            "   - repo: https://github.com/astral-sh/ruff-pre-commit\n"
+            "-    rev: v0.16.2\n"
+            "+    rev: v0.16.5\n"
+            "     hooks:\n"
+            "       - id: ruff-check\n"
+            "-        args: [--fix]\n"
+            "+        args: [--fix, --unsafe-fixes]\n"
+        )
+        fake = self._bot_pr([changed(".pre-commit-config.yaml", patch)])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "beyond")
+        self.assertTrue(
+            any("args" in row for row in report["scope"]["beyond"]),
+            f"the changed args line must be named: {report['scope']['beyond']}",
+        )
+
+    def test_a_withheld_patch_is_underivable_not_clean(self):
+        """Same asymmetry as the actions branch, and for the same reason: this
+        gate reads lines, so no lines to read is not "no lines beyond the pin"."""
+        fake = self._bot_pr([changed(".pre-commit-config.yaml")])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "underivable")
+
+    def test_a_config_beside_source_still_fires_the_gate(self):
+        source = "@@ -1,2 +1,2 @@\n-x = 1\n+x = 2\n"
+        fake = self._bot_pr(
+            [changed(".pre-commit-config.yaml", rev_bump()), changed("src/app/core.py", source)]
+        )
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "beyond")
+        self.assertTrue(
+            any("src/app/core.py" in row for row in report["scope"]["beyond"]),
+            f"the source line must be named: {report['scope']['beyond']}",
+        )
+
+    def test_source_with_a_withheld_patch_is_underivable_not_beyond(self):
+        """The distinction the line gates exist for, and it is not pedantry.
+
+        This gate reads lines, so a file whose patch the API withheld has *no
+        lines to read* -- which is neither "clean" nor "this bump reached into
+        source". Answering `beyond` would be a claim about content nobody saw,
+        in the report's language for the most serious finding it has.
+        """
+        fake = self._bot_pr(
+            [changed(".pre-commit-config.yaml", rev_bump()), changed("src/app/core.py")]
+        )
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["verdict"], "underivable")
+        self.assertIn("src/app/core.py", report["scope"]["why"])
+
+    def test_a_lockfile_beside_the_config_is_still_the_lockfile_ecosystem(self):
+        """Ordering matters and the lockfile wins. A repo that pins its tools in
+        `uv.lock` *and* runs them through pre-commit gets the ecosystem with the
+        artifact hashes, which is the stronger of the two Phase 1 methods."""
+        fake = self._bot_pr([changed("uv.lock"), changed(".pre-commit-config.yaml", rev_bump())])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["ecosystem"], "uv.lock")
+
+    def test_a_nested_config_is_found_by_basename(self):
+        """`pre-commit` does not require the file at the root, and a repo with
+        one per package is ordinary. Matching the full path misses it and the
+        bump falls back to `unknown`."""
+        fake = self._bot_pr([changed("tools/lint/.pre-commit-config.yaml", rev_bump())])
+        report = self._json(fake)
+        self.assertEqual(report["scope"]["ecosystem"], "pre-commit")

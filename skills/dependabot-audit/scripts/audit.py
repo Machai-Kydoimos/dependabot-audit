@@ -417,7 +417,7 @@ class UnsupportedLockfile(ValueError):
 
 
 # Signatures for the lockfiles this plugin does **not** audit. Since 0.8.0 the
-# supported surface is `uv.lock` and GitHub Actions, so this message is the edge
+# supported surface is `uv.lock`, GitHub Actions and `pre-commit`, so this is the edge
 # of the tool and the first thing anyone arriving with a different lockfile
 # sees. Pointed at a real `Cargo.lock` it used to say `unexpected AttributeError
 # ... This is a bug, not a finding` — every part of that right except the
@@ -442,7 +442,8 @@ PNPM_LOCK = re.compile(r"^lockfileVersion: ", re.MULTILINE)
 def _boundary(path: str, what: str) -> str:
     return (
         f"{path} is {what}.\n"
-        "       This plugin audits uv.lock and GitHub Actions, and nothing else.\n"
+        "       This plugin audits uv.lock, GitHub Actions and pre-commit, and\n"
+        "       nothing else.\n"
         "       npm, Cargo and Go recipes were removed rather than left as sketches:\n"
         "       an unverified verifier reports green instead of erroring. Report what\n"
         "       the ecosystem-independent phases established and say what was not\n"
