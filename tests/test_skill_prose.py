@@ -575,8 +575,11 @@ class TestEveryHandoffLands(SkillHarness):
     # the phase is per-ecosystem and always was: a vendored crate is read out of
     # a wheel's SBOM, a moving major tag out of a `compare`. Both had a home in
     # `actions.md` and only one had one anywhere.
+    # `pre-commit.md` joined in 0.38.0 (#109). Adding it here rather than writing
+    # a second guard is the point of this list existing: the next ecosystem is
+    # one string, and every phase is then checked in both directions for free.
     SPLIT_PHASES = (1, 2, 3, 4, 5)
-    ECOSYSTEMS = ("uv-lock.md", "actions.md")
+    ECOSYSTEMS = ("uv-lock.md", "actions.md", "pre-commit.md")
 
     def test_every_split_phase_names_both_ecosystem_references(self):
         for number in self.SPLIT_PHASES:
@@ -4206,4 +4209,84 @@ class TestARedCheckCanBeStaleBecauseTheBaseMoved(SkillHarness):
             r"re-running the repo's gate against it is not",
             "Phase 6 offers the merge simulation without separating the read from "
             "the re-gate, so a --no-execute run is invited to execute",
+        )
+
+
+class TestPreCommitIsACoveredEcosystem(SkillHarness):
+    """Half of this repo's only live exercise landed on the refusal path.
+
+    `.github/dependabot.yml` configures `github-actions` and `pre-commit` and says
+    these PRs are "the only end-to-end exercise this plugin gets". One of the two
+    was verified end to end; the other reached Phase 1's boundary every month and
+    stopped, so the report was a procedural Hold on evidence that pointed the
+    other way. #98's own report put it as "a Hold I would not defend on the
+    merits, only on the procedure" -- and a gate that always says Hold is one the
+    reader learns to discount.
+
+    What made it worth covering rather than documenting is that a `rev:` bump has
+    real checkable content, and #99 is the proof: `ruff-format`'s `types_or`
+    gained `markdown`, the hook began rewriting every Markdown file in the repo,
+    and `ruff` itself did not change in any way its changelog reports. Filed as
+    #109.
+    """
+
+    def test_the_boundary_statement_names_all_three(self):
+        """Stated in one sentence, in one place, and it is the sentence a run
+        quotes when it refuses. Left at two, a `pre-commit` bump reads its own
+        ecosystem in the list of what is *not* covered."""
+        self.assertRegex(
+            self.flat(1),
+            r"covers `uv\.lock`, github actions and `pre-commit`, and nothing\s*else",
+            "Phase 1's boundary sentence does not name pre-commit, so the phase "
+            "that now has a method for it still says it has none",
+        )
+
+    # No guard here for "every phase names the reference, and the reference has
+    # that section". `TestEveryEcosystemHandoffLands` already asserts both
+    # directions for every entry in its `ECOSYSTEMS` list, and `pre-commit.md`
+    # was added to that list rather than duplicated into a second check.
+
+    def test_phase_2_says_to_query_the_package_and_not_the_rev(self):
+        """The silent failure specific to this ecosystem. `v0.16.5` is not a PyPI
+        version of anything, so a currency or advisory query built from the tag
+        comes back empty -- and empty reads exactly like *current and clean*."""
+        self.assertRegex(
+            self.flat(2),
+            r"not a pypi version of anything",
+            "Phase 2 does not warn that a query built from the `rev:` returns an "
+            "empty result that reads as a clean answer",
+        )
+
+    def test_the_stale_boundary_example_is_corrected(self):
+        """Phase 1 illustrated the boundary rule with a `pre-commit` bump. Left
+        alone it now contradicts the covered-ecosystem table four paragraphs
+        above it, and a reader resolving that contradiction has to guess which
+        half is current."""
+        body = self.flat(1)
+        self.assertRegex(
+            body,
+            r"no longer on this path|became a covered ecosystem",
+            "Phase 1 still offers a `pre-commit` bump as its example of an "
+            "uncovered ecosystem, which the same phase now says is covered",
+        )
+
+    def test_the_reference_is_reachable_and_names_its_script(self):
+        code = self.reachable(1)
+        self.assertIn(
+            "precommit.py",
+            code,
+            "Phase 1 never invokes the verifier, so the ecosystem has a reference "
+            "and no mechanism -- which is the shape the Cargo warning is about",
+        )
+
+    def test_phase_4_keeps_the_blast_radius_in_the_audited_tree(self):
+        """The hook definition says what the hook now *selects*; it does not say
+        how much of this repository that is. #104 was a count attributed to a
+        class of file that came from splitting a tool's summary line, and this is
+        the phase that tempts exactly that split."""
+        self.assertRegex(
+            self.flat(4),
+            r"not how much of this (repo|tree)",
+            "Phase 4 does not say the selection change has to be measured in the "
+            "audited tree, so the hook's own field reads as the blast radius",
         )

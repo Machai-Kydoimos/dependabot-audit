@@ -95,14 +95,24 @@ nothing hard-won is re-derived.
 
 ## Scope
 
-Two ecosystems, because together they are what a Python project's Dependabot
+Three ecosystems, because together they are what a Python project's Dependabot
 queue actually contains — on this plugin's own test repo the bot PRs split
-`uv: 11` / `github_actions: 10`:
+`uv: 11` / `github_actions: 10`, and on **this** repo they split
+`github_actions` / `pre-commit`:
 
 | | |
 |---|---|
 | **Python — `uv.lock`** | `scripts/audit.py`, end-to-end and tested against it: artifact hashes, PEP 740 build provenance, the registry's true latest, and the OSV batch |
 | **GitHub Actions** | no lockfile and no artifact hash, so Phase 1 becomes a pin question — is it a SHA or a movable tag, and which way has that tag moved. Every later phase has an actions method too: GHSA for advisories, scope analysis where a gate cannot be run, run history where nothing can be installed |
+| **`pre-commit`** | `scripts/precommit.py`. A `rev:` is a git ref on another repository, so it is a pin question again — and two more besides: what tool version that rev *installs*, which is declared in the hook repo's packaging and is not the tag, and whether the **hook's own definition** moved. The last is the one that pays |
+
+**The hook definition is why this one is here.** `ruff-pre-commit` v0.16.2 →
+v0.16.5 added one word to one list — `ruff-format`'s `types_or` gained
+`markdown` — and the hook began rewriting every Markdown file in the repository.
+`ruff` itself did not change in any way its changelog reports, so a per-package
+view of `ruff` returns *current* and *clean*, correctly, about the wrong
+artifact. That bump is this repository's own #99, and finding the cause by hand
+took a day; the script isolates it to the field in one call.
 
 **npm, Cargo and Go are out of scope** — not unimplemented, out of scope. Their
 recipes were removed rather than left as sketches, on this file's own rule: an
@@ -134,6 +144,7 @@ inside the procedure, so a run loads the recipe it needs and not the other one:
 | `SKILL.md` | always — the phases, their gates, the Phase 0 outputs, the verdict table |
 | `references/uv-lock.md` | when the PR is a `uv.lock` bump |
 | `references/actions.md` | when the PR is an actions bump |
+| `references/pre-commit.md` | when the PR is a `.pre-commit-config.yaml` bump |
 | `references/report-template.md` | always, at Phase 7 |
 
 There is no general "traps" reference. There was until 0.17.0, and measuring it
@@ -141,9 +152,9 @@ is what retired it: across two cold runs it was **never fetched**, because a
 phase that ends *"`traps.md` has the reasoning"* does not make a model go and
 read it, where a method table saying *"`references/actions.md` § Phase 1"* does.
 By then each of its sections had been absorbed anyway — into the scripts, into
-the two ecosystem files, or into `SKILL.md` itself.
+the ecosystem files, or into `SKILL.md` itself.
 
-The two ecosystem files are **sectioned by phase**, and that is a constraint
+The ecosystem files are **sectioned by phase**, and that is a constraint
 rather than tidiness: the prose suite attributes a command to the phase whose
 heading it sits under, which is the check that has caught three shipped
 forward-reference defects. It also asserts that every handoff *lands* — a phase
@@ -235,7 +246,7 @@ to detect. They fall into ten groups:
   `cked.txt`, reporting a path that never existed as deleted while the real
   deletion went unreported.
 - **Ecosystem coverage** — no phase from 1 to 6 may be written for only one of
-  the two supported ecosystems, Phase 3 must name an advisory source for actions,
+  the supported ecosystems, Phase 3 must name an advisory source for actions,
   and it must keep the measured case behind the OSV version trap. This group
   exists because *"not applicable" is an assertion too*: three places in this repo
   stated that GitHub Actions has no vulnerability database, and GHSA carries an

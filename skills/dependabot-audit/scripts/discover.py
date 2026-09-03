@@ -68,6 +68,11 @@ UNDERIVABLE = "underivable"
 MANIFESTS = frozenset({"uv.lock", "pyproject.toml"})
 WORKFLOW_DIRS = (".github/workflows/", ".github/actions/")
 
+# Matched on the basename: `pre-commit` does not require the file at the repo
+# root, and one per package is ordinary. A full-path match misses those and the
+# bump falls back to `unknown`, which reports as a scope finding.
+PRE_COMMIT_CONFIG = ".pre-commit-config.yaml"
+
 # Named rather than lumped into "unknown": a Cargo bump is a **boundary**, and
 # reporting it as a scope finding says the bump reached into source when what
 # happened is that this plugin has no rule for it. An improvised recipe returned
@@ -93,6 +98,14 @@ FILES_CAP = 300
 # version comment. That is the invariant." Not the number of files — a grouped
 # bump moves several actions and an action is pinned in every workflow using it.
 USES_LINE = re.compile(r"^\s*-?\s*uses:\s*\S+\s*(#.*)?$")
+
+# `pre-commit`'s equivalent, and the gate is the same shape: a bump may move the
+# pin and nothing else. `\S+` covers the quoted forms and the `# frozen: <sha>`
+# comment `pre-commit autoupdate --freeze` writes.
+#
+# Deliberately not `repo:`. Repointing a hook at a different repository is not a
+# version bump, and it is exactly what this gate should refuse to wave through.
+REV_LINE = re.compile(r"^\s*rev:\s*\S+\s*(#.*)?$")
 
 # The trailing version comment is not always trailing. A compiler that emits
 # workflows records the pins it wrote in a header block, so a correct bump
@@ -407,7 +420,8 @@ def _ecosystem(names: list[str]) -> tuple[str, str]:
         if base in UNSUPPORTED_LOCKFILES:
             return "unsupported", (
                 f"the diff carries a {base} ({UNSUPPORTED_LOCKFILES[base]}). This plugin "
-                "verifies uv.lock and GitHub Actions end to end and nothing else — report "
+                "verifies uv.lock, GitHub Actions and pre-commit end to end and nothing "
+                "else — report "
                 "that boundary, and do not improvise a recipe from the shape of the ones "
                 "that are here"
             )
@@ -415,7 +429,66 @@ def _ecosystem(names: list[str]) -> tuple[str, str]:
         return "uv.lock", ""
     if all(filename.startswith(WORKFLOW_DIRS) for filename in names):
         return "github-actions", ""
+    # After both, and the order is the answer to a real case: a repo that pins
+    # its tools in `uv.lock` *and* runs them through pre-commit gets the
+    # ecosystem with the artifact hashes, which is the stronger Phase 1 method.
+    if any(filename.rsplit("/", 1)[-1] == PRE_COMMIT_CONFIG for filename in names):
+        return "pre-commit", ""
     return "unknown", ""
+
+
+# The two ecosystems whose pin is a *line* rather than a file. Both gates are the
+# same shape and differ only in which line is allowed, so they share `_line_gate`
+# below: an action is `uses:`, a pre-commit hook is `rev:`.
+PIN_LINE = {"github-actions": ("`uses:`", USES_LINE), "pre-commit": ("`rev:`", REV_LINE)}
+
+
+def _line_gate(
+    files: list[dict[str, Any]], ecosystem: str, common: dict[str, Any]
+) -> dict[str, Any]:
+    """Phase 1's gate for an ecosystem pinned by a line, not by a file.
+
+    The lockfile rule reads names; this one reads *lines*, so this is the only
+    shape that needs the patch — and a withheld patch is therefore only
+    underivable here.
+    """
+    what, pattern = PIN_LINE[ecosystem]
+    withheld = [entry.get("filename") or "" for entry in files if entry.get("patch") is None]
+    if withheld:
+        return {
+            "verdict": UNDERIVABLE,
+            "ecosystem": ecosystem,
+            "beyond": [],
+            "why": (
+                f"the API withheld the patch for {', '.join(sorted(withheld))} — binary, "
+                "or past its size limit. No lines to read is not 'no lines beyond the pin'"
+            ),
+            **common,
+        }
+    beyond = []
+    comments = 0
+    for entry in files:
+        for line in _changed_lines(entry.get("patch") or ""):
+            if pattern.match(line):
+                continue
+            if COMMENT_LINE.match(line):
+                comments += 1
+                continue
+            beyond.append(f"{entry.get('filename')}: {line.strip()}")
+    return {
+        **common,
+        "verdict": "beyond" if beyond else "clean",
+        "ecosystem": ecosystem,
+        "beyond": beyond,
+        # After the spread: `common` carries the 0 every other branch wants, and a
+        # key repeated in a literal takes its last value.
+        "comment_lines": comments,
+        "why": (
+            f"a changed line is neither a {what} pin nor a comment"
+            if beyond
+            else f"every changed line across every file is a {what} line or a comment"
+        ),
+    }
 
 
 def scope(files: list[dict[str, Any]] | None, source: str) -> dict[str, Any]:
@@ -464,46 +537,8 @@ def scope(files: list[dict[str, Any]] | None, source: str) -> dict[str, Any]:
             **common,
         }
 
-    if ecosystem == "github-actions":
-        # The lockfile rule reads names; this one reads *lines*, so this is the
-        # only branch that needs the patch — and a withheld patch is therefore
-        # only underivable here.
-        withheld = [entry.get("filename") or "" for entry in files if entry.get("patch") is None]
-        if withheld:
-            return {
-                "verdict": UNDERIVABLE,
-                "ecosystem": ecosystem,
-                "beyond": [],
-                "why": (
-                    f"the API withheld the patch for {', '.join(sorted(withheld))} — binary, "
-                    "or past its size limit. No lines to read is not 'no lines beyond the pin'"
-                ),
-                **common,
-            }
-        beyond = []
-        comments = 0
-        for entry in files:
-            for line in _changed_lines(entry.get("patch") or ""):
-                if USES_LINE.match(line):
-                    continue
-                if COMMENT_LINE.match(line):
-                    comments += 1
-                    continue
-                beyond.append(f"{entry.get('filename')}: {line.strip()}")
-        return {
-            **common,
-            "verdict": "beyond" if beyond else "clean",
-            "ecosystem": ecosystem,
-            "beyond": beyond,
-            # After the spread: `common` carries the 0 every other branch wants,
-            # and a key repeated in a literal takes its last value.
-            "comment_lines": comments,
-            "why": (
-                "a changed line is neither a `uses:` pin nor a comment"
-                if beyond
-                else "every changed line across every file is a `uses:` line or a comment"
-            ),
-        }
+    if ecosystem in PIN_LINE:
+        return _line_gate(files, ecosystem, common)
 
     beyond = [n for n in names if n.rsplit("/", 1)[-1] not in MANIFESTS]
     if not beyond:

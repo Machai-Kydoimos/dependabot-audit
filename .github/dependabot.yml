@@ -8,6 +8,11 @@ updates:
   # /dependabot-audit on them is the closest thing to a live test available
   # without `claude plugin eval`. That is a reason to keep the cadence low but
   # non-zero rather than to disable it.
+  #
+  # Until 0.38.0 only one of the two was verified end to end and the other hit
+  # Phase 1's boundary every month, so half of that exercise was a procedural
+  # Hold on evidence pointing the other way. `pre-commit` is a covered ecosystem
+  # now (#109), which is what makes the sentence above true of both entries.
   - package-ecosystem: github-actions
     directory: /
     schedule:

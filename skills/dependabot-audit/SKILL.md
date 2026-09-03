@@ -1,6 +1,6 @@
 ---
 name: dependabot-audit
-description: Audit an automated dependency-bump PR and produce an evidence-backed merge recommendation — verify lockfile artifact hashes against the registry, cross-check the true latest version, read changelogs for security and behavior changes, reproduce the repo's own checks in an isolated worktree, and report. Verifies uv.lock and GitHub Actions end to end; any other ecosystem gets the ecosystem-independent phases and a stated boundary rather than an improvised recipe. Use when the user asks to review, audit, check, or decide on a Dependabot or Renovate PR, a dependency bump, a lockfile PR, or asks "is this safe to merge".
+description: Audit an automated dependency-bump PR and produce an evidence-backed merge recommendation — verify lockfile artifact hashes against the registry, cross-check the true latest version, read changelogs for security and behavior changes, reproduce the repo's own checks in an isolated worktree, and report. Verifies uv.lock, GitHub Actions and pre-commit hooks end to end; any other ecosystem gets the ecosystem-independent phases and a stated boundary rather than an improvised recipe. Use when the user asks to review, audit, check, or decide on a Dependabot or Renovate PR, a dependency bump, a lockfile PR, or asks "is this safe to merge".
 disallowed-tools: Edit, Write, NotebookEdit
 ---
 
@@ -297,7 +297,7 @@ discarded unread rather than saved.
 | `$CREATED_AT` | when the PR was opened, ISO-8601. **Phase 2 compares release publish times against it** — the cooldown asks whether a release was three days old *then*, not now |
 | `$BRANCH_POINT` | `ok`, `rewritten`, `suspect` or `underivable` — **the tip-worktree block below gates on it**, and the table there says what each one means |
 | `$MAY_EXECUTE` | `yes` or `no` — **Phases 4 and 5 gate on it**, and the gate tests for `yes` so an unset value refuses. The classification below is what sets it |
-| `$ECOSYSTEM` | `uv.lock`, `github-actions`, `unsupported`, `unknown` or `underivable` — **which Phase 1, 3, 4 and 5 method applies**, derived from the files the bump changed rather than inferred from the PR |
+| `$ECOSYSTEM` | `uv.lock`, `github-actions`, `pre-commit`, `unsupported`, `unknown` or `underivable` — **which Phase 1, 3, 4 and 5 method applies**, derived from the files the bump changed rather than inferred from the PR |
 | `$SCOPE_GATE` | `clean`, `beyond` or `underivable` — **Phase 1's gate, already decided** from the bot's own commits. That is the invariant the gate is about, and it is why `$BOT_COMMITS` does not cross: the loop that consumed it is now the script's |
 | `$HUMAN_COMMITS` | every non-bot commit on the branch, merges included. Its files are a **finding to report**, never a Hold |
 
@@ -621,8 +621,10 @@ sectioned by phase, so read the section for this one:
 |---|---|
 | `uv.lock` | `references/uv-lock.md` § Phase 1 — `scripts/audit.py` verifies every pinned artifact's hash, size, URL and yank status against the live registry, plus PEP 740 build provenance |
 | GitHub Actions | `references/actions.md` § Phase 1 — no lockfile and no artifact hash, so the question becomes whether the pin is **immutable**: a 40-hex SHA, or a tag someone else can revoke. The scope gate keys on `uses:` lines, never on a count of files |
+| `pre-commit` | `references/pre-commit.md` § Phase 1 — a `rev:` is a git ref on another repository: no hash either, so immutability again. `scripts/precommit.py` also resolves what the rev *installs*, which is declared in the hook repo's packaging and is not the tag. The scope gate keys on `rev:` lines |
 
-**This plugin covers `uv.lock` and GitHub Actions, and nothing else.** For any
+**This plugin covers `uv.lock`, GitHub Actions and `pre-commit`, and nothing
+else.** For any
 other ecosystem, say so and stop. Do not improvise a procedure from the shape of
 the ones that are here: an unverified verifier reports green rather than erroring,
 which is why npm, Cargo and Go were removed rather than left as sketches.
@@ -659,6 +661,15 @@ was the true latest of both the mirror and the tool it pins, and the advisory
 databases were empty at every version, which is most of what a reader weighing a
 boundary Hold has to go on.
 
+**That particular bump is no longer on this path**: `pre-commit` became a covered
+ecosystem in 0.38.0, which is what the run was arguing for (#109). The rule
+survives its own example, because the next uncovered ecosystem arrives the same
+way — and the reason it was worth covering rather than leaving here is exactly
+the enumeration above. Phases 2 and 3 were reaching a real answer by hand every
+month, on the half of this repository's own bump traffic that landed on the
+boundary, and a monthly Hold nobody can act on trains the reader to discount the
+gate.
+
 ## Phase 2 — Currency
 
 *Requires from Phase 0: `$CREATED_AT`. Plus the Phase 1 script output.*
@@ -676,6 +687,15 @@ a moving major tag picks up new releases on its own, so a newer patch is not a
 gap. `references/actions.md` § Phase 2 has the `compare` that separates a tag
 that merely moved *ahead* from one that rolled **behind**, which is the case a
 bot cannot fix because it cannot propose a downgrade.
+
+**For `pre-commit` it is two questions, and the tag answers neither.** The
+`rev:` is a ref on the hook repository; the version that gets installed is
+declared inside that repository, and `scripts/precommit.py` has already resolved
+it. Ask the registry about **that**, never about the rev — `v0.16.5` is not a
+PyPI version of anything, so a query built from the tag returns an empty result
+that reads exactly like *current and clean*. `references/pre-commit.md` § Phase 2
+also says which registries this leaves covered: a `language: python` hook is
+PyPI and verified end to end, and anything else is the boundary again.
 
 Rule out the innocent explanations before reporting a gap: a yanked release; a
 **cooldown** (`cooldown:` in `dependabot.yml`, `minimumReleaseAge` in
@@ -792,6 +812,7 @@ contradiction. The method differs by ecosystem; the question does not.
 
 | Ecosystem | Method |
 |---|---|
+| `pre-commit` | `references/pre-commit.md` § Phase 3 — query the **package the hook installs**, never the `rev:`. `v0.16.5` is not a PyPI version of anything, so a query built from the tag comes back empty and reads exactly like *no known vulnerabilities* |
 | `uv.lock` | `references/uv-lock.md` § Phase 3 — the OSV batch is **already done** by the Phase 1 script, so read that result rather than re-querying; what remains is the ecosystem's own auditor — and the obvious invocation of it **executes the PR's code**, in a phase `--no-execute` runs |
 | GitHub Actions | `references/actions.md` § Phase 3 — GHSA carries an `actions` ecosystem, and the obvious port of the `uv.lock` query reports **clean on a known-compromised action** |
 
@@ -817,6 +838,7 @@ the section for it is below.
 
 | Ecosystem | Method |
 |---|---|
+| `pre-commit` | `references/pre-commit.md` § Phase 4 — **the hook definition is where the behaviour lives.** `scripts/precommit.py` diffs `.pre-commit-hooks.yaml` between the two revs field by field; then measure the blast radius in this repo, because the hook says what it now *selects* and not how much of this tree that is |
 | `uv.lock` | `references/uv-lock.md` § Phase 4 — **measure it.** `scripts/gate_diff.py` runs each gate at the locked, proposed and latest versions in `$SCRATCH/base-<N>` and compares what each run *did to the files* |
 | GitHub Actions | `references/actions.md` § Phase 4 — an action cannot be run locally at two versions, so the method is reading the release notes **and then establishing whether this repo's workflows are in the change's scope at all** |
 
@@ -874,6 +896,7 @@ else — and "no reproduction available" is a result to report, not a phase to s
 | Ecosystem | Method |
 |---|---|
 | `uv.lock` | `references/uv-lock.md` § Phase 5 — install **frozen** and run the repo's own gates and suite in `$SCRATCH/pr-<N>` |
+| `pre-commit` | `references/pre-commit.md` § Phase 5 — `pre-commit run --all-files` in `$SCRATCH/pr-<N>`, which is usually the whole of CI's lint job. **Not hermetic**: it installs each hook's environment from the network at run time, so say what that green is worth beside a frozen install |
 | GitHub Actions | `references/actions.md` § Phase 5 — nothing to install and no way to run an action off GitHub's runners, so the substitute is **evidence that this pin has already run**: the history of the workflow the bump changed |
 
 Phase 0 built the worktree and proved it points at `$HEAD_SHA`, so the user's
