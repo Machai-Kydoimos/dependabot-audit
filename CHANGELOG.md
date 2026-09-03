@@ -171,6 +171,13 @@ written.
   written for. It now selects on the verdict cell and checks every match.
   Mutation-checked afterwards against the defect it was written for.
 
+- **Phase 0's new worktree table said "Four paths" over five rows**, in the same
+  edit that added the table. Every guard written for that change asserted what the
+  rule *says* and none could count, so `test_skill_prose.py` gains one that reads
+  the stated number and the table it sits above — a number beside the thing it
+  counts is the cheapest prose defect to make, and the tables here are already
+  parsed.
+
 - **Both shipped plugin descriptions still claimed two ecosystems**, and the whole
   suite passed. `plugin.json` and `marketplace.json` carry the text a user reads
   in `/plugin` *before* installing, and they were read for their `name` and never

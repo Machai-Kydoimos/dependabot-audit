@@ -4290,3 +4290,35 @@ class TestPreCommitIsACoveredEcosystem(SkillHarness):
             "Phase 4 does not say the selection change has to be measured in the "
             "audited tree, so the hook's own field reads as the blast radius",
         )
+
+
+class TestACountedListMatchesWhatFollowsIt(SkillHarness):
+    """Phase 0's worktree rule said "Four paths run neither" above a five-row
+    table, in the same edit that added the table.
+
+    Caught by reading, after the guards for that change were written and
+    mutation-checked -- because every one of them asserted what the rule *says*
+    and none could count. A number stated beside the thing it counts is the
+    cheapest kind of prose defect to make and the easiest to check
+    mechanically, and this repo has the material to check it: the tables are
+    already parsed.
+    """
+
+    WORDS: ClassVar[dict[str, int]] = {
+        "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    }  # fmt: skip
+
+    def test_the_worktree_carve_out_counts_its_own_table(self):
+        body = dict(self.phases)[0]
+        start = body.index("Create the worktrees only where")
+        passage = body[start : start + 2400]
+        stated = re.search(r"\b(two|three|four|five|six|seven|eight)\b paths", passage.lower())
+        self.assertIsNotNone(stated, "the carve-out no longer states a count of paths")
+        rows = next(t for t in tables(passage) if "Condition" in t[0])
+        # minus the header and the `|---|` separator
+        self.assertEqual(
+            self.WORDS[stated.group(1)],  # type: ignore[union-attr]
+            len(rows) - 2,
+            f"the carve-out says {stated.group(1)} paths and its table has "  # type: ignore[union-attr]
+            f"{len(rows) - 2} rows",
+        )
