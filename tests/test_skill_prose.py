@@ -4322,3 +4322,138 @@ class TestACountedListMatchesWhatFollowsIt(SkillHarness):
             f"the carve-out says {stated.group(1)} paths and its table has "  # type: ignore[union-attr]
             f"{len(rows) - 2} rows",
         )
+
+
+class TestTheReferenceRunsAsWritten(SkillHarness):
+    """The 0.38.0 `pre-commit` reference did not run as written.
+
+    Found by the first live replay of `/dependabot-audit 99` against it, on
+    2026-09-04. The audit reached the right verdict and handed back four
+    deviations, every one of them a command the reference promised and did not
+    supply -- or, once, promised and could not have supplied:
+
+      Phase 2 said to hand the package and version to `audit.py`. It takes a
+              lockfile positional and sniffs the content; handed a name it exits
+              `cannot read <name>`. A false claim about this repo's own script.
+      Phase 3 said "OSV and GHSA" with **no runnable command at all**, pointing
+              at `uv.lock`'s method where the work is done by that same script.
+      Phase 2 gave no PyPI query, so the cooldown subtraction had no publish time.
+      Phases 4 and 5 called `pre-commit` bare. It is not on PATH here, and this
+              repo's own `ci.yml` pip-installs it first.
+
+    A reference that names a script which cannot take the input is the
+    unverified-verifier failure pointed inward: the run improvises, and an
+    improvised advisory query returns clean.
+    """
+
+    def ref(self) -> str:
+        return (PLUGIN / "references/pre-commit.md").read_text(encoding="utf-8")
+
+    def test_phase_2_does_not_send_a_package_to_the_lockfile_script(self):
+        body = self.flat(2)
+        self.assertNotRegex(
+            body,
+            r"hand the package and version to `scripts/audit\.py`",
+            "Phase 2 still routes a bare package to `audit.py`, which requires a "
+            "lockfile and exits naming the file it could not read",
+        )
+        self.assertRegex(
+            body,
+            r"audit\.py` does not apply here",
+            "and it must say so, because the obvious reading of 'same as uv.lock' "
+            "is that the lockfile script applies",
+        )
+
+    def test_phase_2_supplies_the_registry_query_it_asks_for(self):
+        """The cooldown is a subtraction against `$CREATED_AT`, so a currency
+        read with no publish time cannot reach the row it feeds."""
+        self.assertRegex(
+            self.flat(2),
+            r"pypi\.org/pypi/",
+            "Phase 2 tells the run to take the requirement to the registry and "
+            "gives it no way to do that, so the publish time is improvised",
+        )
+
+    def test_phase_3_supplies_a_runnable_advisory_query(self):
+        """It had none. `audit.py` does the OSV batch for `uv.lock` and cannot
+        run here, so 'same as uv.lock' resolved to nothing executable."""
+        section = next(sec for name, sec in self._handoffs(3) if name == "pre-commit.md")
+        self.assertIn("api.osv.dev", section, "Phase 3 has no OSV query")
+        self.assertIn("securityVulnerabilities", section, "Phase 3 has no GHSA query")
+
+    def test_the_ghsa_query_is_unqualified_by_version(self):
+        """A version-qualified GHSA query reads clean whether or not the package
+        has advisories -- the reassuring direction, and silent."""
+        section = next(sec for name, sec in self._handoffs(3) if name == "pre-commit.md")
+        self.assertRegex(
+            " ".join(section.split()).lower(),
+            r"unqualified",
+            "nothing warns that qualifying the GHSA query by version makes it "
+            "answer clean regardless",
+        )
+
+    def test_pre_commit_is_not_assumed_to_be_on_path(self):
+        """Measured: `command -v pre-commit` exits 1 here, and this repo's own
+        `ci.yml` pip-installs it before use. Both executing phases call it."""
+        for number in (4, 5):
+            section = next(sec for name, sec in self._handoffs(number) if name == "pre-commit.md")
+            self.assertNotRegex(
+                section,
+                r"^\s*\(?\s*cd [^\n]*&& pre-commit run|^\s*pre-commit run ",
+                f"Phase {number} calls `pre-commit` bare, which does not run where "
+                "it is not installed",
+            )
+            self.assertIn(
+                "$PC",
+                section,
+                f"Phase {number} does not use the derived invocation",
+            )
+
+    def test_phase_4_supplies_the_with_and_without_config_pair(self):
+        """`SKILL.md`'s Phase 4 requires two check-only runs to reconcile a
+        defeated exclusion. The reference asked for the comparison and gave only
+        the with-config half, which passes at both revs and says nothing."""
+        section = next(sec for name, sec in self._handoffs(4) if name == "pre-commit.md")
+        flat = " ".join(section.split()).lower()
+        self.assertIn("without", flat, "Phase 4 never names the without-config run")
+        self.assertRegex(
+            flat,
+            r"old and new tool versions agree",
+            "the pair is present but its reading is not: two identical results "
+            "are what establish that the *wrapper* changed and not the tool",
+        )
+
+
+class TestTheFetchIsAssertedAgainstThePin(SkillHarness):
+    """A bot rebased 18 seconds after Phase 0 pinned the head.
+
+    Measured on this plugin's own #99 during a live replay on 2026-09-04:
+    `discover.py` ran at 23:08:39Z, Dependabot rebased at 23:08:57Z, and the
+    next read returned a different head *and* a different base. Every row of a
+    report written from the first read would have described a commit that was no
+    longer the PR.
+
+    It was caught by accident -- `git worktree add` printed an abbreviated SHA a
+    reader noticed disagreed with `$HEAD_SHA`. The stale-worktree guard could not
+    have caught it: that one fires when `worktree add` **refuses**, and here the
+    path was free and the add succeeded at the wrong commit.
+    """
+
+    def test_phase_0_compares_the_fetched_ref_against_the_pin(self):
+        self.assertRegex(
+            self.reachable(0),
+            r"FETCHED=\$\(git rev-parse",
+            "Phase 0 fetches the PR ref and never checks it resolved to "
+            "`$HEAD_SHA`, so a rebase between the two reads is silent",
+        )
+
+    def test_the_remedy_is_to_re_derive_phase_0_whole(self):
+        """`$BASE_SHA` moves with the head on a rebase -- it did here, 515653a ->
+        4820d14. Patching the pin alone leaves the base pre-rebase, which is the
+        rewritten-base failure arriving by another route."""
+        self.assertRegex(
+            self.flat(0),
+            r"re-run phase 0 whole, never just the pin",
+            "Phase 0 does not say the whole derivation has to be repeated, so the "
+            "cheap-looking fix is to patch $HEAD_SHA and keep a stale $BASE_SHA",
+        )

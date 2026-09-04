@@ -28,6 +28,7 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import unittest
 from typing import Any
@@ -122,3 +123,80 @@ class TestTheRealBumpsStillReadTheSameWay(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(NETWORK, "set RUN_NETWORK_TESTS=1 to run (needs `gh` and the network)")
+class TestTheDocumentedCommandsActuallyRun(unittest.TestCase):
+    """The reference's one-liners, extracted from the file and executed.
+
+    Prose guards assert a command is *present*. That is not the same as it
+    running, and the difference is not hypothetical: the first draft of the OSV
+    query in `references/pre-commit.md` had a mismatched bracket
+    (`{"queries":[... for v in ...}`) and was caught only by running it back out
+    of the file. Every reading of it looked right.
+
+    This is the same lever `test_ruff_replay.py` uses and the same one
+    `test_audit.py` uses for the `--no-build` salvage: when the recipe is
+    executable, write the guard to run it.
+    """
+
+    REF = pathlib.Path(__file__).resolve().parent.parent / (
+        "skills/dependabot-audit/references/pre-commit.md"
+    )
+
+    def _line_after(self, marker: str, substitute: tuple[str, str]) -> str:
+        text = self.REF.read_text(encoding="utf-8")
+        self.assertIn(marker, text, f"the reference no longer contains `{marker[:40]}…`")
+        start = text.index(marker)
+        return text[start : text.index("\n", start)].replace(*substitute)
+
+    def _run(self, line: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S602
+            line, shell=True, capture_output=True, text=True, timeout=120, check=False
+        )
+
+    def test_the_pypi_currency_one_liner_runs(self):
+        """Phase 2's, and the cooldown subtraction depends on its timestamp."""
+        got = self._run(
+            self._line_after(
+                "python3 -c 'import json,sys,urllib.request as u; d=json.load", ("<pkg>", "ruff")
+            )
+        )
+        self.assertEqual(got.returncode, 0, got.stderr[:400])
+        self.assertRegex(got.stdout, r"latest=\d+\.\d+", got.stdout)
+        self.assertIn("published=", got.stdout)
+        self.assertIn("yanked=", got.stdout)
+
+    def test_the_osv_batch_one_liner_runs_over_a_gap(self):
+        got = self._run(
+            self._line_after(
+                "python3 -c 'import json,sys,urllib.request as u; vs=sys.argv",
+                ("<pkg> <every version in the gap>", "ruff 0.16.2 0.16.5"),
+            )
+        )
+        self.assertEqual(got.returncode, 0, got.stderr[:400])
+        self.assertEqual(len(got.stdout.strip().splitlines()), 2, "one row per version in the gap")
+        self.assertIn("advisory(ies)", got.stdout)
+
+    def test_the_ghsa_query_runs_and_discriminates(self):
+        """Run twice, and the second run is the point. A query that has only ever
+        returned empty proves nothing about whether it can return anything --
+        CONTRIBUTING's rule about a test that has only ever passed, one level out.
+        """
+        text = self.REF.read_text(encoding="utf-8")
+        start = text.index("gh api graphql -f query='{securityVulnerabilities")
+        end = text.index("```", start)
+        recipe = text[start:end].strip().rstrip("\\").strip()
+
+        clean = self._run(recipe.replace("<pkg>", "ruff"))
+        self.assertEqual(clean.returncode, 0, clean.stderr[:400])
+        self.assertEqual(clean.stdout.strip(), "", "ruff is expected to have none")
+
+        control = self._run(recipe.replace("<pkg>", "requests"))
+        self.assertEqual(control.returncode, 0, control.stderr[:400])
+        self.assertRegex(
+            control.stdout,
+            r"GHSA-\w+",
+            "the same query returns nothing for a package known to have "
+            "advisories, so a clean result from it establishes nothing",
+        )

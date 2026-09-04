@@ -11,6 +11,83 @@ patch.
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-09-04
+
+The first live replay of `/dependabot-audit 99` against 0.38.0, on the ecosystem
+0.38.0 added. **The audit reached the right verdict** — Merge as-is, high
+confidence, no follow-up, matching an answer derived independently beforehand —
+and handed back four deviations, every one of them a command
+`references/pre-commit.md` promised and did not supply.
+
+**Minor, not patch.** Phase 0 gains an assertion it did not make. The rest are
+fixes that make existing claims true, and on their own would be a patch.
+
+### Fixed — the reference did not run as written
+
+- **Phase 2 sent a bare package to `scripts/audit.py`**, which takes a lockfile
+  positional and sniffs the content; handed a name it exits `cannot read <name>`.
+  A false claim about this repo's own script, in prose written the previous day —
+  a docstring-as-claim defect, one file over. `changelog.py
+  --package` genuinely does work and is what the row now names, and the PyPI
+  currency read is supplied as a command because the cooldown subtraction needs a
+  publish time and had none.
+
+- **Phase 3 had no runnable command at all.** It said "same as `uv.lock`: OSV and
+  GHSA" — where that work is done by `audit.py`, which cannot run here. So the
+  phase most exposed to a silent empty answer was the one with nothing to run. It
+  now carries both queries, and the GHSA one is **unqualified by version**, with
+  the reason: a version-qualified query reads clean whether or not the package has
+  advisories.
+
+- **Phases 4 and 5 called `pre-commit` bare.** It is not on `PATH` on the machine
+  that ran the replay, and this repo's own `ci.yml` pip-installs it before use.
+  The invocation is now derived once (`$PC`, falling back to `uvx pre-commit`) with
+  the reminder that an absent binary is **exit 2, not a failing hook** — "could not
+  run" reported as "ran and found something" is the easiest place here to lose that
+  distinction, because a missing binary and a failing hook both exit non-zero.
+
+- **Phase 4 gave only the with-config half of a two-run comparison.** `SKILL.md`
+  requires two check-only runs to reconcile a defeated exclusion, and the
+  with-config run passes at both revs and says nothing. Both halves are now there,
+  with the measurement: the hook passes at either rev, while the tool alone
+  reformats **6 of 16** Markdown files at ruff 0.16.5 **and the identical 6 at
+  0.16.2**. The versions agreeing is what establishes that the *wrapper* changed
+  its selection rather than the tool changing its behaviour — and only that pair
+  can show it.
+
+### Added — Phase 0 asserts the fetch against the pin
+
+- **A bot rebased 18 seconds after Phase 0 pinned the head**, during the replay.
+  `discover.py` ran at 23:08:39Z, Dependabot rebased #99 at 23:08:57Z, and the next
+  read returned a different head **and a different base** (`515653a` → `4820d14`),
+  because the rebase moved the branch onto current `main`.
+
+  It was caught **by accident**: `git worktree add` printed an abbreviated SHA that
+  disagreed with `$HEAD_SHA`. The stale-worktree guard could not have caught it —
+  that one fires when `worktree add` *refuses*, and here the path was free and the
+  add succeeded at the wrong commit. Phase 0 now compares the fetched ref against
+  the pin and exits 1 naming both, and says to re-derive Phase 0 **whole**: patching
+  `$HEAD_SHA` alone leaves `$BASE_SHA` pre-rebase, which is the rewritten-base
+  failure arriving by another route.
+
+### Added — guards that execute the recipe
+
+- `integration/` now extracts the reference's one-liners **from the file and runs
+  them**. This is not redundant with the prose guards, and the proof is that the
+  first draft of the OSV query shipped with a mismatched bracket
+  (`{"queries":[… for v in …}`) that every reading looked past; running it back out
+  of the file caught it immediately. The GHSA guard runs twice — once on `ruff`,
+  expecting nothing, and once on a package known to have advisories — because a
+  query that has only ever returned empty establishes nothing about whether it can
+  return anything.
+
+### Note
+
+The replay's fifth deviation row proposed chasing a stale `gh` read, and **that
+diagnosis is disproved**: the timing shows the first read was correct when it was
+made. The row was marked `unproven` by the run itself, which is the hand-back rule
+working — and its *remedy* was right regardless of its cause, which is what landed.
+
 ## [0.38.0] — 2026-09-03
 
 Closes [#109](https://github.com/Machai-Kydoimos/dependabot-audit/issues/109),
@@ -4453,7 +4530,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.38.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.39.0...HEAD
+[0.39.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.35.0...v0.36.0

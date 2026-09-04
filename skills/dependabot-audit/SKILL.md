@@ -165,9 +165,39 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 
 git worktree prune          # a previous run's registrations, if $SCRATCH is gone
 git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
+
+# The fetch is the first thing that can disagree with the pin, so assert it here
+# rather than trusting it. Exit 1: the block ran and found something, and what it
+# found changes the shape of the audit.
+FETCHED=$(git rev-parse "pr-<N>") || { echo "pr-<N> did not resolve after the fetch" >&2; exit 2; }
+[ "$FETCHED" = "$HEAD_SHA" ] || {
+  echo "the head moved: discover.py pinned $HEAD_SHA, the fetch resolved $FETCHED" >&2
+  echo "re-run Phase 0 from the start — the pin, the base and the scope move together" >&2
+  exit 1; }
+
 git worktree add "$SCRATCH/pr-<N>" "pr-<N>"
 git worktree add --detach "$SCRATCH/base-<N>" "$BASE_SHA"   # Phase 4 measures here
 ```
+
+**That assertion is not defensive clutter, and the interval it guards is seconds.**
+A bot can rebase between `discover.py` reading the head and the fetch resolving it,
+and then every row of the report is about a commit that is no longer the PR.
+Measured on this plugin's own #99: `discover.py` ran at `23:08:39Z`, Dependabot
+rebased at `23:08:57Z`, and the run's next read returned a different head **and a
+different base** — `$BASE_SHA` moved with it, because the rebase moved the branch
+onto current `main`.
+
+**It was caught that time by accident**, which is the argument for the assertion.
+`git worktree add` prints an abbreviated SHA, a reader noticed it disagreed with
+`$HEAD_SHA`, and the audit recovered. Nothing in the procedure compared the two;
+the guard below fires only when `worktree add` *refuses*, which it does not do
+here — the path was free and the add succeeded, at the wrong commit.
+
+**Re-run Phase 0 whole, never just the pin.** The head, the base, the scope gate
+and the branch-point verdict are all derived from the same read, and a rebase
+moves more than one of them. Patching `$HEAD_SHA` alone leaves `$BASE_SHA` pointing
+at the pre-rebase base, which is the rewritten-base failure arriving by a different
+route.
 
 **`prune` first, and it is not defensive clutter.** `$SCRATCH` lives under
 `$TMPDIR`, so a reboot or a tmp sweep between two audits of the same PR deletes

@@ -111,8 +111,34 @@ that is before you do**:
 
 | Hook `language` | Registry | Covered here |
 |---|---|---|
-| `python` | PyPI | **yes** — hand the package and version to `scripts/audit.py` and `scripts/changelog.py`, which verify it end to end |
+| `python` | PyPI | **yes** — `scripts/changelog.py --package` reads the gap end to end |
 | anything else | npm, rubygems, crates.io … | **no.** Report the boundary. Do not improvise a recipe from the shape of the PyPI one |
+
+**`scripts/audit.py` does not apply here, and this file used to say it did.** It
+takes a lockfile positional and sniffs the content; handed a package name it exits
+with `cannot read <name>`. A `pre-commit` bump has no lockfile, so the currency
+read is two commands rather than one script:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# The registry's true latest AND when it was published. Phase 2 compares that
+# against $CREATED_AT, never against now, so the timestamp is not optional —
+# it is what separates "the bot is behind" from "the bot is inside the cooldown".
+python3 -c 'import json,sys,urllib.request as u; d=json.load(u.urlopen("https://pypi.org/pypi/"+sys.argv[1]+"/json")); v=d["info"]["version"]; f=d["releases"][v][0]; print("latest="+v, "published="+f["upload_time_iso_8601"], "yanked="+str(f["yanked"]))' <pkg>
+
+# The gap's changelog, which IS scripted — `--package`, no lockfile needed.
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/changelog.py" \
+  --scratch "$SCRATCH" --package <pkg> --from <old version> --to <new version>
+```
+
+Measured on `ruff`, 2026-09-04: `latest=0.16.6 published=2026-09-03T16:56:40Z
+yanked=False`; and `changelog.py` resolved `astral-sh/ruff` from PyPI's metadata
+on its own, read all three rungs, and reported **266 of 307 commits unreconciled**
+against what the release notes claim. That reconciliation is the reason to run it
+rather than reading the notes.
 
 The script prints the language and says which of those two rows applies. This is
 the whole of #109's argument: for a Python hook, resolving the requirement puts
@@ -134,18 +160,59 @@ otherwise disagree on every single bump.
 
 ## Phase 3 — Known vulnerabilities
 
-Same as `uv.lock`, on the requirement rather than the tag: OSV and GHSA, queried
-for the **package the hook installs** at the version being adopted.
+OSV and GHSA, queried for the **package the hook installs** at the version being
+adopted — never for the `rev:`. `v0.16.5` is not a PyPI version of anything, so a
+query built from the tag returns an empty result that reads exactly like *no known
+vulnerabilities*. That is the failure this phase is most exposed to here, and it
+is silent.
 
-`v0.16.5` is not a PyPI version of anything, so a query built from the `rev:`
-returns an empty result that reads exactly like *no known vulnerabilities*. That
-is the failure this phase is most exposed to here, and it is silent.
+**`audit.py` does that batch for `uv.lock` and cannot do it here**, because it
+needs a lockfile. So the two queries are yours, and they are short:
+
+```bash
+# OSV, across the whole gap rather than only the version being adopted: a bump
+# that steps over an affected release still spent time on it, and Phase 7's table
+# asks whether the bump moves *into* the advisory or past it.
+python3 -c 'import json,sys,urllib.request as u; vs=sys.argv[2:]; q={"queries":[{"package":{"name":sys.argv[1],"ecosystem":"PyPI"},"version":v} for v in vs]}; r=json.load(u.urlopen(u.Request("https://api.osv.dev/v1/querybatch",data=json.dumps(q).encode(),headers={"Content-Type":"application/json"}))); [print(sys.argv[1],v,len(x.get("vulns") or []),"advisory(ies)") for v,x in zip(vs,r["results"])]' <pkg> <every version in the gap>
+
+# GHSA, and note it is UNQUALIFIED by version. A version-qualified query reads
+# clean whether or not the package has advisories, which is the reassuring
+# direction; ask for all of them and read the ranges yourself.
+gh api graphql -f query='{securityVulnerabilities(first:20, ecosystem:PIP, package:"<pkg>"){nodes{advisory{ghsaId severity}vulnerableVersionRange firstPatchedVersion{identifier}}}}' \
+  --jq '.data.securityVulnerabilities.nodes[] | .advisory.ghsaId+"  "+.advisory.severity+"  "+.vulnerableVersionRange'
+```
+
+**Both were run while writing this, and the GHSA one was run against a control.**
+`ruff` returns zero from each, at 0.16.2, 0.16.5 and 0.16.6. A check that has only
+ever returned empty proves nothing about whether it discriminates, so the same
+query was pointed at `requests`, which returns `GHSA-gc5v-m9x4-r6x2 MODERATE
+< 2.33.0` and two more. Point it at a package you know is affected before you
+trust a clean answer from it.
 
 Where the language is not `python`, the ecosystem is outside this plugin: report
 that the advisory check was not made, rather than making one whose result you
 cannot stand behind.
 
 ## Phase 4 — Behavior change
+
+**`pre-commit` is very often not on `PATH`, and this phase and the next both call
+it.** This repository's own `ci.yml` does `pip install pre-commit` first, so even
+here it is not assumed. Derive the invocation once, at the top of this phase, and
+reuse it in Phase 5:
+
+```bash
+PC=$(command -v pre-commit >/dev/null && echo "pre-commit" || echo "uvx pre-commit")
+$PC --version || { echo "no pre-commit and no uvx — Phases 4 and 5 cannot run" >&2; exit 2; }
+```
+
+`uvx pre-commit` fetches it on demand and needs no install. Measured here on
+2026-09-04: `command -v pre-commit` exits **1**, and `uvx pre-commit --version`
+prints `pre-commit 4.6.2`.
+
+**An absent `pre-commit` is exit 2, not a failing hook.** "Could not run" reported
+as "ran and found something" is the distinction this procedure is most careful
+about everywhere else, and the easiest one to lose here — a shell that cannot find
+the binary exits non-zero exactly like a hook that found a problem.
 
 **This is the phase, and the hook definition is where it lives.** Diff
 `.pre-commit-hooks.yaml` between the two revs — which is what the script did in
@@ -168,12 +235,42 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 [ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
 
-# Check mode, both revs, against the SAME tree. `--all-files` and never a commit:
-# the question is what the hook selects now, not what a commit happened to touch.
-git -C "$SCRATCH/base-<N>" ls-files | wc -l          # the denominator, stated
-( cd "$SCRATCH/base-<N>" && pre-commit run <hook id> --all-files )
-( cd "$SCRATCH/pr-<N>"   && pre-commit run <hook id> --all-files )
+# The denominator, stated — `report-template.md` requires a count attributed to a
+# class of file to come from a command, and this is the phase that tempts the split.
+git -C "$SCRATCH/pr-<N>" ls-files | wc -l
+git -C "$SCRATCH/pr-<N>" ls-files '*.md' | wc -l     # or whatever class the field selects
+
+# 1. WITH the repo's config, both revs, against the SAME tree. This is what
+#    actually happens on a commit.
+( cd "$SCRATCH/base-<N>" && $PC run <hook id> --all-files )
+( cd "$SCRATCH/pr-<N>"   && $PC run <hook id> --all-files )
+
+# 2. WITHOUT it — the tool alone, at each rev's pinned version, over the files the
+#    new `types_or`/`types`/`files` now selects. This is the pair that separates
+#    *the tool changed* from *the wrapper's selection changed*, and nothing else does.
+cd "$SCRATCH/pr-<N>"
+uvx <tool>@<old version> format --check $(git ls-files '*.md')
+uvx <tool>@<new version> format --check $(git ls-files '*.md')
 ```
+
+**Read the two runs against each other, not each on its own.** Measured on this
+repository at `ruff-pre-commit` v0.16.2 → v0.16.5:
+
+| Run | Result |
+|---|---|
+| hook **with** config, either rev | `ruff format … Passed` — 0 files rewritten |
+| tool **without** config, ruff 0.16.5 | `6 files would be reformatted, 10 already formatted` |
+| tool **without** config, ruff **0.16.2** | `6 files would be reformatted, 10 already formatted` |
+
+**The old and new tool versions agree exactly.** So the tool did not change what it
+does to a Markdown file; the *wrapper* changed which files it is handed. That is
+the finding, and only the second pair of rows can produce it — the first pair
+passes at both revs and says nothing.
+
+The 6 are removed by `exclude: ^integration/fixtures/` on the hook, which is why
+the run is green. **State the exclusion as the reason**, per `SKILL.md`'s Phase 4:
+a gate that would rewrite files the repo excludes has not been shown harmless, it
+has been shown *currently excluded*, and those are different claims.
 
 Report the difference between those two runs, by **file class and counted from a
 command** — `report-template.md` is explicit that a count attributed to a class of
@@ -186,7 +283,7 @@ shadows the root for files beneath it. That rule came from this exact bump.
 
 ## Phase 5 — Independent reproduction
 
-`pre-commit run --all-files` in `$SCRATCH/pr-<N>`, which is the repo's own gate
+`$PC run --all-files` in `$SCRATCH/pr-<N>` — `$PC` from Phase 4 — which is the repo's own gate
 and usually the whole of CI's lint job.
 
 **It is not hermetic, and the report must say so.** `pre-commit` builds each
