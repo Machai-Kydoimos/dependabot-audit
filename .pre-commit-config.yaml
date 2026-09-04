@@ -14,7 +14,7 @@
 # repo has no lockfile and no dependencies by design, so the rev is the only one.)
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.2
+    rev: v0.16.5
     hooks:
       # Lint before format, per Astral's ordering guidance, so `--fix` output is
       # then reformatted.
