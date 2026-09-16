@@ -11,6 +11,107 @@ patch.
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-09-16
+
+Two phases required a measurement and supplied no command to take it. Both were
+found by the live replay of 0.41.0, both reproduce, and both produced a
+well-formed row about the wrong thing at exit 0.
+
+**Minor, not patch.** Phase 3 now audits a different set, and Phase 2 gains a
+check it previously only asserted was mandatory.
+
+### Fixed — Phase 3's export was narrowed by the audited repo's own config (#125)
+
+- **`uv export` takes `tool.uv.default-groups`**, which is a setting the audited
+  repository controls — so the repository under audit decided what this phase
+  audited. Measured on uv 0.12.15: with `[tool.uv]` absent the export covers
+  runtime + `dev`; with `default-groups = []` it covers runtime only;
+  `--all-groups` covers every group and exits 0 where there are none to add.
+
+- **Observed on `fpga-board-sim` #437**, which sets `default-groups = []`: the
+  plain export carried **12** packages where `--all-groups` carries 38, and
+  **neither of the two packages the PR bumped**. `pip-audit` then reported *"No
+  known vulnerabilities found"* — a true statement about a set that excluded the
+  entire bump, at exit 0 and well-formed, in the phase whose job is to not do
+  that. This is #118's *"a missing key reads as a clean zero"* one artifact along.
+
+- **The flag answers this config; the reconcile answers the class.** The export
+  is now checked against the packages Phase 1 derived, the way Phase 5 already
+  reconciles its `uv sync` — no flag anticipates the next `default-groups`. That
+  `grep` is what caught the case above, and the phase now notes that `grep` exits
+  1 on no match, so a `&&` chain drops whatever came next.
+
+- **The two halves of the row could disagree about scope and still read as
+  agreement.** `audit.py`'s OSV batch reads the lockfile, which is universal — a
+  group excluded from every export is still pinned in `uv.lock` and still
+  queried. `pip-audit` reads the export. A narrowed export therefore did not
+  leave the row visibly half empty; it left the corroborating half quietly about
+  a smaller set than the half it corroborates.
+
+- Phase 5's `default-groups` warning is sharpened for the case that bit: its
+  examples were `lint`/`test`/`docs`, and the observed repo's group is literally
+  `dev` — the one name that reads as already covered by uv's default.
+
+- **Replayed against #437's real tree**, per CONTRIBUTING's gate, rather than
+  against a fixture built from the rule: the old form exports 12 packages and the
+  reconcile matches nothing at exit 1; the new form exports 38 and matches both
+  bumps at the proposed versions. `pip-audit` reports *"No known vulnerabilities
+  found"* **either way**. The fix does not change the verdict on this PR — it
+  changes what the verdict is *about*, and nothing in the old report could have
+  told a reader which. That is the argument for the reconcile and the scope line
+  rather than the flag alone.
+
+### Added — a tripwire on the scope statement that lives outside the repository
+
+- **The plugin says which ecosystems it covers in four places, and only three are
+  files.** `SKILL.md`'s frontmatter, `plugin.json` and the README table are all
+  reachable by `tests/`; the **GitHub repo About** is repository metadata, so no
+  test could see it and `ci.yml` could not fail on it. It drifted accordingly —
+  it read *"Covers uv.lock and GitHub Actions"*, omitting `pre-commit`, which has
+  a 307-line reference, a 546-line `precommit.py`, its own
+  `integration/test_precommit_replay.py` and a README row arguing it is the one
+  that pays. Fixed with `gh repo edit --description`, which is not a commit.
+
+- That is worse than a stale sentence, because `SKILL.md`'s `description` is what
+  **routes the skill** — the About and the router disagreeing is two different
+  answers to *"what does this plugin do"*.
+
+- `integration/test_live_about.py` now checks all four agree, **anchored to
+  `discover.py`'s `_ecosystem()`** rather than to one description matching
+  another, which would only prove two sentences had the same author. Mutation-
+  checked: adding a fourth ecosystem to the classifier fails the guard, and so
+  does renaming a sentinel. Its negative control is the drift that actually
+  happened, so it asserts the check would have caught what it was written for.
+
+### Added — Phase 2 can now take the currency measurement it requires (#124)
+
+- **`references/actions.md` § Phase 2 made the newer-release check mandatory
+  above v7** — measured, correctly, on `astral-sh/setup-uv`, whose moving major
+  tag was discontinued at v8 — and supplied no command to list releases or find
+  the latest. On `fpga-board-sim` #436, a v10 bump, the row could only be filled
+  by improvising. The run improvised it correctly and reported *"No
+  improvisation"*; a blank the procedure leaves is the improvisation that goes
+  unreported, which is exactly the case Phase 8 warns about.
+
+- The phase now carries `releases/latest`, with its failure mode measured rather
+  than assumed: the call **404s** on a repository that publishes no releases at
+  all (measured on `git/git` and `torvalds/linux`, `gh` exit 1), and an action
+  that only ever moves tags is exactly that shape. `gh` writes the error body to
+  **stdout**, so a capture succeeds and holds `{"message":"Not Found"…}` while
+  looking like an answer — the same trap #39 records for
+  `branches/<b>/protection`. That row is underivable, not current.
+
+- **`SKILL.md` § Phase 2 stated the rule without its exception.** *"A moving
+  major tag picks up new releases on its own, so a newer patch is not a gap"* is
+  false above the boundary, and `SKILL.md` is the file always loaded while the
+  references are fetched — so a run trusting the summary had no reason to open
+  `actions.md` for that row. The exception now sits where the rule is stated.
+
+- The **disclosure** half of #124 is deliberately not fixed here. Phase 7 and
+  Phase 8 already state the rule twice, in bold, and it was not followed; that is
+  a model-adherence finding and belongs in #32's eval suite, not in more prose.
+  #124 stays open for it.
+
 ## [0.41.0] — 2026-09-16
 
 Two defects found by *verifying* 0.40.0 rather than by reasoning about it, plus
@@ -4702,7 +4803,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.41.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.42.0...HEAD
+[0.42.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.38.0...v0.39.0

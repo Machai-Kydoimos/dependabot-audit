@@ -714,9 +714,13 @@ is waiting, outside it the bot is behind.
 
 **For GitHub Actions "current" is a question about the tag line, not the pin** —
 a moving major tag picks up new releases on its own, so a newer patch is not a
-gap. `references/actions.md` § Phase 2 has the `compare` that separates a tag
-that merely moved *ahead* from one that rolled **behind**, which is the case a
-bot cannot fix because it cannot propose a downgrade.
+gap. **Where that tag still exists**, which is not a given: publishers do
+discontinue it (measured on `astral-sh/setup-uv`, at v8), and above that boundary
+a newer patch *is* a gap and the question becomes one about releases rather than
+tags. `references/actions.md` § Phase 2 has both — the release check for that
+case, and the `compare` that separates a tag which merely moved *ahead* from one
+that rolled **behind**, which is the case a bot cannot fix because it cannot
+propose a downgrade.
 
 **For `pre-commit` it is two questions, and the tag answers neither.** The
 `rev:` is a ref on the hook repository; the version that gets installed is

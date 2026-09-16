@@ -146,6 +146,30 @@ the major under audit, which is why this is asked per bump rather than settled
 once per action — and a bump that crosses the boundary changes what the pin
 comment promises, which no bot PR mentions.
 
+**Where the tag line is gone, currency is a question about releases** — so ask
+the releases, because the tag cannot answer:
+
+```bash
+gh api repos/<owner>/<repo>/releases/latest \
+  --jq '"\(.tag_name)\t\(.published_at)\tprerelease=\(.prerelease)"'
+```
+
+Measured 2026-09-16: `astral-sh/setup-uv` answers `v10.1.0`, published
+2026-09-10 — so a PR proposing v10.0.1 carries a gap no tag check can see. The
+endpoint excludes prereleases and drafts, which is what this row wants.
+
+**A failure here is underivable, not current.** The call 404s on a repository
+that publishes no releases at all — measured on `git/git` and `torvalds/linux`,
+`gh` exit 1 — and an action that only ever moves tags is exactly that shape. `gh`
+writes the error body to **stdout**, so a capture succeeds and holds
+`{"message":"Not Found"…}` while looking like an answer: key on the exit status,
+not on what came back. Report the row underivable and say why — a question that
+could not be asked is not a pin confirmed current.
+
+It names the newest release, not the highest version. If the major it reports is
+*below* the one the PR proposes, a backport is on the line rather than a gap, and
+`releases?per_page=15` shows the order before you call it either.
+
 **When the tag does not point at the proposed SHA, that is a question, not a
 verdict.** Ask which way it moved:
 
