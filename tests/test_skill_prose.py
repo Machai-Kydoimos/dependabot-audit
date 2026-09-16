@@ -50,6 +50,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "skills/dependabot-audit"
 SKILL = PLUGIN / "SKILL.md"
 
+# One class here pins SKILL.md's merge-state table against `ci_state.py`'s own
+# sets, so this file imports a script. At module scope rather than inside the
+# test: done lazily it passed only because `test_ci_state.py` had run first and
+# left the path behind, and the class failed when run alone — an order-dependent
+# green, which is the same defect as a guard that never fires.
+sys.path.insert(0, str(PLUGIN / "scripts"))
+
 # Names the skill is entitled to use without defining, so the forward-reference
 # guard must not read them as outputs one phase owes another. `TMPDIR` joined them
 # in 0.26.0: Phase 0 derives `$SCRATCH` under `${TMPDIR:-/tmp}` so the path is the
@@ -4457,3 +4464,101 @@ class TestTheFetchIsAssertedAgainstThePin(SkillHarness):
             "Phase 0 does not say the whole derivation has to be repeated, so the "
             "cheap-looking fix is to patch $HEAD_SHA and keep a stale $BASE_SHA",
         )
+
+
+import ci_state  # noqa: E402  (needs the sys.path insert above)
+
+
+class TestTheMergeStateProseMatchesTheScript(unittest.TestCase):
+    """SKILL.md's Phase 6 table and `ci_state.py`'s sets are the same claim twice.
+
+    The table used to key on *not `BLOCKED`* — a two-state read of an eight-value
+    enum, so `BEHIND` landed in the row reading "the repo enforces nothing". The
+    script had the identical hole, and the two agreeing is what made it invisible:
+    a reader checking the prose against the code found them consistent and wrong.
+
+    These pin them to each other, wrap-insensitively. SKILL.md is hard-wrapped, so
+    every phrase worth pinning straddles a newline and a literal substring test
+    silently matches whichever fragment shares a line.
+    """
+
+    flat: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.flat = " ".join(SKILL.read_text(encoding="utf-8").split())
+
+    def test_behind_has_its_own_row(self):
+        self.assertIn(
+            "| none | `BEHIND` |",
+            self.flat,
+            "the zero-required table must not fold BEHIND into a not-BLOCKED row",
+        )
+
+    def test_the_unenforced_row_names_its_values(self):
+        """The defect was a negated row, not a wrong one: "not BLOCKED" is open
+        at the top, so a value added later inherits the strongest claim in the
+        table. Naming the three mergeable values closes it."""
+        self.assertIn(
+            "| none | `CLEAN`, `HAS_HOOKS`, `UNSTABLE` |",
+            self.flat,
+            "the 'enforces nothing' row must enumerate, never negate",
+        )
+
+    def test_the_table_and_the_script_classify_the_same_values(self):
+        """The pin that actually costs something to break."""
+        for value in sorted(ci_state.BLOCKING | ci_state.MERGEABLE):
+            with self.subTest(value=value):
+                self.assertIn(
+                    f"`{value}`",
+                    self.flat,
+                    f"{value} is classified in ci_state.py and unmentioned in SKILL.md",
+                )
+
+
+class TestTheProcedureSurvivesASecondPR(unittest.TestCase):
+    """Everything in SKILL.md is written for one PR, and the second one frays it.
+
+    Observed in one session, on two Dependabot PRs merged independently:
+
+    1. Merging the first moved the base under the second. The Phase 7 re-check
+       compares `headRefOid`, which had not moved, so it passed — and `base_drift`
+       is deliberately a qualifier rather than a finding, so nothing carried.
+    2. The second report was written as prose where the first was a table,
+       because `references/report-template.md` was read once and reconstructed
+       from memory thereafter.
+
+    Both are context loss *across* audits. The per-phase "nothing survives one
+    call, re-derive `$SCRATCH`" discipline covers it *within* one and says nothing
+    about the boundary between two.
+    """
+
+    flat: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.flat = " ".join(SKILL.read_text(encoding="utf-8").split())
+
+    def test_the_head_recheck_says_the_base_moves_too(self):
+        self.assertIn(
+            "That moves the *base*, not the head",
+            self.flat,
+            "the head-SHA guard reads as the only staleness check, and it passes "
+            "in the case a sibling merge creates",
+        )
+
+    def test_the_procedure_orders_audit_merge_audit(self):
+        self.assertIn(
+            "Not audit, audit, merge, merge",
+            self.flat,
+            "nothing tells the auditor that merging invalidates a pending verdict",
+        )
+
+    def test_the_template_must_be_reopened_per_report(self):
+        """The pointer used to inline a section list complete enough to feel
+        sufficient, which is what a second report is written from."""
+        self.assertIn("**open it**, for every report", self.flat)
+        self.assertIn("deliberately not a substitute", self.flat)
+
+    def test_a_sibling_merge_is_named_as_the_cause_of_behind(self):
+        self.assertIn("Land one bot PR and every sibling goes `BEHIND`", self.flat)

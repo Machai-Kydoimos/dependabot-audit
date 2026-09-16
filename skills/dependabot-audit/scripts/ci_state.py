@@ -55,18 +55,48 @@ FAILING = frozenset({"FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ER
 # row noise on most bumps, which trains the reader to skip the row that matters.
 PASSING = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED", "EXPECTED"})
 
-# `mergeStateStatus` values that mean something still blocks the merge. UNSTABLE
-# is deliberately absent: it means every *required* check is green and something
-# non-required is unsettled, which is mergeable. UNKNOWN is absent too — it is
-# not "nothing blocks", it is "not established", and it is what a merged PR
-# returns, so it is handled as underivable rather than as either answer.
-BLOCKING = frozenset({"BLOCKED", "DIRTY", "DRAFT"})
+# `mergeStateStatus`, classified **exhaustively**. The enum is closed — eight
+# values, introspected — and both sets are written out so that anything else is
+# neither blocking nor mergeable but *unrecognised*, which routes to underivable
+# below. The previous shape was an allowlist of three with everything else
+# falling through to "nothing blocks", and that is how `BEHIND` came to be read
+# as a clear merge: not in the set, therefore fine.
+#
+#   BEHIND      blocks. The head is out of date, and GitHub returns it only where
+#               the base *requires* branches to be up to date — so it is evidence
+#               the repo enforces something, never the absence of enforcement.
+#               The ordinary cause is a sibling merge: land one bot PR and every
+#               other one goes BEHIND. Remedied by updating the branch, which
+#               moves the head and invalidates every row of an audit in flight.
+#   BLOCKED     blocks. Something gates it that the context list may not show.
+#   DIRTY       blocks. The merge commit cannot be cleanly created.
+#   DRAFT       blocks, on the PR's own state rather than the repo's rules.
+#   CLEAN       mergeable, and passing.
+#   HAS_HOOKS   mergeable; pre-receive hooks run on merge. Not a gate we can read.
+#   UNSTABLE    mergeable: every *required* check is green and something
+#               non-required is unsettled.
+#   UNKNOWN     neither. Computed lazily, and what a merged PR returns — "not
+#               established", which is a third answer and not either of the two.
+BLOCKING = frozenset({"BEHIND", "BLOCKED", "DIRTY", "DRAFT"})
+MERGEABLE = frozenset({"CLEAN", "HAS_HOOKS", "UNSTABLE"})
+
+# What the two sets above cover between them. A value outside it is one GitHub
+# added after this was written, and the whole point of classifying exhaustively
+# is that such a value reads as "not established" rather than as "nothing
+# blocks". `integration/test_live_merge_state.py` is what notices it arriving.
+CLASSIFIED = BLOCKING | MERGEABLE
 
 ROLLUP_QUERY = """
 query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
   repository(owner:$owner, name:$name) {
     pullRequest(number:$number) {
       mergeable mergeStateStatus reviewDecision
+      # `DRAFT` in mergeStateStatus is deprecated -- "DRAFT state will be removed
+      # from this enum and `isDraft` should be used instead", with an announced
+      # removal of 2021-01-01 that has not happened. Both are read: the enum
+      # while it still answers, this for when it stops. Found by the enum
+      # tripwire in `integration/test_live_merge_state.py` on its first run.
+      isDraft
       baseRef { name target { ... on Commit { oid committedDate } } }
       commits(last:1) { nodes { commit { oid committedDate statusCheckRollup { state
         contexts(first:100, after:$cursor) {
@@ -289,6 +319,10 @@ def rollup(owner: str, name: str, number: int) -> dict[str, Any]:
         "base_committed": base_target.get("committedDate") or "",
         "rollup_state": state,
         "merge_state": pull.get("mergeStateStatus") or "",
+        # `Boolean!` in the schema, so a successful query always carries it. Kept
+        # as None rather than coerced when it is somehow absent: `bool(None)` is
+        # False, and "not a draft" is not something a missing field established.
+        "is_draft": pull.get("isDraft"),
         "mergeable": pull.get("mergeable") or "",
         "review_decision": pull.get("reviewDecision") or "",
         "contexts": contexts,
@@ -478,10 +512,19 @@ def analyse(report: dict[str, Any]) -> dict[str, Any]:
     report["red"] = red
     report["unsettled"] = unsettled
     report["required_red"] = [c for c in required if c["result"] in FAILING]
-    report["blocked"] = report["merge_state"] in BLOCKING
+    # `or is_draft` and not `in BLOCKING` alone: a draft PR is unmergeable
+    # whichever of the two fields says so, and the enum half is on notice.
+    report["blocked"] = report["merge_state"] in BLOCKING or report.get("is_draft") is True
     # UNKNOWN is what a merged PR returns and what an open one returns before
-    # GitHub has computed it. Not "nothing blocks" — not established.
-    report["merge_state_underivable"] = report["merge_state"] in ("", "UNKNOWN")
+    # GitHub has computed it. Not "nothing blocks" — not established. A value
+    # this script does not classify lands here too, for the same reason: an enum
+    # GitHub grew after this was written is unread, and unread is not clear.
+    report["merge_state_unrecognised"] = bool(report["merge_state"]) and (
+        report["merge_state"] not in CLASSIFIED
+    )
+    report["merge_state_underivable"] = (
+        report["merge_state"] in ("", "UNKNOWN") or report["merge_state_unrecognised"]
+    )
     report["findings"] = bool(report["required_red"]) or report["blocked"]
     # Deliberately after `findings` and deliberately not part of it. Drift
     # qualifies rows; it never invents one. A default branch that moved while an
@@ -509,9 +552,31 @@ def render(report: dict[str, Any]) -> None:
         print("  !! CONTEXT LIST TRUNCATED — the required set is UNDERIVABLE, not empty.")
         print("     Do not report the visible contexts as though they were all of them.\n")
 
-    if report["merge_state_underivable"]:
+    if report["merge_state_unrecognised"]:
+        # Distinct from UNKNOWN on purpose: UNKNOWN is GitHub saying "not yet",
+        # this is GitHub saying something this script has never heard of. Both
+        # are underivable; only one of them is a bug report.
+        print(f"  !! mergeStateStatus {report['merge_state']} is not a value this script")
+        print("     classifies. Treated as *not established* rather than as 'nothing")
+        print("     blocks' — but the classification is out of date; please report it.")
+    elif report["merge_state_underivable"]:
         print("  !! mergeStateStatus is UNKNOWN: computed lazily, and this is also what")
         print("     a merged PR returns. That is *not established*, not 'nothing blocks'.")
+    elif report["blocked"] and report["merge_state"] == "BEHIND":
+        # Conditioned on `blocked` and not on the string alone: the wording below
+        # asserts GitHub will refuse the merge, and that claim has to come from
+        # the same classification the exit code does, or the two drift and one of
+        # them is wrong. Its own row rather than folding into `blocked`'s
+        # generic text because the remedy differs.
+        # BLOCKED asks what gates the PR; BEHIND names it and says to press the
+        # button — and the button moves the head, which is what makes this an
+        # audit-invalidating state rather than a merge-button one.
+        print("  !! mergeStateStatus is BEHIND: the head is out of date and this base")
+        print("     REQUIRES it to be current, so GitHub will refuse the merge. That is")
+        print("     enforcement, not the absence of it. Updating the branch MOVES THE")
+        print("     HEAD — every row of this audit describes the commit before it, and")
+        print("     the audit has to be re-run from Phase 1 against the new head.")
+        print("     Landing a sibling bot PR is the ordinary cause.")
 
     drift = report["base_drift"]
     if drift["state"] == "yes":
@@ -544,7 +609,15 @@ def render(report: dict[str, Any]) -> None:
         # a strong claim about a repository, drawn from a field that was not read.
         # Found by replaying this plugin's own #26, where the script printed the
         # UNKNOWN warning and that conclusion four lines apart.
-        if report["blocked"]:
+        if report["blocked"] and report["merge_state"] == "BEHIND":
+            # "Something you cannot see" is wrong here and the distinction is the
+            # finding: BEHIND names its own gate. A base that requires branches to
+            # be current is a repo that enforces something, which is the opposite
+            # of what this branch used to print for it.
+            print("  !! zero required contexts AND mergeStateStatus BEHIND: this base")
+            print("     requires branches to be up to date, so it enforces something even")
+            print("     though nothing required reported. NOT 'nothing enforced'.")
+        elif report["blocked"]:
             print("  !! zero required contexts AND mergeStateStatus blocks: something")
             print("     gates this PR that you cannot see. UNDERIVABLE, not 'nothing enforced'.")
         elif report["merge_state_underivable"]:
@@ -596,8 +669,22 @@ def render(report: dict[str, Any]) -> None:
         names = ", ".join(c["name"] for c in report["unsettled"][:6])
         print(f"\n  {len(report['unsettled'])} context(s) not settled: {names}")
 
+    # Three states here too, and this is the line most likely to be read alone.
+    # "CLEAN" is GitHub's own word for a specific `mergeStateStatus`, so printing
+    # it next to `merge state UNKNOWN` asserts the one thing the row above just
+    # said was not established — the warning and the conclusion four lines apart,
+    # which is the #26 complaint at the bottom of the report instead of the
+    # middle. The exit code deliberately does NOT move with it: a merged PR
+    # returns UNKNOWN, replaying one is routine, and exit 1 on every replay is
+    # how a signal stops being read.
+    if report["findings"]:
+        verdict = "NEEDS REVIEW"
+    elif report["merge_state_underivable"]:
+        verdict = "NO FINDING, AND THE MERGE STATE WAS NEVER ESTABLISHED"
+    else:
+        verdict = "CLEAN"
     print(
-        f"\nRESULT: {'NEEDS REVIEW' if report['findings'] else 'CLEAN'}"
+        f"\nRESULT: {verdict}"
         f" — {len(report['required_red'])} required check(s) failing,"
         f" merge state {report['merge_state'] or 'UNKNOWN'}"
     )

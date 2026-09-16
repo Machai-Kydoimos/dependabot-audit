@@ -1058,12 +1058,18 @@ before it settles. `UNKNOWN` is underivable, not "nothing blocks" — the script
 says so rather than leaving it to be remembered.
 
 **Zero required contexts is a finding only when `mergeStateStatus` agrees**, and
-the script reads them together:
+the script reads them together. The left column of this table used to say *not
+`BLOCKED`*, which is a two-state read of an **eight**-value enum: every value
+nobody had thought of landed in the row that says "the repo enforces nothing",
+and `BEHIND` — the ordinary state of a bot PR on a busy repo — is the one that
+did. The values are written out now, in both the table and `ci_state.py`, so an
+enum GitHub grows reads as *unclassified* rather than as *clear*:
 
 | Required contexts | `mergeStateStatus` | Reading |
 |---|---|---|
-| none | not `BLOCKED` | the repo enforces nothing — real, and it changes what a green run is worth |
-| none | `BLOCKED` | something gates this PR that you cannot see. **Underivable**, per Phase 0 — do not report it as "no enforced checks" |
+| none | `CLEAN`, `HAS_HOOKS`, `UNSTABLE` | the repo enforces nothing — real, and it changes what a green run is worth |
+| none | `BEHIND` | this base **requires** branches to be up to date, so it enforces something even though nothing required reported. Never "no enforced checks" |
+| none | `BLOCKED`, `DIRTY`, `DRAFT` | something gates this PR that you cannot see. **Underivable**, per Phase 0 — do not report it as "no enforced checks" |
 | some | `BLOCKED` | read `reviewDecision` and the unsettled contexts; the checks alone do not explain it |
 
 **The context list can be truncated, and the script refuses to hide it.**
@@ -1277,10 +1283,45 @@ test "$(gh pr view <N> --json headRefOid --jq .headRefOid)" = "$HEAD_SHA"
 
 If it moved, say so and re-run from Phase 1. Do not reconcile the two by hand.
 
-Use the exact shape in `references/report-template.md`: verdict, confidence,
+**The head is not the only thing that moves, and the other one is your own
+doing.** This guard is written for a bot rebasing mid-audit, and it passes
+cleanly in the case that actually happens more often: you merged a **different**
+PR. That moves the *base*, not the head — `headRefOid` still matches, every row
+above still describes a live commit, and the audit is stale anyway, because CI
+ran on `refs/pull/<N>/merge` against a base that no longer exists. Phase 6's
+`base_drift` detects it and says so, but it is deliberately a qualifier and never
+a finding, so nothing in the exit code or the RESULT line will stop you. Two
+consequences, and neither is hypothetical — both were observed in one session:
+
+- **Land one bot PR and every sibling goes `BEHIND`** wherever the base requires
+  branches to be up to date. `ci_state.py` reports that as blocking, and updating
+  the branch to clear it **moves the head**, which invalidates Phases 1-5.
+- **Re-run Phase 6 for any PR you audited before that merge**, or say in its
+  report that its CI evidence predates the merge. It is one command.
+
+### More than one PR in a session
+
+Everything above is written for one PR, and the second one is where it frays.
+`$SCRATCH` is keyed on `<N>` so the scratch trees do not collide, but nothing
+else carries across — and the failures are quiet rather than loud:
+
+- **Audit, then merge, then audit.** Not audit, audit, merge, merge. A verdict
+  written before a sibling landed describes a merge base that no longer exists.
+- **Re-read `references/report-template.md` for each report, not once per
+  session.** Reconstructing the shape from memory is what produces a second
+  report that is readable prose where the first was a table — the same evidence,
+  in a form the reader cannot scan against the first. Observed: two bump PRs in
+  one session, the first tabulated, the second not.
+
+Use the exact shape in `references/report-template.md` — **open it**, for every
+report, including the second one in a session. It carries more than the section
+list: the evidence table's columns, one row per phase including the skipped ones,
+and the rule that a count attributed to a class of file has to come from a
+command. The summary here is deliberately not a substitute: verdict, confidence,
 evidence table, reasoning, what would change the verdict, and the **un-run** merge
-command. Lead with evidence; the recommendation is a conclusion drawn from it,
-not a headline it decorates.
+command is enough to write *a* report and not enough to write *that* one. Lead
+with evidence; the recommendation is a conclusion drawn from it, not a headline it
+decorates.
 
 **If this audit had to improvise, the report says so.** One line, wherever it ran
 a command this procedure did not specify or read a plugin file by hand instead of

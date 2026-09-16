@@ -28,6 +28,7 @@ sys.path.insert(
     0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
 )
 
+import ci_state
 from ci_state import cli, main
 
 HEAD = "h" * 40
@@ -69,6 +70,7 @@ def page(
     base_ref: str = "main",
     base_oid: str | None = BASE_TIP,
     base_committed: str | None = "2026-07-01T00:00:00Z",
+    is_draft: bool | None = False,
 ) -> dict[str, Any]:
     """One GraphQL response. `total` defaults to the node count (nothing truncated).
 
@@ -86,6 +88,7 @@ def page(
                 "pullRequest": {
                     "mergeable": "MERGEABLE",
                     "mergeStateStatus": merge_state,
+                    "isDraft": is_draft,
                     "reviewDecision": review,
                     "baseRef": {"name": base_ref, "target": target},
                     "commits": {
@@ -545,6 +548,221 @@ class TestMergeStateIsReadAsThreeStates(CiStateHarness):
             "an unestablished merge state cannot support 'this repo enforces nothing'",
         )
         self.assertIn("UNDERIVABLE", out)
+
+
+class TestBehindIsNotAClearMerge(CiStateHarness):
+    """`BEHIND` was in neither set, and "neither" fell through to *mergeable*.
+
+    Found by auditing #118 rather than by reasoning about it. `BLOCKING` was an
+    allowlist of three over a **closed** eight-value enum, so every value the
+    author had not thought of read as "nothing blocks". Measured on the shape
+    that produced it — zero required contexts, `mergeStateStatus: BEHIND`:
+
+        -- zero required contexts, and nothing blocks: this repo enforces
+           nothing, which changes what a green run is worth.
+        RESULT: CLEAN — 0 required check(s) failing, merge state BEHIND
+
+    Both claims are false, and the second borrows GitHub's own word for a state
+    this PR is not in. GitHub returns `BEHIND` only where the base **requires**
+    branches to be up to date, so it is evidence the repo enforces something.
+
+    This is also the ordinary state of the second PR in a queue: land one bot PR
+    and every sibling goes `BEHIND`, which is the situation #118 was filed from.
+    """
+
+    def test_behind_blocks_the_merge(self):
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True)], merge_state="BEHIND")
+        ])  # fmt: skip
+        report = self._json(fake)
+        self.assertTrue(report["blocked"], "GitHub will refuse this merge")
+        code, out, _ = self._run(fake)
+        self.assertEqual(code, 1, "a merge GitHub refuses is a finding, not a clean run")
+        self.assertNotIn("RESULT: CLEAN", out)
+
+    def test_behind_says_the_update_invalidates_the_audit(self):
+        """The remedy moves the head, which is what makes this different from
+        every other blocking state: pressing the button GitHub offers replaces
+        the commit all of Phases 1-5 describe.
+
+        Matched against the **collapsed** output. The render wraps at column ~72,
+        so every phrase worth pinning straddles a newline and a literal `assertIn`
+        silently pins whichever fragment happens to sit on one line — this test
+        passed a mutation that deleted the claim, because `MOVES THE` survived on
+        the line above it.
+        """
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True)], merge_state="BEHIND")
+        ])  # fmt: skip
+        _, out, _ = self._run(fake)
+        flat = " ".join(out.split())
+        self.assertIn("Updating the branch MOVES THE HEAD", flat)
+        self.assertIn("every row of this audit describes the commit before it", flat)
+        self.assertIn("re-run from Phase 1 against the new head", flat)
+        self.assertIn("sibling", flat, "the ordinary cause is landing another bot PR")
+
+    def test_zero_required_and_behind_is_not_nothing_enforced(self):
+        """The exact pair of sentences the audit in #118 produced by hand."""
+        fake, _ = self._fake_gh([page([check_run("t", "SUCCESS")], merge_state="BEHIND")])
+        _, out, _ = self._run(fake)
+        flat = " ".join(out.split())
+        self.assertNotIn(
+            "this repo enforces nothing",
+            flat,
+            "a base that requires up-to-date branches enforces something",
+        )
+        self.assertIn("NOT 'nothing enforced'", flat)
+
+
+class TestTheMergeStateEnumIsClassifiedExhaustively(CiStateHarness):
+    """The negative control, and the reason the fix is not one more name in a set.
+
+    An allowlist over a closed enum answers "is it blocking?" with "is it one of
+    the three I listed?", and every other value — including one GitHub adds next
+    year — reads as clear. Classifying exhaustively makes *unrecognised* its own
+    answer, so the failure mode of being out of date is silence about the state
+    rather than a false claim about it. `integration/test_live_merge_state.py`
+    is what notices the enum growing; these are what notice the handling.
+    """
+
+    def test_the_two_sets_are_disjoint(self):
+        self.assertEqual(ci_state.BLOCKING & ci_state.MERGEABLE, frozenset())
+
+    def test_classified_is_exactly_the_union(self):
+        self.assertEqual(ci_state.CLASSIFIED, ci_state.BLOCKING | ci_state.MERGEABLE)
+
+    def test_every_enum_value_is_classified_or_deliberately_not(self):
+        """The enum as introspected on 2026-09-16, written out so that a value
+        arriving in it has to be put somewhere by hand. UNKNOWN is deliberately
+        in neither set: "not established" is a third answer, not a third set."""
+        enum = {
+            "BEHIND", "BLOCKED", "CLEAN", "DIRTY",
+            "DRAFT", "HAS_HOOKS", "UNKNOWN", "UNSTABLE",
+        }  # fmt: skip
+        self.assertEqual(enum - ci_state.CLASSIFIED, {"UNKNOWN"})
+
+    def test_an_unrecognised_value_is_underivable_not_clear(self):
+        """The load-bearing one. A checker that only ever sees values it knows
+        reports green forever, so this feeds it one it cannot know."""
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True)], merge_state="MERGE_QUEUED")
+        ])  # fmt: skip
+        report = self._json(fake)
+        self.assertTrue(report["merge_state_unrecognised"])
+        self.assertTrue(
+            report["merge_state_underivable"],
+            "a value this script cannot read is not a value it may call clear",
+        )
+        _, out, _ = self._run(fake)
+        self.assertIn("MERGE_QUEUED", out, "name it, so the report is actionable")
+        self.assertNotIn("RESULT: CLEAN", out)
+
+    def test_a_recognised_mergeable_value_stays_quiet(self):
+        """The other half of the control: a guard that fires on everything is
+        the same as one that fires on nothing."""
+        for state in sorted(ci_state.MERGEABLE):
+            with self.subTest(state=state):
+                fake, _ = self._fake_gh([
+                    page([check_run("test", "SUCCESS", required=True)], merge_state=state)
+                ])  # fmt: skip
+                report = self._json(fake)
+                self.assertFalse(report["merge_state_unrecognised"])
+                self.assertFalse(report["blocked"])
+                code, out, _ = self._run(fake)
+                self.assertEqual(code, 0)
+                self.assertIn("RESULT: CLEAN", out)
+
+
+class TestDraftIsReadFromTheFieldThatIsNotDeprecated(CiStateHarness):
+    """`mergeStateStatus: DRAFT` is deprecated, and the query now reads both.
+
+    Found by `integration/test_live_merge_state.py` on its first live run, which
+    is the whole argument for that file: introspection reports the deprecation
+    *before* the value disappears, where a functional test cannot notice until it
+    already has. GitHub's own text —
+
+        DRAFT state will be removed from this enum and `isDraft` should be used
+        instead. Use PullRequest.isDraft instead. Removal on 2021-01-01 UTC.
+
+    — carries an announced removal five years past, which is why this is a
+    warning window and not an emergency. When the enum value does go, a draft PR
+    stops being reported as blocked by the half that reads it, and the failure is
+    the silent kind: a draft reads as mergeable.
+    """
+
+    def test_a_draft_is_blocked_by_the_enum_value(self):
+        """While the deprecated value still answers, it still counts."""
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True)],
+                 merge_state="DRAFT", is_draft=True)
+        ])  # fmt: skip
+        code, _, _ = self._run(fake)
+        self.assertEqual(code, 1)
+
+    def test_a_draft_is_blocked_once_the_enum_value_is_gone(self):
+        """The regression this exists for: `isDraft` true and the enum saying
+        something else, which is exactly what removal will look like."""
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True)],
+                 merge_state="CLEAN", is_draft=True)
+        ])  # fmt: skip
+        report = self._json(fake)
+        self.assertTrue(report["blocked"], "a draft PR cannot be merged")
+        code, out, _ = self._run(fake)
+        self.assertEqual(code, 1)
+        self.assertNotIn("RESULT: CLEAN", out)
+
+    def test_a_non_draft_is_unaffected(self):
+        """A guard that fires on everything is the same as one that fires on
+        nothing, and every ordinary bump PR goes through this path."""
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True)],
+                 merge_state="CLEAN", is_draft=False)
+        ])  # fmt: skip
+        code, out, _ = self._run(fake)
+        self.assertEqual(code, 0)
+        self.assertIn("RESULT: CLEAN", out)
+
+    def test_a_missing_isdraft_does_not_assert_not_a_draft(self):
+        """`bool(None)` is False, and "not a draft" is not something an absent
+        field established. The schema says `Boolean!` so this should be
+        unreachable — which is the same thing that was said about `isRequired`
+        being present, in #118."""
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True)],
+                 merge_state="CLEAN", is_draft=None)
+        ])  # fmt: skip
+        report = self._json(fake)
+        self.assertIsNone(report["is_draft"], "absent must survive as absent")
+
+
+class TestTheResultLineNeverOutrunsWhatWasRead(CiStateHarness):
+    """ "CLEAN" is GitHub's word for one specific `mergeStateStatus`, and the line
+    prints the real one beside it. Saying `RESULT: CLEAN ... merge state UNKNOWN`
+    asserts at the bottom of the report the thing a warning four lines up says
+    was never established — the #26 complaint, moved to the summary line.
+
+    The exit code deliberately does not move with the wording: a merged PR
+    returns UNKNOWN, replaying one is routine, and exiting 1 on every replay is
+    how a signal stops being read.
+    """
+
+    def test_an_unestablished_merge_state_is_not_reported_clean(self):
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True)], merge_state="UNKNOWN")
+        ])  # fmt: skip
+        code, out, _ = self._run(fake)
+        self.assertEqual(code, 0, "a merged-PR replay must not start exiting 1")
+        self.assertNotIn("RESULT: CLEAN", out)
+        self.assertIn("NEVER ESTABLISHED", out)
+
+    def test_a_read_and_clear_merge_state_still_reports_clean(self):
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True)], merge_state="CLEAN")
+        ])  # fmt: skip
+        code, out, _ = self._run(fake)
+        self.assertEqual(code, 0)
+        self.assertIn("RESULT: CLEAN", out)
 
 
 class TestNeutralResultsAreNotFailures(CiStateHarness):
