@@ -35,9 +35,18 @@ the RESULT line asserts less than it used to.
 
   Both claims are false, and the second borrows GitHub's own word for a state the
   PR is not in. GitHub returns `BEHIND` only where the base **requires** branches
-  to be up to date, so it is evidence of enforcement, not its absence. This is the
-  ordinary state of the second bot PR in a queue: land one and every sibling goes
-  `BEHIND`.
+  to be up to date, so it is evidence of enforcement, not its absence. Where a base
+  is strict, this is the ordinary state of the second bot PR in a queue: land one
+  and every sibling goes `BEHIND`.
+
+  **Measured, because the first draft of this entry overstated it.** Strict
+  up-to-date enforcement is *uncommon* in large public repos — 0 of 8 whose
+  rulesets are publicly readable set it, and a sweep of 16 repos found no open
+  `BEHIND` PR at all. It is `fpga-board-sim`, the repo this plugin is actually
+  pointed at, that has it: **classic** branch protection, `strict=true`, 7
+  required contexts, which is the "7 required" in #118's report. So the defect is
+  narrow in the wild and live for the repos under audit — which is the reverse of
+  how the first draft read.
 
 - **Classified exhaustively rather than allowlisted**, because the value was the
   symptom and the shape was the defect. `BLOCKING` and `MERGEABLE` are both

@@ -80,11 +80,23 @@ PASSING = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED", "EXPECTED"})
 BLOCKING = frozenset({"BEHIND", "BLOCKED", "DIRTY", "DRAFT"})
 MERGEABLE = frozenset({"CLEAN", "HAS_HOOKS", "UNSTABLE"})
 
-# What the two sets above cover between them. A value outside it is one GitHub
-# added after this was written, and the whole point of classifying exhaustively
-# is that such a value reads as "not established" rather than as "nothing
-# blocks". `integration/test_live_merge_state.py` is what notices it arriving.
+# What the two sets above cover between them.
 CLASSIFIED = BLOCKING | MERGEABLE
+
+# Read, and deliberately in neither set: "not established" is a third answer
+# about the merge, not a third kind of merge state. Separate from CLASSIFIED
+# because the two are asked different questions — `blocked` asks what is in
+# CLASSIFIED, "have I heard of this?" asks what is in KNOWN. Collapsing them
+# reported every merged PR, which returns UNKNOWN, as an unrecognised value:
+# caught on a live replay of fpga-board-sim#437, after two unit tests passed it
+# because the wrong branch's text also contains "not established".
+UNESTABLISHED = frozenset({"UNKNOWN"})
+
+# Every value this script has actually read. Outside it is one GitHub added after
+# this was written, and the whole point of classifying exhaustively is that such a
+# value reads as "not established" rather than as "nothing blocks".
+# `integration/test_live_merge_state.py` is what notices it arriving.
+KNOWN = CLASSIFIED | UNESTABLISHED
 
 ROLLUP_QUERY = """
 query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
@@ -520,10 +532,12 @@ def analyse(report: dict[str, Any]) -> dict[str, Any]:
     # this script does not classify lands here too, for the same reason: an enum
     # GitHub grew after this was written is unread, and unread is not clear.
     report["merge_state_unrecognised"] = bool(report["merge_state"]) and (
-        report["merge_state"] not in CLASSIFIED
+        report["merge_state"] not in KNOWN
     )
     report["merge_state_underivable"] = (
-        report["merge_state"] in ("", "UNKNOWN") or report["merge_state_unrecognised"]
+        not report["merge_state"]
+        or report["merge_state"] in UNESTABLISHED
+        or report["merge_state_unrecognised"]
     )
     report["findings"] = bool(report["required_red"]) or report["blocked"]
     # Deliberately after `findings` and deliberately not part of it. Drift

@@ -502,14 +502,30 @@ class TestMergeStateIsReadAsThreeStates(CiStateHarness):
 
     def test_unknown_is_not_nothing_blocks(self):
         """It is what a merged PR returns, and what an open one returns before
-        GitHub has computed it. Not established, not clear."""
+        GitHub has computed it. Not established, not clear.
+
+        Both halves matter, and the second was added after this test passed a
+        live run that was wrong. `UNKNOWN` is deliberately in neither `BLOCKING`
+        nor `MERGEABLE`, so a first cut at "have I heard of this value?" asked
+        `not in CLASSIFIED` and reported every merged PR as an **unrecognised**
+        value — "the classification is out of date; please report it" — on the
+        single most routine replay there is. This test did not notice, because
+        the unrecognised branch's text also contains "not established". Pinning
+        the shared phrase was pinning nothing.
+        """
         fake, _ = self._fake_gh([
             page([check_run("test", "SUCCESS", required=True)], merge_state="UNKNOWN")
         ])  # fmt: skip
         report = self._json(fake)
         self.assertTrue(report["merge_state_underivable"])
+        self.assertFalse(
+            report["merge_state_unrecognised"],
+            "UNKNOWN is a value this script reads, not one it has never heard of",
+        )
         _, out, _ = self._run(fake)
-        self.assertIn("not established", out)
+        flat = " ".join(out.split())
+        self.assertIn("mergeStateStatus is UNKNOWN: computed lazily", flat)
+        self.assertNotIn("please report it", flat, "UNKNOWN is not a bug report")
 
     def test_zero_required_with_blocked_is_underivable_not_unenforced(self):
         fake, _ = self._fake_gh([page([check_run("test", "SUCCESS")], merge_state="BLOCKED")])
@@ -631,6 +647,14 @@ class TestTheMergeStateEnumIsClassifiedExhaustively(CiStateHarness):
     def test_classified_is_exactly_the_union(self):
         self.assertEqual(ci_state.CLASSIFIED, ci_state.BLOCKING | ci_state.MERGEABLE)
 
+    def test_known_covers_the_unestablished_value_too(self):
+        """`CLASSIFIED` answers "does this block?"; `KNOWN` answers "have I heard
+        of this?". They are different questions and UNKNOWN answers them
+        differently — which is exactly what collapsing them got wrong."""
+        self.assertNotIn("UNKNOWN", ci_state.CLASSIFIED)
+        self.assertIn("UNKNOWN", ci_state.KNOWN)
+        self.assertEqual(ci_state.KNOWN, ci_state.CLASSIFIED | ci_state.UNESTABLISHED)
+
     def test_every_enum_value_is_classified_or_deliberately_not(self):
         """The enum as introspected on 2026-09-16, written out so that a value
         arriving in it has to be put somewhere by hand. UNKNOWN is deliberately
@@ -654,8 +678,16 @@ class TestTheMergeStateEnumIsClassifiedExhaustively(CiStateHarness):
             "a value this script cannot read is not a value it may call clear",
         )
         _, out, _ = self._run(fake)
-        self.assertIn("MERGE_QUEUED", out, "name it, so the report is actionable")
-        self.assertNotIn("RESULT: CLEAN", out)
+        flat = " ".join(out.split())
+        self.assertIn("MERGE_QUEUED", flat, "name it, so the report is actionable")
+        self.assertIn("please report it", flat, "this one *is* a bug report")
+        self.assertNotIn(
+            "computed lazily",
+            flat,
+            "an unheard-of value is not GitHub saying 'not yet'; the two "
+            "diagnoses are different and must not share a branch",
+        )
+        self.assertNotIn("RESULT: CLEAN", flat)
 
     def test_a_recognised_mergeable_value_stays_quiet(self):
         """The other half of the control: a guard that fires on everything is
