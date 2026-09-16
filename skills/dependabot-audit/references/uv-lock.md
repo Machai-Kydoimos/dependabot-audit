@@ -370,9 +370,12 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
 cd "$SCRATCH/pr-<N>"                          # the PR's tree — the set under audit
-uv export --frozen --format requirements.txt --no-emit-project \
+uv export --frozen --format requirements.txt --no-emit-project --all-groups \
   -o "$SCRATCH/pr-<N>-requirements.txt"       # --all-packages for a workspace
 uvx pip-audit -r "$SCRATCH/pr-<N>-requirements.txt" --no-deps --disable-pip
+
+# The export has to contain what the PR changed, or the row is about another set.
+grep -nE '^(<the packages Phase 1 named>)==' "$SCRATCH/pr-<N>-requirements.txt"
 ```
 
 **Three of those flags are this phase's contract, not tidiness.** `--no-deps` and
@@ -382,6 +385,45 @@ updating it. Measured on uv 0.12.8: the audited tree's `setup.py` does not run a
 no `.venv` appears. **Phase 3 runs under `--no-execute`**, where this procedure has
 promised the PR's code will not run — so the flags are what make that promise
 true. Default service is PyPI's advisory DB; `-s osv` selects OSV.
+
+**`--all-groups` is the fourth flag, and its job is scope rather than safety.**
+Without it the export covers the *default* groups — and `tool.uv.default-groups`
+is a setting the audited repo controls, so the audited repo decides what this row
+is about. Measured on uv 0.12.15:
+
+| `[tool.uv]` | plain export | `--all-groups` |
+|---|---|---|
+| absent, so `default-groups` is `["dev"]` | runtime + `dev` | **+ every other group** |
+| `default-groups = []` | runtime only | **every group** |
+| no groups declared at all | runtime | runtime — exit 0, not an error |
+
+Observed on `fpga-board-sim` #437, which sets `default-groups = []`: the plain
+export carried **12** packages where `--all-groups` carries 38, and **neither of
+the two packages the PR bumped**. `pip-audit` then reported *"No known
+vulnerabilities found"* — true of a set that excluded the whole bump, at exit 0,
+well-formed, in the phase whose entire job is to not do that.
+
+**Phase 5's answer is deliberately not this phase's answer.** There the rule is
+*reconcile, never memorise a flag*, because `uv sync` builds one environment and
+`--group dev` is a no-op in one direction and wrong in the other. Here nothing is
+installed and nothing runs, so breadth is free: `--all-groups` only ever widens,
+and it exits 0 where there are no groups to add. Take the whole lockfile.
+
+**Then check that you got it.** The flag answers this config; the `grep` in the
+block above answers the class, because no flag anticipates the next
+`default-groups`. Every name Phase 1 listed must come back from it, at the
+version the PR proposes. It is Phase 5's reconcile pointed at a file instead of
+an environment, and it is what caught the case above (`grep -c … → 0`). `grep`
+**exits 1 when it matches nothing**, so a `&&` chain silently drops whatever came
+next — read the output, not the status.
+
+**The two halves of this row can disagree about scope, and only one of them can
+be narrowed.** `audit.py`'s OSV batch reads the *lockfile*, which is universal: a
+group excluded from every export is still pinned in `uv.lock` and still queried.
+`pip-audit` reads the export. So a narrowed export does not leave the row half
+empty — it leaves the corroborating half quietly about a smaller set than the
+half it corroborates, which is worse, because the row still shows two sources
+agreeing. Say which packages the row covers.
 
 **Verified in both directions**, because an auditor that cannot report dirty is
 worse than none: a clean export exits 0 with *"No known vulnerabilities found"*,
@@ -623,8 +665,13 @@ covers nothing else. Measured on uv 0.12.5:
 
 A bump into `lint`, `test`, `docs` — or into anything at all once
 `tool.uv.default-groups` is narrowed — is therefore *not installed*, and nothing
-fails. Phase 5 then reports a green frozen install for an environment that never
-contained the package under audit, which reads exactly like a reproduction.
+fails. **Read that second clause before trusting the first.** `["dev"]` is uv's
+default, not a guarantee: a repo that sets `default-groups = []` has made `dev`
+non-default too, so a bump whose group is literally named `dev` — the case that
+reads as obviously covered — is the one that is not. Observed on
+`fpga-board-sim` #437. Phase 5 then reports a green frozen install for an
+environment that never contained the package under audit, which reads exactly
+like a reproduction.
 
 The fix is not a flag to memorise: `--group dev` is a no-op where the group is
 already default and still wrong where it is not. **Reconcile instead** — Phase 1

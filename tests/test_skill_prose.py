@@ -4562,3 +4562,145 @@ class TestTheProcedureSurvivesASecondPR(unittest.TestCase):
 
     def test_a_sibling_merge_is_named_as_the_cause_of_behind(self):
         self.assertIn("Land one bot PR and every sibling goes `BEHIND`", self.flat)
+
+
+class TestPhase3ExportsTheSetTheRowClaims(SkillHarness):
+    """The audited repo's own config decided what this phase audited.
+
+    `uv export` without a group flag covers `tool.uv.default-groups`. Measured on
+    uv 0.12.15 against a project with a `dev` and a `lint` group:
+
+        [tool.uv] absent              runtime + dev
+        default-groups = []           runtime only
+        --all-groups                  every group, and exit 0 where there are none
+
+    Observed on `fpga-board-sim` #437, which sets `default-groups = []`: the
+    plain export carried 12 packages where `--all-groups` carries 38, and neither
+    of the two packages the PR bumped. `pip-audit` then reported "No known
+    vulnerabilities found" — true of a set that excluded the whole bump, at exit
+    0 and well-formed, in the phase whose job is to not do that.
+
+    Phase 5 already carries the reconcile for `uv sync`; Phase 3 ran the same
+    narrowing config through a second command and carried none of it. So the
+    guard is not "the flag is present" alone — a flag answers one config, and
+    the next `default-groups` is not anticipated by any flag.
+    """
+
+    def test_the_export_is_not_narrowed_by_the_audited_repos_config(self):
+        """Anchored to the `uv export` line, not to the phase.
+
+        A body-wide search for `--all-groups` passes on the paragraph explaining
+        why it is needed — the prose-warns-about-itself failure `reachable`'s own
+        docstring records, which is why this reads executable material and pins
+        the flag to the command it has to be on.
+        """
+        self.assertRegex(
+            self.reachable(3),
+            r"uv export[^\n]*--all-groups",
+            "the export takes the default groups, so a repo that narrows "
+            "`tool.uv.default-groups` decides what this row covers. `pip-audit` "
+            "then reports clean about a set that can exclude the entire bump",
+        )
+
+    def test_the_export_is_reconciled_against_the_packages_that_moved(self):
+        """The flag answers one config; the reconcile answers the class.
+
+        Same shape as Phase 5's `uv pip list` guard and deliberately so: the set
+        has to be the one Phase 1 derived, because a hand-typed list would be
+        read off the PR title, which a grouped bump does not carry.
+        """
+        self.assertRegex(
+            self.reachable(3),
+            r"grep[^\n]*Phase 1 named[^\n]*requirements",
+            "nothing checks the exported set against the packages under audit. "
+            "That is the one check a narrowed export cannot pass, and it is what "
+            "caught the observed case",
+        )
+
+    def test_the_corroborating_half_is_scoped_against_the_lockfile_half(self):
+        """The row shows two sources agreeing, and only one can be narrowed.
+
+        `audit.py`'s OSV batch reads `uv.lock`, which is universal — a group
+        excluded from every export is still pinned and still queried. So a
+        narrowed export does not leave the row visibly half-empty; it leaves the
+        two halves quietly about different sets while still reading as agreement.
+        """
+        flat = self.flat(3)
+        self.assertIn(
+            "the two halves of this row can disagree about scope",
+            flat,
+            "Phase 3 pairs an OSV batch over the lockfile with a `pip-audit` over "
+            "the export. Nothing says those are different sets when the export is "
+            "narrowed, so the row reads as corroborated when it is not",
+        )
+        self.assertIn(
+            "which packages the row covers",
+            flat,
+            "the report has no instruction to state the scope it actually audited",
+        )
+
+
+class TestPhase2CanAnswerTheCurrencyQuestionItAsks(SkillHarness):
+    """The phase made a check mandatory and supplied no command to take it.
+
+    `actions.md` § Phase 2 measures that `astral-sh/setup-uv` discontinued its
+    moving major tag at v8, concludes that above v7 "a newer patch **is** a gap",
+    and then offers only the bare-major ref check and a `compare` for when the
+    tag has moved. Neither lists releases. On `fpga-board-sim` #436 — a v10 bump,
+    so squarely above the boundary — the row could only be filled by improvising,
+    the run improvised it correctly, and reported "No improvisation" (#124).
+
+    That is the half worth guarding here. The disclosure failure is a model
+    adherence question and prose is exactly what did not work; a blank the
+    procedure leaves is what makes the improvisation feel like ordinary work.
+    """
+
+    def test_currency_above_the_tag_line_has_a_command(self):
+        self.assertRegex(
+            self.reachable(2),
+            r"releases/latest",
+            "Phase 2 requires a newer-release check where the moving major tag is "
+            "gone, and supplies no way to list releases. A required row with no "
+            "command is filled by improvising or not at all",
+        )
+
+    def test_the_top_level_rule_carries_its_own_exception(self):
+        """Supplying the command in the reference only half-fixes it.
+
+        `SKILL.md` is always loaded and the references are fetched, so a run that
+        reads "a newer patch is not a gap" as unconditional has no reason to open
+        `actions.md` for this row at all. The exception has to be visible where
+        the rule is stated, not only where the command lives.
+        """
+        self.assertIn(
+            "where that tag still exists",
+            self.flat(2),
+            "Phase 2 states the moving-tag rule flatly. Publishers discontinue "
+            "the tag — measured on `astral-sh/setup-uv` at v8 — and above that "
+            "boundary the unqualified rule is false in the direction that reports "
+            "a real gap as current",
+        )
+
+    def test_a_failed_currency_call_reads_as_underivable_rather_than_current(self):
+        """404 means "no releases published", not "the pin is current".
+
+        Measured on `git/git` and `torvalds/linux`: the endpoint 404s where a repo
+        publishes no releases at all, and `gh` writes the error body to stdout —
+        so a capture succeeds and holds `{"message":"Not Found"…}` while looking
+        like an answer. That is #39's hazard arriving in a new command.
+        """
+        flat = self.flat(2)
+        self.assertIn(
+            "a failure here is underivable, not current",
+            flat,
+            "an action that only moves tags publishes no releases, so the call "
+            "fails on exactly the repos the check was added for. Silence there "
+            "reads as confirmation",
+        )
+        self.assertIn(
+            "key on the exit status",
+            flat,
+            "`gh` writes the 404 body to stdout, so a captured result is "
+            "non-empty and wrong — the same shape #39 records for "
+            "`branches/<b>/protection`",
+        )
