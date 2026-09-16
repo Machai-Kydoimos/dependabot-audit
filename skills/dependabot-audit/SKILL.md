@@ -270,9 +270,14 @@ git show "pr-<N>:.github/workflows/<workflow>"       # the gates Phase 5 reprodu
 git show "$BASE_SHA:.github/workflows/<workflow>"    # the gates Phase 4 measures with
 ```
 
-`ls-tree` on a directory that is not there exits **128** and says so, rather than
-printing nothing at exit 0 — so a repo with no workflows is distinguishable from
-a read that failed, which is the distinction the two lists exist to support.
+`ls-tree` **in this form** — a colon, no `--` — exits **128** on a directory
+that is not there and says so, rather than printing nothing at exit 0, so a repo
+with no workflows is distinguishable from a read that failed. That is the
+distinction the two lists exist to support, and it is a property of the
+*invocation* rather than of the command: the pathspec form
+`git ls-tree <ref> -- <path>` exits **0 and prints nothing** on a missing path,
+so it cannot tell absent from failed at all. Where the question is only whether
+something exists, `git cat-file -e <ref>:<path>` is the one to reach for.
 
 **Each phase's gates come from the tree it runs them in**, and the two trees are
 not the same one: Phase 5 reproduces in `$SCRATCH/pr-<N>`, Phase 4 measures in
@@ -1256,17 +1261,49 @@ the reader is owed the difference: the first names a cause, the second names a
 commit and an action. Phase 7's table has a row for each, and the second is
 **Hold, pending a re-run**.
 
-**Three CI-state traps the script cannot cover**, because each is about whether
-the answer is *current* rather than how to read it:
+**Three CI-state traps the script does not cover**, because each is about what
+the answer *covers* rather than how to read it. Two are about it covering another
+commit; the third is about it covering fewer jobs than it looks like:
 
 - **A merge state can read `CLEAN` on stale checks.** Right after a push the API
   can serve the *previous* commit's results. Gate on a run reporting for the
   current full head SHA, not on merge state alone.
-- **A run is `success` only if every job is, and only the latest run counts.** A
-  duplicate event can cancel an earlier one, and `cancelled` is not `failure`.
+- **A run is `success` when no job *failed*, which is not the same as every job
+  having succeeded.** Only the latest run counts, a duplicate event can cancel an
+  earlier one, and `cancelled` is not `failure` — but the gap that actually opens
+  is `skipped`, and the block below is what reads it.
 - **A bot's own rebase does not re-trigger CI** — push-recursion suppression on
   the bot's token. So a green you are reading may belong to the commit before the
   rebase. Close and reopen under your own auth, or ask the bot to recreate.
+
+**Ask for the jobs; nothing above this point does.** A run's conclusion is an
+aggregate, and `skipped` does not spoil it:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+gh api "repos/$OWNER/$NAME/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
+  --jq '.workflow_runs[] | "\(.id)\t\(.conclusion)\t\(.name)"'
+
+# Then, for each id that came back:
+gh api "repos/$OWNER/$NAME/actions/runs/<run-id>/jobs?per_page=100" \
+  --jq '.jobs[] | "\(.conclusion)\t\(.name)"'
+```
+
+Measured 2026-09-16: **6 of 12** recent `success` runs on `cli/cli` and **7 of
+12** on `astral-sh/uv` contained at least one `skipped` job, while **no**
+`success` run among about a hundred scanned across four repositories carried a
+`failure` or a `cancelled` one. So `skipped` is the whole of the gap — and it is
+the half that reads as coverage. A required check can be green because the job
+that would have exercised the change was conditioned out of the run entirely.
+
+That is this phase's **second** question — *did it exercise the change* — asked
+one level below the trigger read at the top. The trigger grep settles whether a
+`pull_request` can start the workflow; only the job list settles whether the step
+inside it ran. A bump can pass both the rollup and the trigger check while every
+job that touches it was skipped.
 
 ## Phase 7 — Report
 
@@ -1402,6 +1439,33 @@ there by exhaustion is indistinguishable in the report from no finding at all.
 | A gap exists, outside the cooldown, nothing security-shaped in it | **Merge as-is, then follow up** |
 | A gap exists **inside** the cooldown window, nothing security-shaped in it | **Merge as-is.** Do *not* offer a follow-up: it hand-lands the release the control exists to delay |
 | Everything derived, nothing above matched | **Merge as-is** |
+
+**"The bump moves into it" is derivable, and the gap is what derives it.**
+Three rows above turn on whether the version being *adopted* carries the problem
+while the current pin does not, and that reads like a judgement call. It is not.
+`changelog.py --from <the lockfile's version> --to <the proposal>` renders the
+range **exclusive of the current pin** — measured on `rvben/rumdl` 0.2.70 →
+0.2.72, where the evidence file holds v0.2.71 and v0.2.72 and nothing of 0.2.70 —
+so *everything in that file is, by construction, absent from what this repo runs
+today*. That turns the question into one about the entry's kind:
+
+| What the entry in the gap is | Where the problem lives | The row |
+|---|---|---|
+| a **fix** — `Security`, `Fixed`, a reverted destructive bug | below the release that carries it, so the **current pin** has it and the proposal does not | the bump moves *out of* it — **not** a Hold |
+| a **new or changed behaviour** — a new default, a widened scope, a new rule | only at or above that release, so the **proposal** gains it and the current pin never had it | the bump moves **into** it — **Hold** |
+| unclear which | **underivable**, per Phase 0 — say so, and do not let the Hold row take it by default |  |
+
+Where an advisory exists the answer is stronger and mechanical: run `audit.py`
+against the **base branch's** lockfile as well as the PR's, and compare the two
+vulnerability sets. A finding present in the PR's and absent from the base's is
+exactly this row; the reverse is the ordinary direction, and an identical pair
+means the bump neither helps nor harms on that axis.
+
+**The ordinary direction is *out of*, and that is why Hold reads wrong here.** A
+changelog gap is newer than the pin by definition, so a fix in it is a fix the
+repo does not yet have. Reaching for Hold on a `Security` heading without asking
+which way the entry points is how the cautious-looking answer becomes the one
+that leaves the repo on the affected version.
 
 **The cooldown decides Hold-versus-follow-up. It never decides whether to look.**
 The wait exempts Dependabot's *security updates* — the advisory-driven kind — and
