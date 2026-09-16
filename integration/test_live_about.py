@@ -1,7 +1,7 @@
 """The scope statement that lives outside the repository, and therefore outside the gate.
 
-This plugin says which ecosystems it covers in four places. Three are files and
-every one of them is reachable by `tests/`:
+This plugin says which ecosystems it covers in four places. Three are files, and
+are therefore reachable by a hermetic test:
 
     SKILL.md frontmatter `description:`   — and this is the one that *routes the skill*
     .claude-plugin/plugin.json            `description`
@@ -144,8 +144,18 @@ class TestTheEcosystemListIsReadFromTheClassifier(unittest.TestCase):
 
 
 class TestTheScopeStatementsInTheRepositoryAgree(unittest.TestCase):
-    """The three that `tests/` could also reach — checked here beside the fourth,
-    because the point is the four agreeing, not any one of them being right."""
+    """Checked here beside the fourth, because the point is the four agreeing
+    rather than any one of them being right.
+
+    **The README is deliberately not among them**, and this was measured rather
+    than assumed. `unnamed()` is a substring search, and the README names
+    `uv.lock` 5 times, `github actions` twice and `pre-commit` 9 times while
+    discussing all three at length. Delete **every** row of its ecosystem table
+    and `unnamed()` still reports nothing missing — so the check would pass no
+    matter what that table said. That is the "a guard that matches anything
+    anywhere stops discriminating" failure this repo's own prose harness warns
+    about, and adding it would look like coverage while being none.
+    """
 
     def test_the_plugin_manifest_names_every_ecosystem(self):
         description = json.loads((ROOT / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))[
