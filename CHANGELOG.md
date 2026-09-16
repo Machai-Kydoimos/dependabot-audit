@@ -61,6 +61,28 @@ check it previously only asserted was mandatory.
   told a reader which. That is the argument for the reconcile and the scope line
   rather than the flag alone.
 
+### Added — a tripwire on the scope statement that lives outside the repository
+
+- **The plugin says which ecosystems it covers in four places, and only three are
+  files.** `SKILL.md`'s frontmatter, `plugin.json` and the README table are all
+  reachable by `tests/`; the **GitHub repo About** is repository metadata, so no
+  test could see it and `ci.yml` could not fail on it. It drifted accordingly —
+  it read *"Covers uv.lock and GitHub Actions"*, omitting `pre-commit`, which has
+  a 307-line reference, a 546-line `precommit.py`, its own
+  `integration/test_precommit_replay.py` and a README row arguing it is the one
+  that pays. Fixed with `gh repo edit --description`, which is not a commit.
+
+- That is worse than a stale sentence, because `SKILL.md`'s `description` is what
+  **routes the skill** — the About and the router disagreeing is two different
+  answers to *"what does this plugin do"*.
+
+- `integration/test_live_about.py` now checks all four agree, **anchored to
+  `discover.py`'s `_ecosystem()`** rather than to one description matching
+  another, which would only prove two sentences had the same author. Mutation-
+  checked: adding a fourth ecosystem to the classifier fails the guard, and so
+  does renaming a sentinel. Its negative control is the drift that actually
+  happened, so it asserts the check would have caught what it was written for.
+
 ### Added — Phase 2 can now take the currency measurement it requires (#124)
 
 - **`references/actions.md` § Phase 2 made the newer-release check mandatory
