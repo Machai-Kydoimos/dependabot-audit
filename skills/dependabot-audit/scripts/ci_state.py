@@ -102,7 +102,7 @@ ROLLUP_QUERY = """
 query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
   repository(owner:$owner, name:$name) {
     pullRequest(number:$number) {
-      mergeable mergeStateStatus reviewDecision
+      mergeable mergeStateStatus reviewDecision merged
       # `DRAFT` in mergeStateStatus is deprecated -- "DRAFT state will be removed
       # from this enum and `isDraft` should be used instead", with an announced
       # removal of 2021-01-01 that has not happened. Both are read: the enum
@@ -331,6 +331,10 @@ def rollup(owner: str, name: str, number: int) -> dict[str, Any]:
         "base_committed": base_target.get("committedDate") or "",
         "rollup_state": state,
         "merge_state": pull.get("mergeStateStatus") or "",
+        # `Boolean!`, so a successful query always carries it. Kept as None when
+        # somehow absent rather than coerced: `bool(None)` is False, and "still
+        # open" is not something a missing field established.
+        "merged": pull.get("merged"),
         # `Boolean!` in the schema, so a successful query always carries it. Kept
         # as None rather than coerced when it is somehow absent: `bool(None)` is
         # False, and "not a draft" is not something a missing field established.
@@ -344,7 +348,7 @@ def rollup(owner: str, name: str, number: int) -> dict[str, Any]:
     }
 
 
-def conclusions_at(owner: str, name: str, sha: str) -> dict[str, str]:
+def conclusions_at(owner: str, name: str, sha: str) -> tuple[dict[str, str], bool]:
     """Every check result at a commit, by context name, from **both** lists.
 
     `gh run list --json name` answers a different question — it returns the
@@ -360,18 +364,34 @@ def conclusions_at(owner: str, name: str, sha: str) -> dict[str, str]:
     the possible reds.
     """
     found: dict[str, str] = {}
+    # `has(...)` rather than trusting the projection (#118). `{result: .conclusion}`
+    # emits `result: null` both when the check is genuinely pending and when the
+    # key is **gone from the payload**, and the two are opposite facts. Collapsed,
+    # a renamed key makes every row read PENDING, which is not in `FAILING`, so
+    # `attribute()` labels every red check **attributable** — a Hold on the bump,
+    # manufactured from a field nobody read. That is the direction its own
+    # docstring names as costing least to be wrong in and therefore drawing the
+    # least scrutiny, reached without a single failing call.
     runs = _gh_lines([
         "api", f"repos/{owner}/{name}/commits/{sha}/check-runs?per_page=100",
-        "--paginate", "--jq", ".check_runs[] | {name, result: .conclusion}",
+        "--paginate", "--jq",
+        '.check_runs[] | {name, result: .conclusion, shaped: has("conclusion")}',
     ])  # fmt: skip
     statuses = _gh_lines([
         "api", f"repos/{owner}/{name}/commits/{sha}/status",
-        "--jq", ".statuses[] | {name: .context, result: .state}",
+        "--jq", '.statuses[] | {name: .context, result: .state, shaped: has("state")}',
     ])  # fmt: skip
-    for row in runs + statuses:
-        if row.get("name"):
+    rows = runs + statuses
+    # Rows exist and not one carries the key the comparison reads. Empty is a real
+    # answer — a commit with no checks — and only the non-empty case is a finding.
+    unshaped = bool(rows) and not any(r.get("shaped") for r in rows)
+    for row in rows:
+        # A row without the key is dropped rather than defaulted: absent from the
+        # map, `attribute()` returns `underivable`, which is the honest answer and
+        # the safe direction. Defaulting it to PENDING is the unsafe one.
+        if row.get("name") and row.get("shaped"):
             found[row["name"]] = (row.get("result") or "PENDING").upper()
-    return found
+    return found, unshaped
 
 
 def attribute(
@@ -471,7 +491,30 @@ def base_drift(report: dict[str, Any]) -> dict[str, Any]:
     Three states, and the third is the one that matters. "Could not compare" must
     not arrive as "every check included the current base" — the same asymmetry as
     `$SCOPE_GATE` and the truncated context list above.
+
+    **A fourth, and it is about the question rather than the answer (#122).** Once
+    a PR merges, the base tip *is* its own merge commit, dated at merge time and
+    therefore necessarily after its own checks started. So the comparison cannot
+    come out any other way for any merged PR, ever — it fired on all 33 contexts
+    of `fpga-board-sim` #437 naming `88ec4c267`, which is #437's own merge. The
+    row is not wrong, it is **void**: the action it prints, *simulate the merge and
+    re-gate*, is about deciding whether to trust these checks before merging, and
+    that decision has been made. Replaying merged PRs is most of the live exercise
+    this plugin gets, so the loudest signal in the phase was firing on most runs —
+    the "trains the reader to skip the row that matters" failure, aimed at the row
+    that matters.
     """
+    if report.get("merged") is True:
+        return {
+            "state": "merged", "stale": [], "behind": "",
+            "base_ref": report.get("base_ref") or "",
+            "base_oid": report.get("base_oid") or "",
+            "base_committed": report.get("base_committed") or "",
+            "why": (
+                "the PR is merged, so the base contains its own merge commit — "
+                "drift is not derivable after the fact, and not a finding"
+            ),
+        }  # fmt: skip
     when = report.get("base_committed") or ""
     settled = [c for c in report["contexts"] if c["result"] in FAILING | PASSING]
     unknown: dict[str, Any] = {
@@ -612,6 +655,14 @@ def render(report: dict[str, Any]) -> None:
     elif drift["state"] == "underivable":
         print(f"\n  !! BASE STALENESS UNDERIVABLE — {drift['why']}.")
         print("     Not 'these results include the current base': never established.")
+    elif drift["state"] == "merged":
+        # Quiet, and deliberately not `!!`. The warning it replaces was the
+        # loudest thing in the phase and fired on every merged replay, which is
+        # most of this plugin's live exercise. Wrapped like every other block
+        # here: the one-line version ran to 118 characters.
+        print("\n  -- base staleness N/A — this PR is merged, so the base contains its")
+        print("     own merge commit. Drift is not derivable after the fact, and it is")
+        print("     not a finding: the decision these checks informed has been made.")
 
     for ctx in report["required"]:
         mark = "OK " if ctx["result"] in PASSING else "BAD"
@@ -735,13 +786,15 @@ def main() -> int:
     report["parent_names"] = []
     if report["red"]:
         if args.parent:
-            parent = conclusions_at(args.owner, args.name, args.parent)
+            parent, parent_unshaped = conclusions_at(args.owner, args.name, args.parent)
+            report["base_results_unshaped"] = parent_unshaped
         # The merge base answers a *different*, weaker question — red before this
         # branch rather than before this commit — and `attribute` reaches for it
         # only when the parent has no runs at all. Fetching it while the parent
         # can answer buys nothing.
         if not parent and args.base_sha:
-            base = conclusions_at(args.owner, args.name, args.base_sha)
+            base, base_unshaped = conclusions_at(args.owner, args.name, args.base_sha)
+            report["base_results_unshaped"] = report.get("base_results_unshaped") or base_unshaped
         report["parent_names"] = sorted(parent) or sorted(base)
         head_at = report["head_committed"]
         if parent:

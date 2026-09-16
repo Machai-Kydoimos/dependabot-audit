@@ -11,6 +11,74 @@ patch.
 
 ## [Unreleased]
 
+## [0.41.0] — 2026-09-16
+
+Two defects found by *verifying* 0.40.0 rather than by reasoning about it, plus
+the part of #118 worth building. Both scripts now assert a precondition where
+they used to filter on it blind.
+
+**Minor, not patch.** Phase 6 stops asserting a row it could not derive, and two
+phases gain preconditions that change what they report.
+
+### Fixed — `base_drift` fired on every merged-PR replay (#122)
+
+- **It could not not.** Once a PR merges, the base tip *is* its own merge commit,
+  dated at merge time and therefore necessarily after its own checks started, so
+  the comparison has one possible outcome for any merged PR, forever. Measured on
+  `fpga-board-sim` #437: all 33 contexts reported stale against `88ec4c267`,
+  which is #437's own merge, at the same instant the PR merged.
+
+- **The row was not wrong, it was void** — and it was the loudest thing in the
+  phase: `!!`, a wrapped 33-name list, and an action (*"simulate the merge and
+  re-gate"*) naming a decision already made. Replaying merged PRs is most of the
+  live exercise this plugin gets, so the signal added to catch a real Hold on
+  this plugin's own #99 was firing on most runs. That is the
+  "trains the reader to skip the row that matters" failure aimed at the row that
+  matters. The query now reads `merged`, and a merged PR gets one quiet
+  `-- base staleness N/A` line instead.
+
+### Added — preconditions at the point of use (#118 Part C)
+
+The half of #118 worth building, at the two sites that **assert** rather than
+degrade. Both are the shape #118 was filed about: a filter that matches nothing
+producing a confident answer at exit 0.
+
+- **`discover.py` filtered the event list on a key it never checked for.**
+  `[e for e in events if e.get("event") == "base_ref_force_pushed"]` is
+  structurally identical to the `select(.isRequired == true)` in #118. If `event`
+  moved, every row yields `None`, `forced == []` — which is **not** `None`, so it
+  misses the underivable branch and lands on *"no force-push event, and every
+  commit above the base is the bot's"*: a positively asserted *the base was not
+  rewritten*, from a filter that matched nothing. That verdict decides whether
+  Phase 1 substitutes the `pr-<N>^` diff, which on `cli/cli` #14049 is 2 files
+  against 20 files and 1,101 lines. It now says the shape changed, and says that
+  **distinctly from "the call failed"** — one is GitHub being unavailable, the
+  other is this script being out of date, and only one is actionable.
+
+- **`ci_state.py` could not tell a pending check from a missing key.**
+  `{name, result: .conclusion}` emits `result: null` both when a check is pending
+  and when `conclusion` is gone from the payload. Collapsed, every row at the
+  comparison point reads `PENDING`, which is not in `FAILING`, so `attribute()`
+  labels every red check **attributable** — a Hold on the bump manufactured from
+  a field nobody read, with no failing call and exit 0 throughout. That is the
+  direction its own docstring names as drawing the least scrutiny. The projection
+  now carries `has("conclusion")`, and an unshaped row is **dropped** rather than
+  defaulted, so the row falls to `underivable`: the honest answer, and the safe
+  one.
+
+- **Empty stays a real answer** in both. Most PRs carry no events; plenty of
+  commits have no checks. Only a *non-empty* payload carrying none of the key is
+  a finding — a guard that cannot tell those apart fires on every quiet PR, which
+  is how a signal stops being read. The mutation that removes that carve-out
+  trips nine tests.
+
+### Changed — the negative controls
+
+Five mutations, each caught by the intended test: `base_drift` ignoring `merged`;
+`merged` coerced so an absent field buys the quiet path; unshaped rows defaulting
+to `PENDING` again; the force-push shape check removed; and the same check
+widened to fire on an empty list.
+
 ## [0.40.0] — 2026-09-16
 
 Filed from auditing #118's own analysis against the scripts, on a session that
@@ -4634,7 +4702,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.40.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.37.0...v0.38.0

@@ -27,7 +27,7 @@ sys.path.insert(
     0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
 )
 
-from discover import cli, main
+from discover import UNDERIVABLE, cli, main
 
 HEAD = "h" * 40
 BASE = "b" * 40
@@ -113,6 +113,7 @@ class DiscoverHarness(unittest.TestCase):
         merge_base: str | None = MERGE_BASE,
         commits: list[dict[str, Any]] | None = None,
         force_pushes: int = 0,
+        events_unshaped: bool = False,
         fails: tuple[str, ...] = (),
         commit_files: dict[str, list[dict[str, Any]]] | None = None,
         compare_files: list[dict[str, Any]] | None = None,
@@ -128,6 +129,10 @@ class DiscoverHarness(unittest.TestCase):
         commits = [commit(HEAD, BOT)] if commits is None else commits
         events = [{"event": "base_ref_force_pushed", "actor": {"login": "someone"},
                    "created_at": "2026-08-02T00:00:00Z"}] * force_pushes  # fmt: skip
+        if events_unshaped:
+            # The endpoint answering, at exit 0, with rows this script cannot
+            # read — `event` renamed. Not an error, and not an empty list.
+            events = [{"kind": "base_ref_force_pushed", "actor": {"login": "someone"}}]
         calls: list[str] = []
 
         # An ordinary bump, so the pre-existing cases model one. A fake with no
@@ -954,3 +959,48 @@ class TestAPreCommitBumpIsClassifiedAndGated(DiscoverHarness):
         fake = self._bot_pr([changed("tools/lint/.pre-commit-config.yaml", rev_bump())])
         report = self._json(fake)
         self.assertEqual(report["scope"]["ecosystem"], "pre-commit")
+
+
+class TestTheForcePushScanAssertsItsOwnPrecondition(DiscoverHarness):
+    """#118 Part C, at the site structurally identical to the defect in #118.
+
+    `[e for e in events if e.get("event") == "base_ref_force_pushed"]` is the same
+    shape as the `select(.isRequired == true)` that returned `[]` at exit 0 and was
+    read as "this repo enforces no required checks". If `event` moved, every row
+    yields `None`, the filter matches nothing, and `forced == []` — which is **not**
+    `None`, so it misses the underivable branch and lands on
+
+        "no force-push event, and every commit above the base is the bot's"
+
+    a positively asserted *the base was not rewritten*, from a filter that matched
+    nothing. The consequence is not cosmetic: `branch_point`'s verdict decides
+    whether Phase 1 substitutes the `pr-<N>^` diff, which on `cli/cli` #14049 is
+    the difference between a 2-file bump and 20 files / 1,101 lines.
+
+    Empty stays a real answer — most PRs carry no events at all — so only a
+    non-empty list carrying no `event` key is the finding.
+    """
+
+    def test_an_unshaped_event_list_is_underivable(self):
+        fake, _ = self._fake(events_unshaped=True)
+        report = self._json(fake)
+        self.assertEqual(report["branch_point"]["verdict"], UNDERIVABLE)
+
+    def test_it_says_the_shape_changed_not_that_the_call_failed(self):
+        """The distinction is the finding. One is GitHub being unavailable, the
+        other is this script being out of date, and a reader can act on only one."""
+        fake, _ = self._fake(events_unshaped=True)
+        why = self._json(fake)["branch_point"]["why"]
+        self.assertIn("no `event` key", why)
+        self.assertNotIn("could not be read", why)
+
+    def test_an_empty_event_list_is_still_a_real_answer(self):
+        """The negative control. Most PRs have no events, and a guard that cannot
+        tell that from a changed payload marks every quiet PR underivable."""
+        fake, _ = self._fake(force_pushes=0)
+        self.assertEqual(self._json(fake)["branch_point"]["verdict"], "ok")
+
+    def test_a_real_force_push_is_still_detected(self):
+        """The other control: the guard must not eat the feature."""
+        fake, _ = self._fake(force_pushes=1)
+        self.assertEqual(self._json(fake)["branch_point"]["verdict"], "rewritten")
