@@ -71,6 +71,7 @@ def page(
     base_oid: str | None = BASE_TIP,
     base_committed: str | None = "2026-07-01T00:00:00Z",
     is_draft: bool | None = False,
+    merged: bool | None = False,
 ) -> dict[str, Any]:
     """One GraphQL response. `total` defaults to the node count (nothing truncated).
 
@@ -89,6 +90,7 @@ def page(
                     "mergeable": "MERGEABLE",
                     "mergeStateStatus": merge_state,
                     "isDraft": is_draft,
+                    "merged": merged,
                     "reviewDecision": review,
                     "baseRef": {"name": base_ref, "target": target},
                     "commits": {
@@ -128,6 +130,7 @@ class CiStateHarness(unittest.TestCase):
         statuses: dict[str, list[tuple[str, str]]] | None = None,
         dates: dict[str, str] | None = None,
         date_fails: bool = False,
+        shaped: bool = True,
     ) -> tuple[Any, list[str]]:
         """A `_gh` that dispatches on the call shape, plus the call log.
 
@@ -154,10 +157,17 @@ class CiStateHarness(unittest.TestCase):
                 return json.dumps(remaining.pop(0) if len(remaining) > 1 else remaining[0])
             for sha, rows in runs.items():
                 if f"/commits/{sha}/check-runs" in joined:
-                    return "\n".join(json.dumps({"name": n, "result": c}) for n, c in rows)
+                    # `shaped` mirrors the real `--jq has("conclusion")`: the
+                    # projection reports whether the key was in the payload, so a
+                    # null result and an absent key stop being the same row.
+                    return "\n".join(
+                        json.dumps({"name": n, "result": c, "shaped": shaped}) for n, c in rows
+                    )
             for sha, rows in statuses.items():
                 if f"/commits/{sha}/status" in joined:
-                    return "\n".join(json.dumps({"name": n, "result": s}) for n, s in rows)
+                    return "\n".join(
+                        json.dumps({"name": n, "result": s, "shaped": shaped}) for n, s in rows
+                    )
             if "committer.date" in joined:
                 if date_fails:
                     fail("`gh api` failed: HTTP 404")
@@ -703,6 +713,134 @@ class TestTheMergeStateEnumIsClassifiedExhaustively(CiStateHarness):
                 code, out, _ = self._run(fake)
                 self.assertEqual(code, 0)
                 self.assertIn("RESULT: CLEAN", out)
+
+
+class TestTheBaseComparisonAssertsItsOwnPrecondition(CiStateHarness):
+    """#118 Part C, at the site where a lost key buys the *unsafe* answer.
+
+    `--jq '{name, result: .conclusion}'` emits `result: null` both when a check is
+    genuinely pending and when `conclusion` is **gone from the payload**, and the
+    two are opposite facts. Collapsed, every row at the comparison point reads
+    PENDING, which is not in `FAILING`, so `attribute()` labels every red check
+    **attributable** — a Hold on the bump manufactured from a field nobody read,
+    with no failing call anywhere and exit 0 throughout.
+
+    `attribute()`'s own docstring names that direction: *"a false Hold is the
+    direction that costs least to be wrong in and therefore draws the least
+    scrutiny — it looks conservative, so nobody goes back to check."*
+
+    The projection now carries `has("conclusion")`, and a row without the key is
+    **dropped** rather than defaulted, so the row falls to `underivable` — the
+    honest answer and the safe direction.
+    """
+
+    def _red_with_base(self, *, shaped: bool) -> tuple[Any, list[str]]:
+        return self._fake_gh(
+            [page([check_run("test", "FAILURE", required=True)])],
+            runs={PARENT: [("test", "SUCCESS")]},
+            shaped=shaped,
+        )
+
+    def test_a_shaped_payload_still_attributes(self):
+        """The control. Green at the parent, red at the head, key present — this
+        must stay `attributable`, or the guard has eaten the feature."""
+        fake, _ = self._red_with_base(shaped=True)
+        _, out, _ = self._run(fake)
+        self.assertIn("ATTRIBUTABLE", out)
+
+    def test_an_unshaped_payload_does_not_manufacture_a_hold(self):
+        """The load-bearing one, and it fails in the *safe* direction: not
+        `attributable`, because nothing was read that could support it."""
+        fake, _ = self._red_with_base(shaped=False)
+        _, out, _ = self._run(fake)
+        self.assertNotIn("ATTRIBUTABLE", out)
+        self.assertIn("UNDERIVABLE", out.upper())
+
+    def test_the_unshaped_payload_is_recorded(self):
+        fake, _ = self._red_with_base(shaped=False)
+        report = self._json(fake)
+        self.assertTrue(report["base_results_unshaped"])
+
+    def test_a_shaped_payload_is_not_flagged(self):
+        fake, _ = self._red_with_base(shaped=True)
+        report = self._json(fake)
+        self.assertFalse(report["base_results_unshaped"])
+
+    def test_no_runs_at_all_is_not_an_unshaped_payload(self):
+        """Empty is a real answer — a commit that predates the workflow — and a
+        guard that cannot tell it from a changed payload fires on every PR whose
+        parent never ran, which retires the signal."""
+        fake, _ = self._fake_gh(
+            [page([check_run("test", "FAILURE", required=True)])],
+            runs={PARENT: []},
+        )
+        report = self._json(fake)
+        self.assertFalse(
+            report["base_results_unshaped"],
+            "no rows is not the same fact as rows that carry no result key",
+        )
+
+
+class TestDriftIsNotDerivableAfterTheMerge(CiStateHarness):
+    """`base_drift` fired on **every** merged-PR replay, and could not not (#122).
+
+    Once a PR merges, the base tip *is* its own merge commit, dated at merge time
+    and so necessarily after its own checks started. The comparison has one
+    possible outcome. Measured on `fpga-board-sim` #437, whose 33 contexts all
+    came out stale against `88ec4c267` — #437's own merge commit, at the same
+    instant the PR merged:
+
+        !! THE BASE MOVED UNDER THESE RESULTS — main moved to 88ec4c267 ...
+           [33 context names]
+           Simulate the merge and re-gate before a red row carries a Hold
+
+    The row is not wrong, it is void: the action names a decision already made.
+    And replaying merged PRs is most of the live exercise this plugin gets, so
+    the loudest signal in the phase was firing on most runs — which is how a
+    reader learns to skip it, aimed at the row added to catch a real Hold on
+    this plugin's own #99.
+    """
+
+    def _merged(self, **kw):
+        started = "2026-08-02T00:00:00Z"
+        return self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True, started=started)],
+                 base_committed="2026-08-03T00:00:00Z", **kw)
+        ])  # fmt: skip
+
+    def test_a_merged_pr_reports_drift_as_not_applicable(self):
+        fake, _ = self._merged(merged=True)
+        report = self._json(fake)
+        self.assertEqual(report["base_drift"]["state"], "merged")
+
+    def test_the_void_warning_is_gone(self):
+        """The whole point: not merely requalified, but no longer shouting."""
+        fake, _ = self._merged(merged=True)
+        _, out, _ = self._run(fake)
+        flat = " ".join(out.split())
+        self.assertNotIn("THE BASE MOVED UNDER THESE RESULTS", flat)
+        self.assertIn("base staleness N/A", flat)
+
+    def test_an_open_pr_still_gets_the_warning(self):
+        """The other half of the control. A guard that fires on everything and a
+        guard that fires on nothing are the same guard — and #99, the case this
+        signal was built for, is an *open* PR whose base moved."""
+        fake, _ = self._merged(merged=False)
+        report = self._json(fake)
+        self.assertEqual(report["base_drift"]["state"], "yes")
+        _, out, _ = self._run(fake)
+        self.assertIn("THE BASE MOVED UNDER THESE RESULTS", " ".join(out.split()))
+
+    def test_an_absent_merged_field_does_not_assert_still_open(self):
+        """`merged` is `Boolean!`, so this should be unreachable — which is what
+        was said about `isRequired` being present, in #118."""
+        fake, _ = self._merged(merged=None)
+        report = self._json(fake)
+        self.assertIsNone(report["merged"])
+        self.assertEqual(
+            report["base_drift"]["state"], "yes",
+            "an unread field must not silently buy the quiet path",
+        )  # fmt: skip
 
 
 class TestDraftIsReadFromTheFieldThatIsNotDeprecated(CiStateHarness):

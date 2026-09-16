@@ -249,6 +249,20 @@ def branch_point(
     events = _json_or_none([
         "api", f"repos/{owner}/{name}/issues/{number}/events", "--paginate",
     ])  # fmt: skip
+    # Assert the key before filtering on it (#118). `e.get("event")` on a list
+    # whose shape has changed yields `None` for every row, the filter matches
+    # nothing, and `forced == []` — which is NOT `None`, so it misses the
+    # underivable path below and produces a positively asserted "the base was not
+    # rewritten" from a filter that matched nothing. That is precisely the defect
+    # #118 was filed about, one endpoint over: `select(.isRequired == true)`
+    # returning `[]` at exit 0 and being read as "no required checks".
+    #
+    # Non-empty and no row carries `event` is the only shape that is checked. An
+    # empty list is a real answer — most PRs have no events at all — and
+    # demanding the key of a list with no rows would fail on every quiet PR.
+    unshaped = bool(events) and not any("event" in e for e in (events or []) if isinstance(e, dict))
+    if unshaped:
+        events = None
     forced = (
         None if events is None else [e for e in events if e.get("event") == "base_ref_force_pushed"]
     )
@@ -282,7 +296,19 @@ def branch_point(
     # is the fastest way to train a reader to skip the row that matters.
     foreign = [c for c in above if not c["bot"] and c["parents"] == 1] if bot_authored else []
 
-    if forced is None:
+    if unshaped:
+        # Distinct from "could not be read", and the distinction is the finding:
+        # the call succeeded and returned rows this script cannot interpret. One
+        # is GitHub being unavailable, the other is this script being out of date,
+        # and a reader can act on only one of them.
+        verdict, why = (
+            UNDERIVABLE,
+            (
+                "the PR's event list carries no `event` key — the endpoint's shape "
+                "changed, so force-push detection is unread rather than negative"
+            ),
+        )
+    elif forced is None:
         verdict, why = UNDERIVABLE, "the PR's event list could not be read"
     elif forced:
         actor = forced[-1].get("actor", {}).get("login", "(unknown)")
