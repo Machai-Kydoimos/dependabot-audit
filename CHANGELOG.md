@@ -11,6 +11,110 @@ patch.
 
 ## [Unreleased]
 
+## [0.40.0] — 2026-09-16
+
+Filed from auditing #118's own analysis against the scripts, on a session that
+audited two Dependabot PRs each requiring an independent merge. #118 argued that
+a missing key reads as a clean zero. It does — and the same shape was already in
+`ci_state.py`, one level in, on the field that decides whether a merge is gated.
+
+**Minor, not patch.** Phase 6 now reports a state it previously called clean, and
+the RESULT line asserts less than it used to.
+
+### Fixed — an unclassified merge state read as a clear merge (#119)
+
+- **`BEHIND` was in neither set, and "neither" meant mergeable.** `BLOCKING` was
+  an allowlist of three over a **closed eight-value** enum, so every value nobody
+  had thought of fell through to *nothing blocks*. Measured on the shape that
+  produced it — zero required contexts, `mergeStateStatus: BEHIND`:
+
+  ```
+  -- zero required contexts, and nothing blocks: this repo enforces nothing
+  RESULT: CLEAN — 0 required check(s) failing, merge state BEHIND
+  ```
+
+  Both claims are false, and the second borrows GitHub's own word for a state the
+  PR is not in. GitHub returns `BEHIND` only where the base **requires** branches
+  to be up to date, so it is evidence of enforcement, not its absence. Where a base
+  is strict, this is the ordinary state of the second bot PR in a queue: land one
+  and every sibling goes `BEHIND`.
+
+  **Measured, because the first draft of this entry overstated it.** Strict
+  up-to-date enforcement is *uncommon* in large public repos — 0 of 8 whose
+  rulesets are publicly readable set it, and a sweep of 16 repos found no open
+  `BEHIND` PR at all. It is `fpga-board-sim`, the repo this plugin is actually
+  pointed at, that has it: **classic** branch protection, `strict=true`, 7
+  required contexts, which is the "7 required" in #118's report. So the defect is
+  narrow in the wild and live for the repos under audit — which is the reverse of
+  how the first draft read.
+
+- **Classified exhaustively rather than allowlisted**, because the value was the
+  symptom and the shape was the defect. `BLOCKING` and `MERGEABLE` are both
+  written out, and a value in neither is *unrecognised* — routed to underivable,
+  named in the output, and never read as clear. `SKILL.md`'s Phase 6 table had the
+  identical hole, keyed on *not `BLOCKED`*, and now enumerates.
+
+- **The RESULT line gained a third state.** `CLEAN` is GitHub's word for one
+  specific `mergeStateStatus`, and the line prints the real one beside it, so
+  `RESULT: CLEAN … merge state UNKNOWN` asserted at the bottom of the report what
+  a warning four lines up said was never established. The exit code deliberately
+  did **not** move with it: a merged PR returns `UNKNOWN`, replaying one is
+  routine, and exiting 1 on every replay is how a signal stops being read.
+
+### Fixed — nothing carried across two audits in one session (#120)
+
+- **Merging a sibling PR invalidates a pending audit, and the guard passes.**
+  Phase 7 re-checks `headRefOid`, written for a bot rebasing mid-audit. Merging a
+  *different* PR moves the base, not the head — the guard matches, and CI's
+  results were computed against a merge that no longer exists. `base_drift`
+  detects it but is deliberately a qualifier and never a finding, so all three
+  staleness mechanisms land in the "does not carry" bucket at once. Phase 7 now
+  says so, and says the order is audit → merge → audit.
+
+- **`references/report-template.md` was the one reference not loaded like the
+  others.** Every other reference is reached through a per-phase table; this one
+  had a single prose line whose inline summary was complete enough to write *a*
+  report without opening the file, and not complete enough to write *that* one.
+  Observed: two bump PRs in one session, the first tabulated, the second readable
+  prose. The pointer now says to open it, for every report, and says what the
+  summary leaves out.
+
+### Added — the enum tripwire, and what it found on its first run
+
+- **`integration/test_live_merge_state.py`** introspects `MergeStateStatus` and
+  asserts it against what `ci_state.py` classifies, in both directions, plus that
+  nothing in use is deprecated. This is the first piece of #118's Part B, scoped
+  to the one enum a wrong answer is load-bearing for rather than to the 1.55 MB
+  published schema. It runs in the existing weekly `live.yml` job — a tripwire,
+  not a gate — so it costs no new job.
+
+- **It found that `DRAFT` is deprecated**, on the first run: *"DRAFT state will be
+  removed from this enum and `isDraft` should be used instead. Use
+  PullRequest.isDraft instead. Removal on 2021-01-01 UTC."* `ci_state.py` was
+  reading the deprecated value and not the replacement. The query now reads
+  `PullRequest.isDraft` alongside it, and a draft PR is blocked on either. The
+  announced removal is five years past and the value still answers, which is the
+  point: introspection reports a deprecation while a functional test still passes.
+
+### Changed — the tests that would have caught it
+
+- **Every guard here has a negative control**, per #118's standard. The hermetic
+  ones were mutation-checked: `BEHIND` back in the mergeable set, unrecognised
+  values falling through, the RESULT line back to two states. The live ones were
+  too: a value dropped from the script, a value the script invents, and an
+  acknowledged deprecation for something GitHub does not deprecate.
+
+- **One mutation initially escaped**, and the reason is recorded in the test: the
+  render wraps at ~72 columns, so a literal `assertIn` pins whichever fragment
+  shares a line, and a mutation that deleted the claim left the pinned fragment
+  intact on the line above. The render assertions now match against collapsed
+  whitespace.
+
+- **`tests/test_skill_prose.py` pins SKILL.md's table to `ci_state.py`'s sets.**
+  The prose and the code carried the identical hole, and agreeing is what made it
+  invisible: a reader checking one against the other found them consistent, and
+  wrong.
+
 ## [0.39.0] — 2026-09-04
 
 The first live replay of `/dependabot-audit 99` against 0.38.0, on the ecosystem
@@ -4530,7 +4634,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.39.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.40.0...HEAD
+[0.40.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.36.0...v0.37.0
