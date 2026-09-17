@@ -3641,6 +3641,111 @@ class TestARungThatAnsweredCanStillBeIncomplete(SkillHarness):
         )
 
 
+class TestARungThatAnsweredCanAlsoHaveBeenRewritten(SkillHarness):
+    """#131. The ladder assumed rung 1 was fixed once the tag was cut. It is not.
+
+    `rvben/rumdl` backfilled a `### Fixed` section into v0.2.61's release notes
+    on 2026-09-05, ten days after publishing them — the exact version this
+    repo's worked example is built on. `published_at` did not move. `.body` came
+    back well-formed. `gh` exited 0. The only field that says so is `updated_at`,
+    and until 0.44.0 the string `updated_at` appeared nowhere in this repository.
+
+    The consequence is not a stale quote: **two audits of the same pin, months
+    apart, can read different notes and reach different verdicts**, with nothing
+    in either output saying the source changed underneath. Measured the same day
+    on `actions/checkout`: 17 of the last 58 releases carry `updated_at >
+    published_at`, 8 of them more than a day later.
+
+    This is the same shape as #127's two: `headBranch` asked for and dropped from
+    the `--jq`, and the contents API announcing its 1 MiB cutoff in `encoding`.
+    **Key on the field that moves, not the payload field that stays well-formed.**
+    """
+
+    def _ladder(self) -> str:
+        for name, section in self._handoffs(2):
+            if name == "uv-lock.md":
+                return section
+        self.fail("Phase 2 no longer hands off to uv-lock.md")
+
+    def test_the_prose_says_which_rung_can_be_rewritten_and_which_cannot(self):
+        """The durable premise is a property of git, not of maintainers: a
+        changelog read at a tag is a blob. Stating only *"notes can change"*
+        leaves the reader no reason to trust rung 2 either."""
+        section = self._ladder()
+        self.assertRegex(
+            section,
+            r"(?is)release body is mutable.{0,80}changelog read at a tag is not",
+            "Phase 2 has to say which of the two prose rungs can be rewritten "
+            "after the fact and which cannot, or the asymmetry the example now "
+            "rests on is not stated anywhere",
+        )
+
+    def test_the_example_records_that_it_moved(self):
+        """A worked example that silently changed meaning is worse than a stale
+        one — the counts still match, so nothing looks wrong."""
+        self.assertIn("2026-09-05", self._ladder())
+        self.assertRegex(
+            self._ladder(),
+            r"(?is)rung 1 now names all five fixes and \*\*rung 2 still does not",
+            "the example's point is now the disagreement; if the prose still "
+            "reads as 'both rungs omit', it is describing a state that ended",
+        )
+
+    def test_the_script_reads_the_field_that_moves(self):
+        self.assertIn("updated_at", self.reachable(2))
+        self.assertIn(
+            "edited_since_published",
+            self.reachable(2),
+            "changelog.py has to compare the stamps, not merely fetch them",
+        )
+
+    def test_no_phase_lets_jq_decide_whether_a_body_was_edited(self):
+        """`null > "2026-.."` is `false` in jq, so an API that stopped returning
+        `updated_at` would read as *nothing was ever edited* — this repo's own
+        failure class inside the check written to catch it.
+
+        Both ecosystems, because they reach the answer differently and only one
+        of them has somewhere to put a third state: `changelog.py` compares in
+        Python and can return *unknown*, while `actions.md` is read by a human,
+        so it prints the raw stamps and lets `null` be visible. Neither computes
+        a boolean in the `--jq`. This guard caught the first draft of 0.44.0's
+        own actions block, which did.
+        """
+        for number in (2, 4):
+            with self.subTest(phase=number):
+                self.assertNotRegex(
+                    self.reachable(number),
+                    r"\.updated_at\s*>\s*\.published_at",
+                    "a boolean computed in the --jq cannot distinguish "
+                    "'not edited' from 'the field is gone'",
+                )
+        code = self.reachable(2)
+        self.assertRegex(code, r"published:\s*\.published_at")
+        self.assertRegex(code, r"updated:\s*\.updated_at")
+
+    def test_the_actions_notes_read_carries_both_stamps(self):
+        """The other ecosystem. `actions.md` § Phase 4 calls reading the notes
+        *the method rather than the shortcut*, so the mutability question lands
+        hardest there — and until 0.44.0 no command in that file fetched a
+        release body at all (#130)."""
+        runs = self.reachable(4)
+        self.assertIn("releases/tags/<tag>", runs, "Phase 4 must fetch the notes it sends you to")
+        self.assertIn("updated_at", runs)
+        self.assertIn("published_at", runs)
+
+    def test_the_actions_prose_says_what_an_edit_costs_a_verdict(self):
+        for name, section in self._handoffs(4):
+            if name == "actions.md":
+                self.assertRegex(
+                    section,
+                    r"(?is)can read different notes and reach different verdicts",
+                    "naming the field is not enough — the reader needs the "
+                    "consequence, or `edited=true` reads as trivia",
+                )
+                return
+        self.fail("Phase 4 no longer hands off to actions.md")
+
+
 class TestAPlaceholderForARepositoryPathIsDerived(SkillHarness):
     """#101. `git show "pr-<N>:.github/workflows/<ci>.yml"` never said how to
     learn `<ci>`, so every run invented a way to list the directory or guessed a
@@ -4786,6 +4891,36 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
             "uv's provisioning chatter, which lands in the compared blob",
             "runs",
             r"uv run -q",
+        ),
+        (
+            1,
+            "every `uses:` is SHA-pinned, one of three structural checks (#130)",
+            "runs",
+            r"@\[0-9a-f\]\{40\}",
+        ),
+        (
+            1,
+            "what each workflow grants, and the default an absent block inherits",
+            "runs",
+            r"actions/permissions/workflow",
+        ),
+        (
+            1,
+            "that the diff added no step and changed no trigger",
+            "runs",
+            r"residue exit",
+        ),
+        (
+            4,
+            "the release notes it calls the method rather than the shortcut (#130)",
+            "runs",
+            r"releases/tags/<tag>",
+        ),
+        (
+            4,
+            "whether the notes it is quoting were rewritten after the tag (#131)",
+            "runs",
+            r"updated_at",
         ),
         (
             7,

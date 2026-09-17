@@ -22,6 +22,14 @@ reading a lazy continuation as a setext underline`. A run that honored the ladde
 as written reported "two additive releases" and was wrong about the only
 interesting thing in the bump.
 
+That example moved on 2026-09-05, when the project backfilled a `### Fixed`
+section into v0.2.61's notes ten days after cutting the tag. Rung 1 now names all
+five; rung 2, a blob at `v0.2.62`, still names none -- so the two prose rungs
+disagree and only the range settles it, which is this script's whole argument
+demonstrated on its own founding case. Live, that range now reconciles at exit
+`0`. `--jq .body` cannot see the edit; `updated_at` can, and
+`edited_since_published` reads it.
+
 **The obvious heuristic does not save it.** "Does this project document its fixes
 at all?" returns a confident yes: 0.2.56, 0.2.57, 0.2.59 and 0.2.60 all carry a
 `### Fixed` section. Only the versions under audit had none, because the project's
@@ -310,10 +318,21 @@ def resolve_repo(package: str) -> str:
 
 
 def releases(slug: str) -> list[dict[str, str]]:
-    """Every published release, newest first: tag, body, date.
+    """Every published release, newest first: tag, body, date, both stamps.
 
     `--paginate` because a long-lived project's current release is not on page
     one of anything if the caller asks for a version a year back.
+
+    `published` and `updated` are carried separately from `at`, and compared in
+    Python rather than in the `--jq`. A release body is mutable -- `rvben/rumdl`
+    backfilled a `### Fixed` section into v0.2.61 ten days after cutting the tag,
+    which is the worked example in `references/uv-lock.md` -- and `.body` alone
+    cannot say so. Doing the comparison here keeps it loud: jq would answer
+    `false` for a response that carried no `updated_at` at all, since `null`
+    sorts below every string, so an API that stopped returning the field would
+    read as "nothing was ever edited". `at` keeps its `created_at` fallback for
+    display and is not used for the comparison, because `updated_at` is normally
+    later than `created_at` on a release nobody has touched.
     """
     rows = _gh_hard(
         [
@@ -321,7 +340,8 @@ def releases(slug: str) -> list[dict[str, str]]:
             f"repos/{slug}/releases",
             "--paginate",
             "--jq",
-            ".[] | {tag: .tag_name, body: .body, at: (.published_at // .created_at)}",
+            ".[] | {tag: .tag_name, body: .body, at: (.published_at // .created_at), "
+            "published: .published_at, updated: .updated_at}",
         ]
     ).strip()
     if not rows:
@@ -330,6 +350,21 @@ def releases(slug: str) -> list[dict[str, str]]:
         return [json.loads(line) for line in rows.splitlines() if line.strip()]
     except json.JSONDecodeError as exc:
         fail(f"the release list for {slug} did not parse: {exc}")
+
+
+def edited_since_published(row: dict[str, str]) -> str | None:
+    """ "EDITED" where a release body changed after its tag was cut, else None.
+
+    Returns the marker, not a bool, so the caller cannot accidentally render a
+    missing answer as a clean one: where either stamp is absent this says
+    `unknown`, which is a third state and reads as one.
+    """
+    published, updated = row.get("published"), row.get("updated")
+    if not published or not updated:
+        return "edit status unknown -- the release carried no timestamps"
+    if updated > published:
+        return f"EDITED {updated}, after publication at {published}"
+    return None
 
 
 def match_tag(version: str, published: list[str], slug: str) -> str | None:
@@ -728,9 +763,17 @@ def main() -> int:
     # --- rungs 1 and 2: what the project chose to say ------------------------
     window, why = gap(published, from_tag, to_tag)
     blocks: list[str] = []
+    edits: list[str] = []
     for row in window:
-        blocks.append(f"## rung 1 -- release notes, {row['tag']} ({row['at']})\n\n{row['body']}")
+        mark = edited_since_published(row)
+        header = f"## rung 1 -- release notes, {row['tag']} ({row['at']})"
+        if mark:
+            edits.append(f"{row['tag']}: {mark}")
+            header += f"\n\n**{mark}.** This is the current text, not what went out with the tag."
+        blocks.append(f"{header}\n\n{row['body']}")
     print(f"rung 1 -- release notes: {len(window)} release(s) in the gap")
+    for line in edits:
+        print(f"         {line}")
     if why:
         print(f"         ({why})")
 

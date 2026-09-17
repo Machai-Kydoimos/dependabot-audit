@@ -11,6 +11,151 @@ patch.
 
 ## [Unreleased]
 
+## [0.44.0] — 2026-09-17
+
+**A release body is not immutable, and reading `.body` cannot tell you it
+changed.** `rvben/rumdl` rewrote v0.2.61's release notes on 2026-09-05 — ten
+days after cutting the tag — backfilling the `### Fixed` section whose absence is
+this plugin's worked example for #94. Nothing in this repository read the field
+that says so. Shipped together with the two sites where the #127 class had
+regenerated, both in `references/actions.md`, because one of them is the release
+notes read that this finding lands on.
+
+**Minor, not patch.** Phase 1 and Phase 4 of the actions path each take
+measurements they previously only named, and `changelog.py` reports something new.
+
+### Fixed — the notes you are reading may not be the notes that shipped (#131)
+
+- **`integration/test_live_changelog_sources.py` was red, and its premise was
+  the thing that broke.** The file argued its worked example was durable because
+  *"release bodies for published tags are immutable in practice"*. Measured:
+  `immutable=false` on that release, `published_at 2026-08-26T19:24:23Z`,
+  `updated_at 2026-09-05T07:05:04Z`. Three bodies were rewritten in one
+  three-second batch — v0.2.61, v0.2.64, v0.2.65 — so it was a deliberate
+  backfill after the project fixed its release automation, not a typo repair.
+
+- **The example is not dead; it inverted, and the new shape is stronger.** Rung 2
+  cannot be rewritten: `CHANGELOG.md` read at `v0.2.62` is a blob, and its
+  `0.2.61` section still carries one `### Added` bullet and no fixes. So rungs 1
+  and 2 now **disagree**, and only the commit range settles it. The reconciliation
+  rung — the row whose *"where it runs out"* is **never** — stops being argued and
+  becomes what the subject demonstrates. Same repo, same tag pair, assertions
+  inverted rather than a new subject found.
+
+- **The durable premise is a property of git, not of maintainers' habits**, and
+  that replaces the old one in the prose: a changelog read at a tag is a blob, a
+  release body is not.
+
+- **`changelog.py` now reads both stamps and says so.** Any release in the gap
+  whose body moved is marked `EDITED <stamp>, after publication at <stamp>` in
+  the terminal summary and again in the evidence file. The comparison is done in
+  **Python, not in the `--jq`**: `null > "2026-…"` is `false` in jq, so a response
+  that stopped carrying `updated_at` would read as *nothing was ever edited* —
+  this plugin's own failure class inside the check written to catch it. A missing
+  stamp returns `edit status unknown`, a third state that reads as one.
+  `created_at` is explicitly not what it compares against; on an untouched release
+  it is normally *earlier* than `updated_at` (v0.2.61: created 19:09:35, published
+  19:24:23), so the fallback would mark almost everything as edited.
+
+- **The founding case now passes the script it motivated.** Run `changelog.py`
+  live over `rumdl` v0.2.60…v0.2.62 today and it reconciles at exit `0`, because
+  rung 1 names all five fixes. It exited `1` when #94 was filed. Nothing here
+  changed; the source did. The offline fixtures still carry the notes as
+  published — deliberately, with a comment saying not to refresh them — so the
+  original case stays testable, and the `EDITED` marker is what tells a live run
+  its green is not the green it looks like.
+
+- **How common, measured 2026-09-17.** `updated_at > published_at` across the
+  most recent 100 releases: `cli/cli` 73, `astral-sh/ruff` 57, `astral-sh/uv` 22,
+  `rvben/rumdl` 5. Most of those are CI uploading assets minutes after
+  publishing, so the honest column is *more than a day later* — and there every
+  one of the four still has releases edited: 5, 3, 2 and 2. On the actions side,
+  `actions/checkout` has **17 of its last 58** edited, **8 of them more than a day
+  on**; v6.0.2 was published 2026-01-09 and edited 2026-01-22, twelve days later.
+
+- **What it costs an audit, which is why it is in the report and not a footnote.**
+  Two audits of the same PR, at the same pin, months apart, can read different
+  notes and reach different verdicts — and `published_at` is identical in both.
+
+### Fixed — the #127 class, at the two sites it regenerated (#130)
+
+- **`references/actions.md` § Phase 4 said reading the release notes *"is the
+  method rather than the shortcut"* and no command in the file fetched one.**
+  `grep 'releases/tags\|\.body'` over that file returned nothing. It is the
+  most load-bearing read in the whole actions path, and a replay filled it by
+  improvising. The phase now lists the gap and fetches each version's body, with
+  both timestamps above it so an edit is visible in the same output being read
+  for behaviour. Both commands print the raw stamps rather than a computed
+  boolean, for the jq reason above.
+
+- **`references/actions.md` § Phase 1's three structural checks had no
+  commands** — *"every `uses:` is SHA-pinned, the workflow's `permissions:` are
+  minimal, and the diff does not quietly add a step or change a trigger"*. All
+  three now run, measured on `fpga-board-sim` #436: 27 `uses:` lines, all pinned;
+  18 changed lines, no residue. Planting an added `- run: curl … | sh` step and a
+  bare `@v1` pin fires each at exit `0`.
+
+- **On two of the three, exit `1` is the clean answer**, because both end in a
+  `grep -v` and a clean tree leaves nothing to print. That is inverted from every
+  other status in the document, and a reader who chains `&&` onto either silently
+  drops the finding — so the prose says it.
+
+- **A workflow with no `permissions:` block is not a workflow with minimal
+  permissions.** It inherits the repository default, which is a different
+  question answered by a different call, so the loop names the absence rather
+  than letting it fall out of a grep as silence. That call needs collaborator
+  read and answers `403` without it: `gh` exits **1** while writing the body to
+  **stdout**, so a capture holds `{"message":"You must have repository read
+  permissions"…}` and reads as an answer. Same trap as Phase 2's currency call,
+  one phase over.
+
+- **A version with no release fails the same way.** `gh` exits 1, writes
+  `{"message":"Not Found"…}` to stdout — and `--jq .body` does **not** filter it,
+  so a capture holds 133 bytes of plausible-looking text where the notes should
+  be.
+
+### Added — the list that is not a gate (#130)
+
+- **`tools/triage_unsupplied.py`**, run once per sprint, read in full, and
+  deliberately not wired into CI. It prints prose that asks for a measurement
+  with no command near it. 0.43.0 rejected this prototype on the measurement that
+  it returns ~40 hits with ~35 legitimate — correctly, as a gate — and then
+  discarded its output. One replay later a new instance of the class turned up by
+  improvisation, and **that discarded output had already flagged it verbatim**,
+  inside a bucket labelled false positives that nobody read through. *Cannot be a
+  gate* and *cannot be useful* are different findings.
+
+- **Its coverage is partial and the number is written down**: of #130's two
+  instances it reaches one. The other is phrased as a description rather than an
+  imperative, so no verb pattern gets to it. Running it this sprint printed 28
+  hits; 26 were legitimate, and the Phase 4 instance dropped off the list once
+  the command existed. Stated in the docstring and in CONTRIBUTING so a quiet run
+  is never mistaken for coverage.
+
+### Added — guards
+
+- **`TestARungThatAnsweredCanAlsoHaveBeenRewritten`** (6 tests): the prose says
+  which rung can be rewritten and which cannot, the example records that it
+  moved, the script reads the field that moves, **neither ecosystem lets jq
+  decide whether a body was edited**, and the actions prose carries the
+  consequence rather than just the field name. The jq guard caught the first
+  draft of this release's own actions block, which computed the boolean — and
+  then caught the explanatory comment that named the anti-pattern while warning
+  against it, which is the negative-assertion trap `reachable()`'s docstring
+  describes.
+
+- **`TestARungThatAnsweredCanAlsoBeRewritten`** (6 tests, offline): the marker is
+  quiet on an untouched release, names a rewritten one in both the summary and
+  the evidence file, marks only the one that moved, does not change the verdict —
+  an edit is information, not a finding — and returns *unknown* rather than clean
+  for a missing stamp.
+
+- **Five entries added to the #127 registry**, three for Phase 1 and two for
+  Phase 4, so neither site can silently go back.
+
+- All eleven guards mutation-checked, plus five against `changelog.py`: sixteen
+  mutations, sixteen caught.
+
 ## [0.43.0] — 2026-09-16
 
 Eight more phases required a measurement and supplied no command to take it —
@@ -4940,7 +5085,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.43.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.44.0...HEAD
+[0.44.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.42.0...v0.43.0
 [0.42.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.40.0...v0.41.0

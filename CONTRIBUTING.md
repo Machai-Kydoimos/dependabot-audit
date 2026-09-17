@@ -205,6 +205,34 @@ contact with the world. A tool that claimed to be one, and could not itself be
 verified, would be the unverified verifier this repo exists to argue against — so
 do not build one, however productive it would look.
 
+## The list that is not a gate
+
+**Once per sprint, run the triage list and read every hit:**
+
+```bash
+python3 tools/triage_unsupplied.py
+```
+
+It prints prose that asks for a measurement with no command near it — #127's
+class. It is deliberately **not** wired into CI, because the class is not
+mechanically separable from the much larger one of *"read the output the command
+above just produced"*: measured at roughly forty hits with thirty-five
+legitimate, and a guard needing thirty-five exceptions gets tuned until it
+discriminates nothing.
+
+**Read it anyway, and read all of it.** 0.43.0 rejected the prototype on that
+measurement and discarded the output. One replay later a new instance of the
+class turned up by improvisation — and the discarded output had already flagged
+it verbatim, inside a bucket labelled false positives that nobody read through
+(#130). *Cannot be a gate* and *cannot be useful* are different findings.
+
+Its coverage is partial and the number is known: of #130's two instances it
+reaches one, because the other is phrased as a description rather than an
+imperative. Treat a clean-looking run as a prompt to look elsewhere, never as a
+coverage claim — the registry in
+`tests/test_skill_prose.py::TestAPhaseSuppliesTheMeasurementsItAsksFor` is what
+stops a *known* instance coming back, and it only knows what is written in it.
+
 ## Tests
 
 **Every case corresponds to a defect that actually shipped, or to a failure the

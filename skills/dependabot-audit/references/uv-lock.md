@@ -218,6 +218,24 @@ two being `stop rewriting Rust source when formatting doc comments`, which wrote
 underline`. A run that honored the ladder as written reported "two additive
 releases" and was wrong about the only interesting thing in the bump.
 
+**That example has since moved, and the way it moved is the better argument.**
+On 2026-09-05 `rumdl` backfilled a whole `### Fixed` section into v0.2.61's
+release notes — ten days after cutting the tag, in one batch with two other
+versions. So rung 1 now names all five fixes and **rung 2 still does not**: the
+committed `CHANGELOG.md` read at `v0.2.62` is a blob and carries the same single
+`### Added` bullet it always did. The two prose rungs disagree, and only the
+range says which is right. That is the reconciliation rung doing the job it was
+added for, on the case it was added from.
+
+**A release body is mutable; a changelog read at a tag is not.** That asymmetry
+is the durable half, and it is a property of git rather than of a maintainer's
+habits. It also means a live run of `changelog.py` over this range now exits
+**`0`** where it exited `1` when #94 was filed — nothing here changed, the
+source did. `published_at` cannot tell you; `updated_at` can, and the script
+reads it and prints `EDITED <stamp>, after publication at <stamp>` on any
+release in the gap that moved. Where you see that, what you are quoting is the
+current text and not the announcement.
+
 **The obvious heuristic does not save it.** *"Does this project document its
 fixes at all?"* returns a confident yes — 0.2.56, 0.2.57, 0.2.59 and 0.2.60 all
 carry a `### Fixed` section. Only the versions under audit had none, because the

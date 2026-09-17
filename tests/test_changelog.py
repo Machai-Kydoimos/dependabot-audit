@@ -55,6 +55,7 @@ from changelog import (
     candidates,
     cli,
     described,
+    edited_since_published,
     gap,
     github_slug,
     labelled,
@@ -92,6 +93,15 @@ RUMDL_61_62 = [
 ]
 
 # The whole of what rung 1 says for each. Additive, both of them.
+#
+# RUMDL_NOTES_61 is now a historical record rather than a current reading, and
+# that is deliberate. The project rewrote v0.2.61's release body on 2026-09-05 --
+# ten days after cutting the tag -- backfilling the five `### Fixed` entries this
+# range carries. Fetch it live today and you get the fixes; what is recorded here
+# is what the API returned when #94 was filed, which is the state the ladder's
+# defect was measured in. Do NOT refresh it to match the live body: that would
+# delete the only case in this suite where rungs 1 and 2 both answer and both
+# omit, and it is evidence that a release body is mutable (#131).
 RUMDL_NOTES_61 = (
     "\n### Added\n\n- **cli**: add `--stdin-batch` for NUL-framed multi-document "
     "linting and `--stdin-batch-closed-world` for supplied-document-only link "
@@ -216,9 +226,13 @@ class Repo:
         tags: list[str] | None = None,
         files: dict[str, str] | None = None,
         commits: list[str] | None = None,
+        edited: dict[str, str] | None = None,
     ) -> None:
         self.slug = slug
         self.releases = releases or []
+        # tag -> the `updated_at` a rewritten body carries. Absent means the
+        # release still reads as it was published.
+        self.edited = edited or {}
         self.tags = tags or [tag for tag, _ in (releases or [])]
         self.files = files or {}
         self.commits = commits or []
@@ -237,8 +251,17 @@ def fake_gh(repo: Repo, log: list[str] | None = None) -> Any:
         if log is not None:
             log.append(joined)
         if f"repos/{repo.slug}/releases" in joined:
+            published = "2026-08-26T00:00:00Z"
             return "\n".join(
-                json.dumps({"tag": tag, "body": body, "at": "2026-08-26T00:00:00Z"})
+                json.dumps(
+                    {
+                        "tag": tag,
+                        "body": body,
+                        "at": published,
+                        "published": published,
+                        "updated": repo.edited.get(tag, published),
+                    }
+                )
                 for tag, body in repo.releases
             )
         if "/git/ref/tags/" in joined:
@@ -345,6 +368,87 @@ class TestTheRungThatAnsweredIsNotTheWholeAnswer(ChangelogHarness):
         self.assertIn("UNRECONCILED: 5 of 5", plain[1])
         self.assertIn("if this repo runs the tool in write mode", plain[1])
         self.assertIn("this repo runs the tool in write mode, so", armed[1])
+
+
+class TestARungThatAnsweredCanAlsoBeRewritten(ChangelogHarness):
+    """A release body is mutable, and `.body` alone cannot say it changed.
+
+    `rvben/rumdl` backfilled a whole `### Fixed` section into v0.2.61 on
+    2026-09-05, ten days after cutting the tag. The API says so in `updated_at`
+    and in nothing else: `published_at` does not move, the body comes back
+    well-formed, and `gh` exits 0.
+
+    This matters more than a stale quote. **The founding case for this script
+    now reconciles.** Run it against the live v0.2.60...v0.2.62 today and rung 1
+    names all five fixes, so the run exits `0` -- the same range that exited `1`
+    when #94 was filed, changed by an edit upstream rather than by anything here.
+    The fixtures in this file still carry the notes as published, which is what
+    keeps the case testable; the marker is what tells a live run that its green
+    is not the green it looks like.
+    """
+
+    def rewritten(self) -> Repo:
+        repo = self.rumdl_61_62()
+        repo.edited = {"v0.2.61": "2026-09-05T07:05:04Z"}
+        return repo
+
+    def test_an_untouched_release_says_nothing(self):
+        """The marker has to be quiet on the ordinary case or it is noise."""
+        _, out, evidence = self.run_main(self.rumdl_61_62(), "--from", "0.2.60", "--to", "0.2.62")
+        self.assertNotIn("EDITED", out)
+        self.assertNotIn("EDITED", evidence)
+
+    def test_a_rewritten_release_is_named_in_both_places(self):
+        """The terminal summary and the evidence file, because they are read by
+        different people at different times -- and the evidence file is the one
+        that outlives the run."""
+        _, out, evidence = self.run_main(self.rewritten(), "--from", "0.2.60", "--to", "0.2.62")
+        self.assertIn("v0.2.61: EDITED 2026-09-05T07:05:04Z", out)
+        self.assertIn("EDITED 2026-09-05T07:05:04Z", evidence)
+        self.assertIn("not what went out with the tag", evidence)
+
+    def test_only_the_rewritten_one_is_marked(self):
+        _, _, evidence = self.run_main(self.rewritten(), "--from", "0.2.60", "--to", "0.2.62")
+        marked = [ln for ln in evidence.splitlines() if "EDITED" in ln]
+        self.assertEqual(len(marked), 1, f"one release was edited, {len(marked)} marked: {marked}")
+
+    def test_the_marker_does_not_change_the_verdict(self):
+        """An edit is information, not a finding. The exit code answers one
+        question -- did the prose name every fix -- and an edited body that names
+        them still names them."""
+        plain = self.run_main(self.rumdl_61_62(), "--from", "0.2.60", "--to", "0.2.62")[0]
+        rewritten = self.run_main(self.rewritten(), "--from", "0.2.60", "--to", "0.2.62")[0]
+        self.assertEqual(plain, rewritten)
+
+    def test_a_missing_stamp_is_unknown_and_not_clean(self):
+        """The reason the comparison is in Python and not in the `--jq`. jq
+        answers `false` for `null > "2026-.."`, so a response that stopped
+        carrying `updated_at` would read as *nothing was ever edited* -- this
+        repo's own failure class, inside the check written to catch it."""
+        self.assertEqual(
+            edited_since_published({"published": "", "updated": ""}),
+            "edit status unknown -- the release carried no timestamps",
+        )
+        self.assertIsNone(
+            edited_since_published(
+                {"published": "2026-08-26T19:24:23Z", "updated": "2026-08-26T19:24:23Z"}
+            )
+        )
+
+    def test_created_at_is_not_what_it_compares_against(self):
+        """`at` falls back to `created_at`, which on an untouched release is
+        normally *earlier* than `updated_at` -- rumdl v0.2.61 was created
+        19:09:35 and published 19:24:23. Comparing against the fallback would
+        mark almost every release as edited."""
+        self.assertIsNone(
+            edited_since_published(
+                {
+                    "at": "2026-08-26T19:09:35Z",
+                    "published": "2026-08-26T19:24:23Z",
+                    "updated": "2026-08-26T19:24:23Z",
+                }
+            )
+        )
 
 
 class TestTheReconciliationCanAlsoSayYes(ChangelogHarness):
