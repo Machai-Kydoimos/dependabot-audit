@@ -370,7 +370,7 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
 cd "$SCRATCH/pr-<N>"                          # the PR's tree — the set under audit
-uv export --frozen --format requirements.txt --no-emit-project --all-groups \
+uv export -q --frozen --format requirements.txt --no-emit-project --all-groups \
   -o "$SCRATCH/pr-<N>-requirements.txt"       # --all-packages for a workspace
 uvx pip-audit -r "$SCRATCH/pr-<N>-requirements.txt" --no-deps --disable-pip
 
@@ -385,6 +385,15 @@ updating it. Measured on uv 0.12.8: the audited tree's `setup.py` does not run a
 no `.venv` appears. **Phase 3 runs under `--no-execute`**, where this procedure has
 promised the PR's code will not run — so the flags are what make that promise
 true. Default service is PyPI's advisory DB; `-s osv` selects OSV.
+
+**`-q` is there because `-o FILE` does not mean *instead of stdout*.** uv writes
+the export to the file **and** prints the whole thing again, so the `pip-audit`
+verdict this row exists for arrives underneath it. Measured on uv 0.12.15: a
+five-package fixture printed 4,024 bytes to stdout with the flag absent and **0**
+with it present, the two files byte-identical apart from the header line that
+echoes the command; nothing moves to stderr, and a failing export still exits 2.
+On a real bump it was 60.6 KB — and `--all-groups` above, which is the flag that
+makes this row *correct*, is also what tripled it.
 
 **`--all-groups` is the fourth flag, and its job is scope rather than safety.**
 Without it the export covers the *default* groups — and `tool.uv.default-groups`
@@ -474,9 +483,9 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 G="${SCRIPTS:?not in the handoff — re-run Phase 0}/gate_diff.py"
 
 python3 "$G" --tree "$SCRATCH/base-<N>" \
-  --run locked   "uv run --no-project --with ruff==<locked> ruff format ." \
-  --run proposed "uv run --no-project --with ruff==<proposed> ruff format ." \
-  --run latest   "uv run --no-project --with ruff==<latest> ruff format ."
+  --run locked   "uv run -q --no-project --with ruff==<locked> ruff format ." \
+  --run proposed "uv run -q --no-project --with ruff==<proposed> ruff format ." \
+  --run latest   "uv run -q --no-project --with ruff==<latest> ruff format ."
 ```
 
 The question is what the new version does to *the code you have*, which is the
@@ -516,8 +525,8 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 G="${SCRIPTS:?not in the handoff — re-run Phase 0}/gate_diff.py"
 
 python3 "$G" --tree "$SCRATCH/base-<N>" \
-  --run locked   "PYTHONDONTWRITEBYTECODE=1 uv run --group <group> --with mypy==<locked> mypy ." \
-  --run proposed "PYTHONDONTWRITEBYTECODE=1 uv run --group <group> --with mypy==<proposed> mypy ."
+  --run locked   "PYTHONDONTWRITEBYTECODE=1 uv run -q --group <group> --with mypy==<locked> mypy ." \
+  --run proposed "PYTHONDONTWRITEBYTECODE=1 uv run -q --group <group> --with mypy==<proposed> mypy ."
 ```
 
 **A gate that imports the project also writes into the tree it is measured in,
@@ -553,8 +562,8 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 G="${SCRIPTS:?not in the handoff — re-run Phase 0}/gate_diff.py"
 
 python3 "$G" --tree "$SCRATCH/base-<N>" \
-  --run locked   "PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=../cov-locked   uv run --group <group> --with pytest==<locked>   pytest -q --cov=<pkg>" \
-  --run proposed "PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=../cov-proposed uv run --group <group> --with pytest==<proposed> pytest -q --cov=<pkg>"
+  --run locked   "PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=../cov-locked   uv run -q --group <group> --with pytest==<locked>   pytest -q --cov=<pkg>" \
+  --run proposed "PYTHONDONTWRITEBYTECODE=1 COVERAGE_FILE=../cov-proposed uv run -q --group <group> --with pytest==<proposed> pytest -q --cov=<pkg>"
 ```
 
 `gate_diff.py` runs each command with the tree as its working directory, so the
@@ -572,18 +581,47 @@ snapshot entirely. And the residue above is not a lesser concern for a read-only
 gate but the **only** thing its tree delta can contain: a gate that writes
 nothing, measured as having written something, has measured its own cache.
 
-**Compare the tool's output, not `uv run`'s.** The first invocation provisions
-the environment and says so — `Creating virtual environment`, `Installed 35
-packages`, the hardlink warning — and the second, warm, says none of it. Captured
-whole and diffed, every comparison therefore reports a difference on the first
-run alone. Measured on this phase's own replay, where two mypy runs both
-reported `Success: no issues found in 157 source files` and the diff came back
-eight lines long, all of them uv's. Warm the cache with a throwaway run, or strip
-what uv wrote before comparing; a read-only gate has no tree diff to fall back
-on, so this capture *is* the measurement. Which is a reason to run it **inside**
-`gate_diff.py`, not outside: the script already captures each run's output and
-compares them, and warming beforehand is a `--run` you discard, not a licence to
-drive the tool by hand.
+**Compare the tool's output, not `uv run`'s — and the flag is `-q`.** The first
+invocation provisions the environment and says so — `Creating virtual
+environment`, `Installed 35 packages`, the hardlink warning — and the second,
+warm, says none of it. Captured whole and diffed, every comparison therefore
+reports a difference on the first run alone. Measured on this phase's own replay,
+where two mypy runs both reported `Success: no issues found in 157 source files`
+and the diff came back eight lines long, all of them uv's. Put `-q` immediately
+after `uv run`, in **both** `--run` commands:
+
+```
+uv run -q --group <group> --with <tool>==<version> <tool> <args>
+```
+
+Measured on uv 0.12.15, cold, against a fixture: uv's chatter is **416 bytes on
+stderr** without it and **0** with it, while the tool's own stdout is the same 11
+bytes either way and the exit status is untouched. `gate_diff.py` concatenates
+`stdout + stderr` into the blob it compares, which is exactly why the chatter
+reaches the comparison — and a read-only gate has no tree diff to fall back on,
+so that capture *is* the measurement. `UV_LINK_MODE=copy` is **not** the same
+fix: it silences the hardlink warning and leaves 90 bytes of the rest. Warming
+with a throwaway run works too, but it is a `--run` you discard rather than a
+licence to drive the tool by hand — the flag is one word and survives a rerun.
+
+**The gate's own cache is the part that turns out not to need a flag, and that
+was measured rather than assumed.** `restore()` runs `git clean -fd` without
+`-x`, on purpose, so an ignored directory survives between runs — and every one
+of these tools writes a `.gitignore` of `*` into its cache, so `git status
+--porcelain` never lists it and `clean -fd` never removes it. Verified: a
+`.ruff_cache/` written by run one is still there after `clean -fd`, and goes only
+under `-fdx`. Run two therefore inherits run one's cache. It does not matter, and
+here is why:
+
+| Tool | What run two finds | Can run one's cache change run two's answer? |
+|---|---|---|
+| ruff | `.ruff_cache/0.8.6/` and `.ruff_cache/0.14.0/` **side by side** | no — the version is a directory level |
+| mypy | every `*.meta.json` carries `"version_id": "1.18.2"` | no — a mismatch invalidates the entry |
+
+So resist adding `--no-cache`: it would slow both runs, prove nothing, and put a
+flag in the prose that no measurement asked for. What the cache *does* cost is
+that run two rebuilds from cold where run one ran warm — a timing difference, not
+an output one, and nothing this phase compares.
 
 Repos that have been bitten by this say so in their own configuration. The one
 this section came from pins its mypy hook local rather than to `mirrors-mypy`,
@@ -793,7 +831,43 @@ Two things about it are worth knowing, and both belong in the report:
   add the newly-named package to the conceded set and re-run. It converges, and
   the conceded set is the answer.
 
-Then run the repo's own gates from Phase 0, and its full test suite.
+Then run the repo's own gates from Phase 0, and its full test suite. Phase 0
+already read the workflow files at `pr-<N>`; the gates are the `run:` steps
+inside them, and this is how to get them out:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# The list Phase 0 derived, re-derived rather than remembered.
+git ls-tree --name-only "pr-<N>:.github/workflows/"; echo "list exit: $?"
+
+# Then every gate step in all of them, at the tree Phase 5 runs in.
+git grep -nE -A3 '^[[:space:]]*-?[[:space:]]*run:' pr-<N> -- '.github/workflows/'
+```
+
+**That grep finds the steps; it does not read them, and the difference is a
+`|`.** A block scalar puts the commands on the lines *after* the one that
+matches, so a reader who copies the matched lines copies `run: |` and runs
+nothing at all. Measured on a two-workflow fixture: the bare grep returned three
+hits, one of them `run: |`, and the two commands under it — `uv run ruff check .`
+and `uv run mypy .` — were on neither. `-A3` above is a window, not a parse, and
+a longer block outruns it. **Open the file for anything the window truncates**;
+Phase 0's `git show "pr-<N>:.github/workflows/<workflow>"` is that read and it
+has already been issued once.
+
+Two things that are not derivable from the grep at all, and both change what the
+row is worth:
+
+- **A gate may not be a `run:` step.** A repo whose lint job is
+  `uses: pre-commit/action@v3` has its gate list in `.pre-commit-config.yaml`,
+  which Phase 0 also read. `references/pre-commit.md` § Phase 5 is the method
+  there, and the green it produces is **not** hermetic.
+- **A `run:` step may not be runnable here.** Steps guarded by an `if:`, or
+  reading a secret, or depending on a previous step's `GITHUB_OUTPUT`, execute in
+  a context this worktree does not have. Say which gates you ran and which you
+  could not, rather than reporting the subset as the whole.
 
 ### `--locked` checks the whole lockfile; the install materialises one resolution
 

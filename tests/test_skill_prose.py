@@ -2995,10 +2995,6 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
         self.assertGreaterEqual(seen, 1, "the reported half of the split is still captured")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestThePluginRootResolvesWhereItIsUsed(SkillHarness):
     """`references/uv-lock.md` named its scripts with a token nothing expands.
 
@@ -4704,3 +4700,238 @@ class TestPhase2CanAnswerTheCurrencyQuestionItAsks(SkillHarness):
             "non-empty and wrong — the same shape #39 records for "
             "`branches/<b>/protection`",
         )
+
+
+class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
+    """#127. The class `#124` and `#125` each fixed one instance of.
+
+    A phase tells the reader to establish some fact and gives no command for it,
+    so every run improvises one. That is quiet in the direction that matters:
+    the improvisation is usually *fine*, occasionally wrong, and never reviewed.
+    Round nineteen of the replay gate found **eight** more instances the week
+    after two were fixed, one of them raised independently by both audits in the
+    session — so what needs closing is the phase, not the row.
+
+    It is not only noise. Given no command for "does this repo have a `uv.toml`",
+    a run reached for `git ls-tree <ref> -- uv.toml`, which exits **0 printing
+    nothing** on a missing path and cannot tell *absent* from *the lookup
+    failed* — this procedure's defining distinction, improvised away inside the
+    procedure that is built on it. It caught itself one command later with
+    `git cat-file -e`. Nothing here would have caught it.
+
+    **This is a registry, and that is deliberate.** The general rule — *a phase
+    that says to measure something supplies a way* — was prototyped against the
+    whole document before this class was written: matching imperative
+    measurement verbs and requiring a fence within six lines returns about forty
+    hits, of which roughly thirty-five are legitimate (instructions for reading
+    output a command already produced, not for obtaining anything). A guard
+    needing thirty-five exceptions is one that gets tuned until it discriminates
+    nothing, which this file's own docstring is about. So the general half is
+    `TestAFlagNamedInProseIsAFlagThePhaseRuns` below, which *is* mechanical and
+    says plainly what it cannot reach; this half is the list, and its value is
+    that the eight cannot silently go back.
+    """
+
+    # (phase, what the phase asks for, where to look, what must be there)
+    #
+    # `runs` reads `reachable()` — executable material only, so a sentence
+    # *describing* the command cannot satisfy it. `says` reads `flat()`, and is
+    # for the two requirements whose answer is a rule for reading evidence that
+    # another phase already produced, where there is no new command to run.
+    SUPPLIED: ClassVar[list[tuple[int, str, str, str]]] = [
+        (
+            6,
+            "a `success` run only counts if its jobs actually ran",
+            "runs",
+            r"actions/runs/<run-id>/jobs",
+        ),
+        (
+            3,
+            "the action repository's own archived/disabled/fork/transfer status",
+            "runs",
+            r"archived=\\\(\.archived\)",
+        ),
+        (
+            3,
+            "the export must not bury the pip-audit verdict under itself (#128)",
+            "runs",
+            r"uv export -q",
+        ),
+        (
+            5,
+            "the merge date the actions run-history is read against",
+            "runs",
+            r"--json state,createdAt,mergedAt",
+        ),
+        (
+            5,
+            "the repo's own gates, which Phase 0 read but never extracted",
+            "runs",
+            r"git grep[^\n]*run:",
+        ),
+        (
+            4,
+            "the action's source, where the notes and the interface disagree",
+            "runs",
+            r"application/vnd\.github\.raw",
+        ),
+        (
+            4,
+            "the greps its own what-to-grep-for table names",
+            "runs",
+            r"git grep[^\n]*pull_request_target",
+        ),
+        (
+            4,
+            "uv's provisioning chatter, which lands in the compared blob",
+            "runs",
+            r"uv run -q",
+        ),
+        (
+            7,
+            "whether the bump moves INTO the problem or out of it",
+            "says",
+            "exclusive of the current pin",
+        ),
+        (
+            7,
+            "and the mechanical form of the same question",
+            "says",
+            "against the **base branch's** lockfile",
+        ),
+    ]
+
+    def test_every_requirement_in_the_registry_has_its_command(self):
+        for number, asks, where, pattern in self.SUPPLIED:
+            with self.subTest(phase=number, asks=asks):
+                if where == "runs":
+                    self.assertRegex(
+                        self.reachable(number),
+                        pattern,
+                        f"Phase {number} asks for {asks} and supplies no command "
+                        f"for it. Every run then improvises one, and the "
+                        f"improvisation is never reviewed — see #127",
+                    )
+                else:
+                    self.assertIn(
+                        pattern.lower(),
+                        self.flat(number),
+                        f"Phase {number} asks for {asks} and no longer says how "
+                        f"to derive it — see #127",
+                    )
+
+    def test_the_registry_still_covers_both_ecosystems(self):
+        """A registry that drifted onto one ecosystem would pass while the other
+        regressed, which is the shape `TestEveryPhaseCarriesBothEcosystems`
+        exists for one level up."""
+        phases_covered = {number for number, _, _, _ in self.SUPPLIED}
+        self.assertTrue(
+            {3, 4, 5} <= phases_covered,
+            "the registry no longer reaches the ecosystem-split phases",
+        )
+
+    def test_the_absent_check_is_cat_file_and_the_prose_says_why(self):
+        """The near-miss, in the phase that sends the reader looking for a file.
+
+        `git ls-tree <ref> -- <path>` exits 0 and prints nothing on a missing
+        path; `git cat-file -e <ref>:<path>` exits 128. Measured on git 2.55.0,
+        both directions.
+        """
+        self.assertIn("git cat-file -e", self.material(4))
+        self.assertIn(
+            "cannot tell *absent* from *the lookup failed*",
+            self.material(4),
+            "the reason the pathspec form is wrong has to travel with the table, "
+            "or the next run reaches for it again",
+        )
+
+    def test_phase_0_scopes_its_exit_128_claim_to_the_form_that_has_it(self):
+        """The sentence stated a property of `ls-tree` that belongs to the
+        `<ref>:<path>` invocation. A run that improvises the pathspec form
+        inherits a guarantee that does not hold there."""
+        flat = self.flat(0)
+        self.assertIn("in this form", flat)
+        self.assertIn("exits **0 and prints nothing**".lower(), flat)
+
+
+class TestAFlagNamedInProseIsAFlagThePhaseRuns(SkillHarness):
+    """The mechanical half of #127, and it is narrower than the class.
+
+    A long-form flag is only ever something you pass to a command, so a phase
+    whose prose names one that appears nowhere in its executable material is
+    either drifting from its own blocks or telling the reader to run something
+    it never wrote down. Both are the #127 shape, and unlike the general rule
+    this one is decidable: the token is in the shell or it is not.
+
+    **What it cannot reach**, stated here rather than discovered later: a phase
+    that supplies *no* flag at all. `references/uv-lock.md` § Phase 4 said to
+    "warm the cache with a throwaway run, or strip what uv wrote before
+    comparing" for two releases — a measurement with no command and no flag
+    named, so there was nothing for this guard to catch. That instance is in the
+    registry above, which is why both classes exist.
+
+    `PROSE_ONLY` is the honest part. Every entry is a flag the prose discusses
+    without running, and each carries the reason; adding one is a decision
+    somebody makes on purpose rather than an omission nobody sees.
+    """
+
+    FLAG = re.compile(r"`(--[a-z][a-z0-9-]{2,})`")
+
+    PROSE_ONLY: ClassVar[dict[str, str]] = {
+        # This plugin's own argument, described in the phases it disables.
+        "--no-execute": "an argument to the skill, not a command in any phase",
+        # Addressed to the reader about what to do with the finished report.
+        "--comment": "`gh pr comment`, offered at the `pull` tier — advice, not a step",
+        # How a maintainer replays an unreleased build; documented, never run here.
+        "--plugin-dir": "a replay mechanic for this repo's own gate, not an audit step",
+        # Tool flags named while explaining what a gate does or could do.
+        "--config": "named to explain which config a gate resolved, not invoked",
+        "--fix": "the audited repo's gate may carry it; this procedure never adds it",
+        "--isolated": "described as what pre-commit does to a hook environment",
+        "--strict": "named as a pip-audit mode this phase deliberately does not use",
+        "--skip-editable": "named in the pip-audit form Phase 3 rejects, with the reason",
+        # Deliberately NOT added, with the measurement that says so — 0.43.0.
+        "--no-cache": "measured unnecessary: ruff keys its cache by version and mypy "
+        "stamps `version_id`, so run two cannot read run one's",
+    }
+
+    def test_every_flag_a_phase_names_is_one_that_phase_runs(self):
+        for number, _ in self.phases:
+            if number < 0:
+                continue
+            runs = self.reachable(number)
+            for flag in sorted(set(self.FLAG.findall(self.material(number)))):
+                if flag in runs or flag in self.PROSE_ONLY:
+                    continue
+                self.fail(
+                    f"Phase {number} names `{flag}` in its prose and never runs "
+                    f"it. Supply the command, or add it to PROSE_ONLY with the "
+                    f"reason it is discussed rather than executed — see #127"
+                )
+
+    def test_the_allowlist_has_no_entry_that_stopped_being_needed(self):
+        """An allowlist nobody prunes is how a guard quietly stops applying.
+
+        A flag that every phase now runs does not need an exception, and leaving
+        it here would bless a future phase that names it without running it.
+        """
+        named_nowhere = []
+        for flag in self.PROSE_ONLY:
+            appears = any(flag in self.material(number) for number, _ in self.phases if number >= 0)
+            unrun = any(
+                flag in self.material(number) and flag not in self.reachable(number)
+                for number, _ in self.phases
+                if number >= 0
+            )
+            if appears and not unrun:
+                named_nowhere.append(flag)
+        self.assertEqual(
+            [],
+            named_nowhere,
+            "every phase that names these now runs them too, so the exception is "
+            "spent — drop it rather than leaving it to cover a future omission",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

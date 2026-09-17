@@ -11,6 +11,143 @@ patch.
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-09-16
+
+Eight more phases required a measurement and supplied no command to take it —
+the class 0.42.0 fixed two instances of. Found by the live replay of 0.42.0,
+which **verified both of those fixes behaviourally** and then produced eight more
+instances from the same two runs, one of them raised independently by both
+audits in the session. Fixing them one at a time leaves the next blank open, so
+this release closes the eight together and adds a guard so they cannot go back.
+
+**Minor, not patch.** Six phases now take a measurement they previously only
+named, and two of them turned out to have been asserting something false.
+
+### Fixed — eight phases that asked for a fact and gave no way to get it (#127)
+
+- **Phase 6 was wrong about what `success` means, not merely silent.** It said
+  *"a run is `success` only if every job is"*. Measured 2026-09-16: **6 of 12**
+  recent `success` runs on `cli/cli` and **7 of 12** on `astral-sh/uv` contained
+  at least one `skipped` job, while **no** `success` run among about a hundred
+  scanned across four repositories carried a `failure` or a `cancelled` one. So
+  `skipped` is the whole of the gap — and it is the half that reads as coverage:
+  a required check is green because the job that would have exercised the change
+  was conditioned out. The phase now asks for the run's jobs, which is its second
+  question — *did it exercise the change* — one level below the trigger read.
+
+- **`references/actions.md` § Phase 3** asked for the action repository's status
+  and named no endpoint. One call now carries `archived`, `disabled`, `fork` and
+  `full_name` — and `full_name` is the field that answers a transfer, because the
+  API follows a rename silently: measured, `ambv/black` answers as `psf/black`
+  and `kubernetes-incubator/kube-aws` as `kubernetes-retired/kube-aws`, both at
+  exit 0 with every other field looking ordinary.
+
+- **`references/actions.md` § Phase 5** said to read the run history *against the
+  merge date* and gave no way to get one. It now reads `mergedAt`, which is
+  `null` on an open PR — and that is an answer, not a gap: nothing in that
+  history can have run the proposed pin. The same query also asked GitHub for
+  `headBranch` and then dropped it from its own `--jq`, so every run in the list
+  looked alike; the column is now printed, and it is what says whether a green
+  run is evidence at all.
+
+- **`references/actions.md` § Phase 4** said *"where the notes and the interface
+  disagree, the source settles it"* and supplied no read. It now greps the
+  bundled entry point `action.yml` already names, at both refs — and carries the
+  measurement that makes that read honest: above **1 MiB** the contents API
+  describes the file and declines to carry it — `200`, a real `size` and `sha`, a
+  working `download_url`, `content` an empty string, and the only notice is
+  `encoding` flipping `base64` to `none`, which is the one field the idiom never
+  reads. GitHub documents it as working *"as normal"*, so it is a success path.
+  `base64 -d` then accepts the bare newline `jq` prints as valid base64 for zero
+  bytes, and `diff` on two empty files exits 0 — the exact failure that block's
+  own comment warns about, one file along. Bracketed in `python/cpython`:
+  1,028,882 bytes still inlines, 1,074,405 does not. `setup-uv`'s bundle is 3,966,481 bytes; the raw media type
+  returns all of it, and `isTagPush` goes from **0 occurrences at v9.0.0 to 2 at
+  v10.0.1** — a falsifiable answer to which source was right, in one call.
+
+- **The *what to grep for* table named four things to look for and no way to
+  look.** Four greps now, at the PR's own ref, and they are four rather than one
+  alternation on purpose: measured on a two-workflow fixture, the event-name grep
+  found `pull_request_target` and `workflow_run` and **missed the `tags:` line
+  entirely**, because a tag push is `push` carrying a `refs/tags/` ref. The
+  second grep is captured rather than piped, and checks exit `1` apart from
+  exit `2`, because *found nothing* is this table's ordinary answer.
+
+- **`references/uv-lock.md` § Phase 5** said *"then run the repo's own gates from
+  Phase 0"*. The gates are the `run:` steps inside workflows Phase 0 already
+  read; the phase now extracts them, and says why the grep is a lead rather than
+  a parse — a block scalar puts the commands on the lines *after* the match, so a
+  reader who copies the matched line copies `run: |` and runs nothing.
+
+- **Phase 7's verdict table asked whether *the bump moves into it*** — whether
+  the version being adopted carries the problem where the current pin does not —
+  and nothing anywhere gave a way to check. It is derivable, and the gap derives
+  it: `changelog.py` renders the range **exclusive of the current pin**, measured
+  on `rvben/rumdl` 0.2.70 → 0.2.72, whose evidence file holds v0.2.71 and v0.2.72
+  and nothing of 0.2.70. So everything in that file is by construction absent
+  from what the repo runs today, and the question becomes one about the entry's
+  kind: a **fix** in the gap means the bump moves *out of* the problem, a **new
+  or changed behaviour** means it moves *into* it. Where an advisory exists,
+  `audit.py` against the base branch's lockfile settles it mechanically.
+
+- **`references/uv-lock.md` § Phase 4 said to neutralise uv's own output and
+  named no flag.** It is `-q`, in both `--run` commands: measured on uv 0.12.15
+  cold, uv's provisioning chatter is **416 bytes on stderr** without it and **0**
+  with it, while the tool's own stdout is unchanged and the exit status is
+  untouched. `gate_diff.py` concatenates `stdout + stderr` into the blob it
+  compares, which is why that chatter reached the comparison at all.
+  `UV_LINK_MODE=copy` is *not* the same fix — it leaves 90 bytes of the rest.
+
+### Fixed — `uv export` buried the answer Phase 3 exists to print (#128)
+
+- **`-o FILE` does not mean *instead of stdout*.** uv writes the export to the
+  file **and** prints the whole thing again, so `pip-audit`'s verdict arrives
+  underneath it. Measured on uv 0.12.15: a five-package fixture printed 4,024
+  bytes to stdout without `-q` and **0** with it, the two files byte-identical
+  apart from the header line echoing the command. On a real bump the duplicate
+  was 60.6 KB — and `--all-groups`, the flag 0.42.0 added to make this row
+  *correct*, is also what tripled it. Owned here rather than deferred for that
+  reason.
+
+### Fixed — the exits-128 claim belonged to an invocation, not to a command
+
+- **Phase 0 stated a property of `ls-tree` that only the `<ref>:<path>` form
+  has.** `git ls-tree <ref> -- <path>` exits **0 printing nothing** on a missing
+  path; `git ls-tree <ref>:<path>` and `git cat-file -e <ref>:<path>` exit 128.
+  A replay improvising a file-existence check reached for the pathspec form and
+  inherited a guarantee that does not hold there — it caught itself one command
+  later, and nothing in the procedure would have. Both forms are now named, with
+  the exits measured on git 2.55.0.
+
+### Added — a standing guard, and what it can and cannot reach
+
+- **A registry of the measurements each phase owes** (`tests/`, 6 new tests).
+  Ten entries, each pinned to the phase's *executable* material so a sentence
+  describing a command cannot satisfy it. Mutation-checked: thirteen deletions,
+  thirteen failures, no silent passes.
+
+- **A mechanical half, and it is narrower than the class.** A long-form flag is
+  only ever something you pass to a command, so a phase naming one it never runs
+  is drifting from its own blocks. `PROSE_ONLY` carries nine deliberate
+  exceptions with their reasons — including `--no-cache`, which is there because
+  it was measured *unnecessary*: ruff keys its cache directory by version and
+  mypy stamps `version_id` per entry, so run two cannot read run one's.
+
+- **The general rule was prototyped and rejected, which is why there are two
+  guards.** Matching imperative measurement verbs and requiring a fence within
+  six lines returns about forty hits across the document, roughly thirty-five of
+  them legitimate. A guard needing thirty-five exceptions is one that gets tuned
+  until it discriminates nothing. The registry is the honest alternative, and its
+  value is that the eight cannot silently go back.
+
+### Fixed — 87 tests in `test_skill_prose.py` never ran on the direct path
+
+- `if __name__ == "__main__": unittest.main()` sat two thirds of the way through
+  the file, with **23 classes defined after it**. Under `python3 -m unittest
+  discover` — which is what CI and the hook run — the module is imported and all
+  189 ran; invoked directly, the call fired before those classes existed and
+  exited. Measured: **102 tests before the move, 189 after.** Moved to the end.
+
 ## [0.42.0] — 2026-09-16
 
 Two phases required a measurement and supplied no command to take it. Both were
@@ -4803,7 +4940,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.42.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.43.0...HEAD
+[0.43.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.42.0...v0.43.0
 [0.42.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.40.0...v0.41.0
 [0.40.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.39.0...v0.40.0

@@ -211,8 +211,31 @@ gh api "/advisories?ecosystem=actions&affects=<owner>/<name>" \
   --jq '.[] | "\(.ghsa_id)\t\(.severity)\t\(.summary)"'
 ```
 
-Also read the action repository's own status — `archived`, `disabled`, or a
-transfer to a new owner are all supply-chain facts that no advisory records.
+**Also read the action repository's own status** — `archived`, `disabled`, a
+fork, or a transfer to a new owner are all supply-chain facts that no advisory
+records, and one call carries every one of them:
+
+```bash
+gh api repos/<owner>/<action> \
+  --jq '"archived=\(.archived)\tdisabled=\(.disabled)\tfork=\(.fork)\tfull_name=\(.full_name)"'
+```
+
+**`full_name` is what answers the transfer, and it is the field nobody thinks to
+read.** The API follows a rename silently: the call succeeds, every other field
+looks ordinary, and the only sign is that the name coming back is not the name
+that went in. Measured 2026-09-16:
+
+| Asked for | `full_name` came back as | `archived` |
+|---|---|---|
+| `astral-sh/setup-uv` | the same | `false` — ordinary, and this is what most look like |
+| `actions/setup-ruby` | the same | **`true`** — archived under its own name |
+| `ambv/black` | **`psf/black`** | `false` — transferred, and the request still worked |
+| `kubernetes-incubator/kube-aws` | **`kubernetes-retired/kube-aws`** | **`true`** — both at once |
+
+A workflow pinned to the old name keeps working, because GitHub redirects the
+clone and the API alike. So none of this is visible from the repo under audit,
+none of it is a gate, and all of it is a fact about the supplier that the report
+is the only place to put.
 
 **Do not query OSV by version for this ecosystem.** OSV carries the same
 advisories, but its GitHub Actions entries have no usable version ranges, so a
@@ -246,6 +269,63 @@ repo's workflows that decides whether it applies:
 | a default input flips | that input's name — an explicit setting pins the old behaviour |
 | a minimum runner or Node version | `runs-on:` — GitHub-hosted is fine, a self-hosted label is not |
 | credential or token handling | `permissions:`, `persist-credentials`, and what later steps do with the token |
+
+Those are four greps, not four phrasings of one, and they run against the PR's
+own ref because that is the tree the bump lands in:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# The list first, as Phase 0 derived it — so "the grep found nothing" is
+# distinguishable from "there are no workflows".
+git ls-tree --name-only "pr-<N>:.github/workflows/"; echo "list exit: $?"
+
+# Row 1, by event name.
+git grep -nE '^[[:space:]]*(pull_request_target|workflow_run|release):' pr-<N> -- '.github/workflows/'
+
+# Row 1 again — a SEPARATE grep, not a longer alternation. A tag push is `push`
+# carrying a `refs/tags/` ref, so the line above cannot see it at any width.
+# Captured, not piped: a pipeline reports the LAST stage's status, and here that
+# would turn a failed read into "no tag trigger". `1` is checked apart from `2`
+# because grep exits 1 for *found nothing*, which in this table is an answer.
+PUSH=$(git grep -nE -A2 '^[[:space:]]*push:' pr-<N> -- '.github/workflows/'); RC=$?
+[ "$RC" -le 1 ] || { echo "the push grep failed ($RC) — underivable, not inert" >&2; exit 2; }
+printf '%s\n' "$PUSH" | grep -E 'tags:'
+
+# Row 2. A hit means this repo pins the old behaviour; no hit means it takes
+# whatever the new default is, which is when a flipped default is a finding.
+git grep -nE '^[[:space:]]*<the input the notes named>:' pr-<N> -- '.github/workflows/'
+
+# Row 3.
+git grep -nE '^[[:space:]]*runs-on:' pr-<N> -- '.github/workflows/'
+
+# Row 4.
+git grep -nE '^[[:space:]]*(permissions|persist-credentials):' pr-<N> -- '.github/workflows/'
+```
+
+**Every one of them exits 1 on no match**, which is the answer this table returns
+most of the time — so do not chain them with `&&`, and read an empty result as
+*inert here* rather than as a read that failed. Measured on a two-workflow fixture
+carrying all four cases: the event-name grep found `pull_request_target` and
+`workflow_run` and **missed the `tags:` line entirely**, which the second grep
+then found in `release.yml`. One alternation would have reported two of three.
+
+**When the question is whether a file exists at that ref, the command is
+`git cat-file -e` — and `git ls-tree <ref> -- <path>` is the one that looks
+right and is not.** Measured:
+
+| Form | present | absent |
+|---|---|---|
+| `git cat-file -e <ref>:<path>` | exit 0 | exit **128** |
+| `git ls-tree <ref>:<path>` | exit 0 | exit **128** |
+| `git ls-tree <ref> -- <path>` | exit 0 | exit **0**, printing nothing |
+
+The third cannot tell *absent* from *the lookup failed*, which is the distinction
+this whole procedure is built on. A replay reached for it while improvising a
+`uv.toml` check — because this table named a thing to look for and no way to look —
+and caught itself one command later. Nothing in the procedure would have.
 
 **Report "inert here" as a result, not as silence.** Reaching it deliberately is
 this phase working; reaching it by not looking is the failure. Observed:
@@ -298,7 +378,61 @@ prose as the signal it is.
 
 **Where the notes and the interface disagree, the source settles it**, and it
 ships in the same repo at the same ref. That is the read that turned "the
-description says four, the notes say three" into which one is true.
+description says four, the notes say three" into which one is true — and it is
+one grep, because `action.yml` has already named the file that runs:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# `runs.main` from the diff above — the bundled entry point, which is what the
+# runner loads. Raw, NOT `--jq .content`: see below.
+for R in <old-ref> <new-ref>; do
+  gh api -H "Accept: application/vnd.github.raw" \
+    "repos/<owner>/<action>/contents/<runs.main>?ref=$R" > "$SCRATCH/bundle-$R.js" \
+    || { echo "cannot read the bundle at $R" >&2; exit 2; }
+  printf '%s  ' "$R"; grep -c '<the term the two sources disagree about>' "$SCRATCH/bundle-$R.js"
+done
+```
+
+**The `--jq .content` idiom three blocks up silently returns nothing here**, and
+that is worth more than a footnote because it is the same failure that block's own
+comment warns about, one file along. Above **1 MiB** the contents API describes
+the file and declines to carry it: `200`, a real `size`, a real `sha`, a working
+`download_url`, `content` an **empty string**, and the only notice is `encoding`
+flipping from `base64` to `none` — the one field this idiom never reads. GitHub
+documents it as working *"as normal"*, so it is a success path and not an error.
+
+Every link then behaves correctly and the result is a clean bill: `gh` exits 0 on
+the 200, `--jq .content` prints a bare newline, `base64 -d` accepts a lone newline
+as valid base64 for zero bytes and exits 0, and `diff` on two empty files exits 0
+saying nothing. Measured on `astral-sh/setup-uv` at v9.0.0 — `dist/setup/index.cjs`
+is 3,966,481 bytes, `.content` came back length **0**, and the raw media type
+returned all of it. The boundary is the binary megabyte, not 1,000,000: in
+`python/cpython`, `Python/executor_cases.c.h` at 1,028,882 bytes still inlines and
+`configure` at 1,074,405 does not.
+
+**The `action.yml` block above keeps the decode on purpose**, because a manifest
+cannot plausibly reach that size and the base64 round-trip there buys a second
+checked failure — the two `||` lines that make an unreadable ref loud. The rule is
+about the *artifact*, not the endpoint: reach for the raw media type whenever the
+path could be a build output. `scripts/precommit.py` already did, and its
+docstring already gave this reason, which is where the answer was sitting while
+this file went without it.
+
+And it answers the question the notes could not. Measured across the same bump:
+
+| | `isTagPush` in the bundle |
+|---|---|
+| v9.0.0 | **0 occurrences** |
+| v10.0.1 | 2, one of them `isTagPush = eventName === "push" && process.env.GITHUB_REF?.startsWith("refs/tags/")` |
+
+Zero-to-two across a bump is a falsifiable answer to *which source is right*,
+arrived at in one call, on the artifact that actually runs rather than on prose
+about it. Read the `src/` file too where the bundle is minified past reading —
+it ships at the same ref — but the bundle is the authority, because a repo can
+carry source that was never rebuilt into it.
 
 On `fpga-board-sim` #363 the verdict was *inert here* and was correct — that repo
 triggers on `push: branches: [main]` and `pull_request:` only. It was correct by
@@ -322,7 +456,10 @@ one, and the finding is real rather than inert.
   `actions/checkout` published v7.0.1, v6.1.0, v5.1.0, v4.4.0, v3.7.0 and v2.8.0
   within 35 minutes of each other; the backports carry `[BREAKING]` and a
   changelog link that the original major's notes do not. Check the sibling majors'
-  release dates, not just the line you are on.
+  release dates, not just the line you are on — `gh api
+  'repos/<owner>/<action>/releases?per_page=15' --jq '.[] | "\(.tag_name)\t\(.published_at)"'`
+  is the whole check, and on `actions/checkout` it puts v7.0.1, v6.1.0, v5.1.0,
+  v4.4.0, v3.7.0 and v2.8.0 in the first six lines, 33 minutes apart.
 - **Version-coupled actions must move together.** `upload-artifact` and
   `download-artifact` ship majors in lockstep — the v7/v8 pair went out eight
   seconds apart. If the bump moves one half, check the sibling's pin in the same
@@ -344,14 +481,31 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 git diff --name-only "$BASE_SHA...pr-<N>" -- '.github/workflows/'
 echo "changed-workflow list exit: $?"
 
+# The date to read that history against. `mergedAt` is null while the PR is
+# open, and that is an answer: nothing in the list below can have run this pin.
+gh pr view <N> --json state,createdAt,mergedAt \
+  --jq '"state=\(.state)\tcreated=\(.createdAt)\tmerged=\(.mergedAt // "null — still open")"'
+
 gh run list --workflow <workflow> --limit 10 \
   --json conclusion,headBranch,createdAt,displayTitle \
-  --jq '.[] | "\(.conclusion)\t\(.createdAt)\t\(.displayTitle)"'
+  --jq '.[] | "\(.conclusion)\t\(.headBranch)\t\(.createdAt)\t\(.displayTitle)"'
 ```
+
+**`headBranch` was always in that query and never in its output** — asked for and
+thrown away — and it is the column that says whether a run is evidence at all. A
+green run on the default branch after the merge exercised the new pin; a green run
+on the bot's own branch exercised it too, and one on any other branch did not.
+Without the column every row looks alike.
 
 Read it against the merge date, and be strict about what it proves. Runs *after*
 the bump landed exercised the new pin; runs before it did not, and a green history
 that predates the merge says nothing at all about the version being adopted.
+
+**`mergedAt` is the merge date, and `null` is the common case.** Measured: an open
+PR answers `state=OPEN merged=null`; a merged one answers with an ISO-8601 stamp
+and the merge commit. Where it is null there is no "since the bump landed" to
+read — every run in that list predates the pin, whatever their conclusions say,
+and the honest row is the second or third below rather than the first.
 
 | Situation | What you can honestly report |
 |---|---|
