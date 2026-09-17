@@ -51,6 +51,26 @@ def gh_json(path: str, jq: str) -> Any:
     return json.loads(done.stdout or "null")
 
 
+def gh_text(path: str, *, accept: str) -> str:
+    """One `gh api` call for a raw file, with its exit status actually checked.
+
+    The raw media type rather than `--jq .content` + `base64 -d`: above 1 MiB the
+    contents endpoint answers `200` with `content: ""` and `encoding: "none"`,
+    and that idiom decodes the empty string to an empty file at exit 0 (#127).
+    `CHANGELOG.md` is well under the boundary here; the form is the one the
+    plugin documents, so this exercises it rather than a second idiom.
+    """
+    done = subprocess.run(
+        ["gh", "api", path, "-H", f"Accept: {accept}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode != 0:
+        raise unittest.SkipTest(f"gh api {path} failed ({done.returncode}): {done.stderr.strip()}")
+    return done.stdout
+
+
 @live
 class TestNotEveryProjectPublishesReleases(unittest.TestCase):
     def test_mypy_still_publishes_no_github_releases(self):
@@ -93,34 +113,127 @@ class TestReleaseTagsDisagreeAboutThePrefix(unittest.TestCase):
 class TestARungThatAnsweredCanStillBeIncomplete(unittest.TestCase):
     """The premise behind Phase 2's reconciliation, and behind `changelog.py`.
 
-    The ladder's rungs are not a fallback chain. Prose is what a project chose to
-    say; the commit range is what actually landed, and the two can disagree while
-    every rung returns real, well-formed, correctly-authored content. No exit
-    status anywhere can reach that.
+        The ladder's rungs are not a fallback chain. Prose is what a project chose to
+        say; the commit range is what actually landed, and the two can disagree while
+        every rung returns real, well-formed, correctly-authored content. No exit
+        status anywhere can reach that.
 
-    `rumdl` v0.2.60...v0.2.62 is the case #94 was filed from, and it is durable:
-    release bodies for published tags are immutable in practice, the tag pair is
-    fixed, and the assertions below are the ones the rule rests on. If any of
-    them goes red, the project changed how it generates release notes and the
-    reference's worked example needs a new subject -- which is exactly what this
-    directory is for.
+        `rumdl` v0.2.60...v0.2.62 is the case #94 was filed from, and it has already
+        moved once. **Release bodies for published tags are not immutable** -- this
+        file asserted that they were "immutable in practice" until 2026-09-17, when
+        the assertion below went red: the project backfilled a `### Fixed` section
+        into v0.2.61 on 2026-09-05, ten days after cutting the tag, and the API says
+        so only in `updated_at` (#131).
 
-    These are also the live half of `tests/test_changelog.py`'s recorded
-    fixtures. Those stay green by construction; these say whether they still
-    describe the world.
+    **Nor is this project's changelog fixed, and that correction is why this
+    docstring was rewritten twice.** `rumdl` *generates* `CHANGELOG.md` from
+    conventional commits and rebuilds it in full at every release, so its `0.2.61`
+    entry carries no fixes at refs v0.2.62..v0.2.65 and five at v0.2.66 and later.
+    No blob changed; the file is regenerated. That is `rumdl`'s tooling and not a
+    property of changelogs -- a hand-maintained one is appended to, and its old
+    sections are stable across refs.
+
+    **And on this project the two prose rungs are not independent.** The release
+    workflow builds the body with `scripts/extract-changelog.sh`, an awk slice of
+    `CHANGELOG.md`; the backfilled v0.2.61 body is byte-identical to that file's
+    section at v0.2.73, which `test_the_two_prose_rungs_are_the_same_text` pins. So
+    their disagreement below is one source read at two times. Elsewhere they may be
+    genuinely two sources -- which is why the references say to check rather than to
+    assume. What holds regardless is only that rung 3 cannot be rewritten without
+    rewriting history.
+
+        Note what that costs a live run: the range now **reconciles**, exit `0`,
+        because rung 1 names all five fixes. The founding case for the script passes
+        the script. `tests/test_changelog.py` still carries the notes as published,
+        which is what keeps the original case testable.
+
+        These are also the live half of `tests/test_changelog.py`'s recorded
+        fixtures. Those stay green by construction; these say whether they still
+        describe the world.
     """
 
-    def test_the_release_notes_for_the_audited_version_document_no_fixes(self):
+    def test_the_release_notes_were_rewritten_after_the_tag_was_cut(self):
+        """The mechanism, not the symptom. `published_at` never moves; this is
+        the only field that says the body you just read is not the announcement,
+        and no `.body` read can reach it."""
+        stamps = gh_json(
+            "repos/rvben/rumdl/releases/tags/v0.2.61",
+            r'"\(.published_at)\t\(.updated_at)" | @json',
+        )
+        published, updated = stamps.split("\t")
+        self.assertEqual(published, "2026-08-26T19:24:23Z", "the tag was cut at a different time")
+        self.assertGreater(
+            updated,
+            published,
+            "rumdl v0.2.61 no longer reads as edited -- if the body was restored, "
+            "the disagreement below is gone and the example needs re-measuring",
+        )
+
+    def test_the_release_notes_for_the_audited_version_now_document_the_fixes(self):
         # `.body | @json`, not `.body`: a release body is multi-line, and the
         # plain filter hands back raw text this helper cannot parse. The same
         # escaping `changelog.py` needs to keep one commit message on one line.
         body = gh_json("repos/rvben/rumdl/releases/tags/v0.2.61", ".body | @json") or ""
         notes = body.split("## Downloads")[0]
         self.assertIn("### Added", notes, "the notes are not the shape the example describes")
-        self.assertNotIn(
+        self.assertIn(
             "### Fixed",
             notes,
-            "rumdl v0.2.61 now documents fixes -- the reconciliation example needs a new subject",
+            "the backfilled fixes are gone again -- rung 1 and rung 2 no longer "
+            "disagree, so the worked example is back to its 2026-08 shape",
+        )
+        self.assertIn(
+            "stop rewriting Rust source when formatting doc comments",
+            notes,
+            "the destructive fix the example is built around is not in the notes",
+        )
+
+    def _section_61(self, ref: str) -> str:
+        text = gh_text(
+            f"repos/rvben/rumdl/contents/CHANGELOG.md?ref={ref}",
+            accept="application/vnd.github.raw",
+        )
+        start = text.index("## [0.2.61]")
+        return text[start : text.index("## [0.2.60]", start)]
+
+    def test_the_changelog_at_the_proposed_tag_omits_them(self):
+        """What an auditor of the 0.2.60 -> 0.2.62 bump reads, because the
+        procedure reads the changelog at the version being proposed."""
+        section = self._section_61("v0.2.62")
+        self.assertIn("### Added", section)
+        self.assertNotIn(
+            "### Fixed",
+            section,
+            "a blob at a tag cannot change, so this one can only fail if the "
+            "project rewrote history",
+        )
+
+    def test_the_same_section_at_a_later_tag_carries_them(self):
+        """The correction that matters: a *generated* changelog is rewritten in
+        full at every release, so the entry for one version is a function of the
+        ref. Same file, same version, different answer -- and the later answer is
+        the more complete one. This is why `changelog.py` reads both refs."""
+        self.assertIn("### Fixed", self._section_61("v0.2.66"))
+        self.assertIn("stop rewriting Rust source", self._section_61("v0.2.66"))
+        self.assertNotIn(
+            "### Fixed",
+            self._section_61("v0.2.65"),
+            "v0.2.66 is the release that regenerated the changelog; if v0.2.65 "
+            "now carries the fixes too, the boundary moved",
+        )
+
+    def test_the_two_prose_rungs_are_the_same_text(self):
+        """Rung 1 is produced *from* rung 2 here -- the release workflow slices
+        `CHANGELOG.md` with awk -- so the ladder's cross-check is not one. If
+        this stops holding, the project changed how it builds release bodies and
+        the independence caveat in the references needs re-measuring."""
+        body = gh_json("repos/rvben/rumdl/releases/tags/v0.2.61", ".body | @json") or ""
+        notes = [ln for ln in body.split("## Downloads")[0].splitlines() if ln.strip()]
+        section = [ln for ln in self._section_61("v0.2.73").splitlines() if ln.strip()][1:]
+        self.assertEqual(
+            notes,
+            section,
+            "the release body is no longer a verbatim slice of the changelog",
         )
 
     def test_the_same_range_carries_fix_commits(self):

@@ -55,6 +55,7 @@ from changelog import (
     candidates,
     cli,
     described,
+    edited_since_published,
     gap,
     github_slug,
     labelled,
@@ -92,6 +93,15 @@ RUMDL_61_62 = [
 ]
 
 # The whole of what rung 1 says for each. Additive, both of them.
+#
+# RUMDL_NOTES_61 is now a historical record rather than a current reading, and
+# that is deliberate. The project rewrote v0.2.61's release body on 2026-09-05 --
+# ten days after cutting the tag -- backfilling the five `### Fixed` entries this
+# range carries. Fetch it live today and you get the fixes; what is recorded here
+# is what the API returned when #94 was filed, which is the state the ladder's
+# defect was measured in. Do NOT refresh it to match the live body: that would
+# delete the only case in this suite where rungs 1 and 2 both answer and both
+# omit, and it is evidence that a release body is mutable (#131).
 RUMDL_NOTES_61 = (
     "\n### Added\n\n- **cli**: add `--stdin-batch` for NUL-framed multi-document "
     "linting and `--stdin-batch-closed-world` for supplied-document-only link "
@@ -216,12 +226,25 @@ class Repo:
         tags: list[str] | None = None,
         files: dict[str, str] | None = None,
         commits: list[str] | None = None,
+        edited: dict[str, str] | None = None,
+        files_at_head: dict[str, str] | None = None,
     ) -> None:
         self.slug = slug
         self.releases = releases or []
+        # What the same paths hold on the default branch. A generated changelog
+        # is rewritten in full at every release, so this is a different document
+        # from `files` even though nothing was hand-edited. Defaults to `files`.
+        self._files_at_head = files_at_head
+        # tag -> the `updated_at` a rewritten body carries. Absent means the
+        # release still reads as it was published.
+        self.edited = edited or {}
         self.tags = tags or [tag for tag, _ in (releases or [])]
         self.files = files or {}
         self.commits = commits or []
+
+    @property
+    def files_at_head(self) -> dict[str, str]:
+        return self._files_at_head if self._files_at_head is not None else self.files
 
 
 def fake_gh(repo: Repo, log: list[str] | None = None) -> Any:
@@ -237,19 +260,31 @@ def fake_gh(repo: Repo, log: list[str] | None = None) -> Any:
         if log is not None:
             log.append(joined)
         if f"repos/{repo.slug}/releases" in joined:
+            published = "2026-08-26T00:00:00Z"
             return "\n".join(
-                json.dumps({"tag": tag, "body": body, "at": "2026-08-26T00:00:00Z"})
+                json.dumps(
+                    {
+                        "tag": tag,
+                        "body": body,
+                        "at": published,
+                        "published": published,
+                        "updated": repo.edited.get(tag, published),
+                    }
+                )
                 for tag, body in repo.releases
             )
         if "/git/ref/tags/" in joined:
             return "{}" if joined.rsplit("/", 1)[-1] in repo.tags else None
         if "/compare/" in joined:
             return "\n".join(json.dumps(m) for m in repo.commits)
-        if "/contents?" in joined:
-            return "\n".join(repo.files)
+        # No `?ref=` means the default branch, which is a different document.
+        if "/contents?" in joined or "/contents " in joined or joined.endswith("/contents"):
+            at_head = "?ref=" not in joined
+            return "\n".join(repo.files_at_head if at_head else repo.files)
         if "/contents/" in joined:
-            name = joined.split("/contents/")[1].split("?")[0]
-            return repo.files.get(name)
+            name = joined.split("/contents/")[1].split("?")[0].split()[0]
+            source = repo.files if "?ref=" in joined else repo.files_at_head
+            return source.get(name)
         return None
 
     return fake
@@ -345,6 +380,179 @@ class TestTheRungThatAnsweredIsNotTheWholeAnswer(ChangelogHarness):
         self.assertIn("UNRECONCILED: 5 of 5", plain[1])
         self.assertIn("if this repo runs the tool in write mode", plain[1])
         self.assertIn("this repo runs the tool in write mode, so", armed[1])
+
+
+class TestARungThatAnsweredCanAlsoBeRewritten(ChangelogHarness):
+    """A release body is mutable, and `.body` alone cannot say it changed.
+
+    `rvben/rumdl` backfilled a whole `### Fixed` section into v0.2.61 on
+    2026-09-05, ten days after cutting the tag. The API says so in `updated_at`
+    and in nothing else: `published_at` does not move, the body comes back
+    well-formed, and `gh` exits 0.
+
+    This matters more than a stale quote. **The founding case for this script
+    now reconciles.** Run it against the live v0.2.60...v0.2.62 today and rung 1
+    names all five fixes, so the run exits `0` -- the same range that exited `1`
+    when #94 was filed, changed by an edit upstream rather than by anything here.
+    The fixtures in this file still carry the notes as published, which is what
+    keeps the case testable; the marker is what tells a live run that its green
+    is not the green it looks like.
+    """
+
+    def rewritten(self) -> Repo:
+        repo = self.rumdl_61_62()
+        repo.edited = {"v0.2.61": "2026-09-05T07:05:04Z"}
+        return repo
+
+    def test_an_untouched_release_says_nothing(self):
+        """The marker has to be quiet on the ordinary case or it is noise."""
+        _, out, evidence = self.run_main(self.rumdl_61_62(), "--from", "0.2.60", "--to", "0.2.62")
+        self.assertNotIn("EDITED", out)
+        self.assertNotIn("EDITED", evidence)
+
+    def test_a_rewritten_release_is_named_in_both_places(self):
+        """The terminal summary and the evidence file, because they are read by
+        different people at different times -- and the evidence file is the one
+        that outlives the run."""
+        _, out, evidence = self.run_main(self.rewritten(), "--from", "0.2.60", "--to", "0.2.62")
+        self.assertIn("v0.2.61: EDITED 2026-09-05T07:05:04Z", out)
+        self.assertIn("EDITED 2026-09-05T07:05:04Z", evidence)
+        self.assertIn("not what went out with the tag", evidence)
+
+    def test_only_the_rewritten_one_is_marked(self):
+        _, _, evidence = self.run_main(self.rewritten(), "--from", "0.2.60", "--to", "0.2.62")
+        marked = [ln for ln in evidence.splitlines() if "EDITED" in ln]
+        self.assertEqual(len(marked), 1, f"one release was edited, {len(marked)} marked: {marked}")
+
+    def test_the_marker_does_not_change_the_verdict(self):
+        """An edit is information, not a finding. The exit code answers one
+        question -- did the prose name every fix -- and an edited body that names
+        them still names them."""
+        plain = self.run_main(self.rumdl_61_62(), "--from", "0.2.60", "--to", "0.2.62")[0]
+        rewritten = self.run_main(self.rewritten(), "--from", "0.2.60", "--to", "0.2.62")[0]
+        self.assertEqual(plain, rewritten)
+
+    def test_a_missing_stamp_is_unknown_and_not_clean(self):
+        """The reason the comparison is in Python and not in the `--jq`. jq
+        answers `false` for `null > "2026-.."`, so a response that stopped
+        carrying `updated_at` would read as *nothing was ever edited* -- this
+        repo's own failure class, inside the check written to catch it."""
+        self.assertEqual(
+            edited_since_published({"published": "", "updated": ""}),
+            "edit status unknown -- the release carried no timestamps",
+        )
+        self.assertIsNone(
+            edited_since_published(
+                {"published": "2026-08-26T19:24:23Z", "updated": "2026-08-26T19:24:23Z"}
+            )
+        )
+
+    def test_created_at_is_not_what_it_compares_against(self):
+        """`at` falls back to `created_at`, which on an untouched release is
+        normally *earlier* than `updated_at` -- rumdl v0.2.61 was created
+        19:09:35 and published 19:24:23. Comparing against the fallback would
+        mark almost every release as edited."""
+        self.assertIsNone(
+            edited_since_published(
+                {
+                    "at": "2026-08-26T19:09:35Z",
+                    "published": "2026-08-26T19:24:23Z",
+                    "updated": "2026-08-26T19:24:23Z",
+                }
+            )
+        )
+
+
+class TestAGeneratedChangelogIsRewrittenAtEveryRelease(ChangelogHarness):
+    """#131, second half. The entry for a version is a function of the ref.
+
+    `rumdl` generates `CHANGELOG.md` from conventional commits with `vership`,
+    and the generator was dropping `fix` types. When it was fixed, the v0.2.66
+    release regenerated the whole file: the `0.2.61` entry carries no fixes at
+    refs v0.2.62..v0.2.65 and five at v0.2.66 and later. Nothing was hand-edited
+    and no history was rewritten -- each blob is exactly what it always was.
+
+    So reading the changelog once, at the proposed tag, is a choice that can
+    return the less complete answer. The script reads both refs and says which
+    versions differ, because "the project documented nothing here" and "the
+    project had not documented it yet when this tag was cut" are different
+    findings and only one of them is about the bump.
+    """
+
+    REGENERATED: ClassVar[str] = """\
+# Changelog
+
+## [Unreleased]
+
+## [0.2.62](https://github.com/rvben/rumdl/compare/v0.2.61...v0.2.62) - 2026-08-27
+
+### Added
+
+- **flavor**: add support for Markdown with Gherkin (MDG) ([db62377](https://github.com/rvben/rumdl/commit/db62377aa7e63865f682bf16d790c6ff5eb40b31))
+
+## [0.2.61](https://github.com/rvben/rumdl/compare/v0.2.60...v0.2.61) - 2026-08-26
+
+### Added
+
+- **cli**: add `--stdin-batch` for NUL-framed multi-document linting and `--stdin-batch-closed-world` for supplied-document-only link resolution
+
+### Fixed
+
+- **cli**: stop rewriting Rust source when formatting doc comments
+- **lint-context**: stop reading a lazy continuation as a setext underline
+
+## [0.2.60](https://github.com/rvben/rumdl/compare/v0.2.59...v0.2.60) - 2026-08-22
+
+### Fixed
+
+- **deps**: update h2 to 0.4.16
+"""
+
+    def regenerated(self) -> Repo:
+        repo = self.rumdl_61_62()
+        repo._files_at_head = {"CHANGELOG.md": self.REGENERATED, "Cargo.toml": ""}
+        return repo
+
+    def test_an_unchanged_changelog_says_nothing(self):
+        """Quiet on the ordinary project, where both reads are the same file."""
+        _, out, evidence = self.run_main(self.rumdl_61_62(), "--from", "0.2.60", "--to", "0.2.62")
+        self.assertNotIn("DIFFERS", out)
+        self.assertNotIn("default branch", evidence)
+
+    def test_a_regenerated_section_is_named_in_the_summary(self):
+        _, out, _ = self.run_main(self.regenerated(), "--from", "0.2.60", "--to", "0.2.62")
+        self.assertIn("v0.2.61: the section at the default branch DIFFERS", out)
+        self.assertNotIn("v0.2.62: the section at the default branch DIFFERS", out)
+
+    def test_the_fuller_text_reaches_the_evidence_file(self):
+        """Naming the difference and not carrying it would leave the reader to
+        fetch it by hand -- which is the improvisation this repo keeps finding."""
+        _, _, evidence = self.run_main(self.regenerated(), "--from", "0.2.60", "--to", "0.2.62")
+        self.assertIn("rung 2 at the default branch", evidence)
+        self.assertIn("stop rewriting Rust source when formatting doc comments", evidence)
+        self.assertIn("a function of the ref you read it at", evidence)
+
+    def test_the_later_read_counts_as_prose_for_the_reconciliation(self):
+        """The question is whether the project's prose names the fixes, not
+        whether the tag's own snapshot did. Two of the range's five fixes appear
+        only in the regenerated text, so the unreconciled list must shrink."""
+        before = self.run_main(self.rumdl_61_62(), "--from", "0.2.60", "--to", "0.2.62")[1]
+        after = self.run_main(self.regenerated(), "--from", "0.2.60", "--to", "0.2.62")[1]
+        self.assertIn("UNRECONCILED: 5 of 5 fix commit(s)", before)
+        self.assertIn("UNRECONCILED: 3 of 5 fix commit(s)", after)
+        self.assertNotIn("stop rewriting Rust source", after.split("UNRECONCILED")[1])
+
+    def test_a_project_with_no_changelog_at_head_still_reports_the_tag_read(self):
+        """The second read must not be able to erase the first. A file deleted
+        on the default branch would otherwise turn a found section into none."""
+        repo = self.rumdl_61_62()
+        repo._files_at_head = {"Cargo.toml": ""}
+        status, out, _ = self.run_main(repo, "--from", "0.2.60", "--to", "0.2.62")
+        self.assertIn("rung 2 -- CHANGELOG.md: 2 section(s)", out)
+        self.assertNotIn("DIFFERS", out)
+        self.assertEqual(
+            status, self.run_main(self.rumdl_61_62(), "--from", "0.2.60", "--to", "0.2.62")[0]
+        )
 
 
 class TestTheReconciliationCanAlsoSayYes(ChangelogHarness):

@@ -3641,6 +3641,205 @@ class TestARungThatAnsweredCanStillBeIncomplete(SkillHarness):
         )
 
 
+class TestARungThatAnsweredCanAlsoHaveBeenRewritten(SkillHarness):
+    """#131. The ladder assumed rung 1 was fixed once the tag was cut. It is not.
+
+    `rvben/rumdl` backfilled a `### Fixed` section into v0.2.61's release notes
+    on 2026-09-05, ten days after publishing them — the exact version this
+    repo's worked example is built on. `published_at` did not move. `.body` came
+    back well-formed. `gh` exited 0. The only field that says so is `updated_at`,
+    and until 0.44.0 the string `updated_at` appeared nowhere in this repository.
+
+    The consequence is not a stale quote: **two audits of the same pin, months
+    apart, can read different notes and reach different verdicts**, with nothing
+    in either output saying the source changed underneath. Measured the same day
+    on `actions/checkout`: 17 of the last 58 releases carry `updated_at >
+    published_at`, 8 of them more than a day later.
+
+    This is the same shape as #127's two: `headBranch` asked for and dropped from
+    the `--jq`, and the contents API announcing its 1 MiB cutoff in `encoding`.
+    **Key on the field that moves, not the payload field that stays well-formed.**
+    """
+
+    def _ladder(self) -> str:
+        for name, section in self._handoffs(2):
+            if name == "uv-lock.md":
+                return section
+        self.fail("Phase 2 no longer hands off to uv-lock.md")
+
+    def test_the_generated_vs_handmaintained_split_is_stated_as_a_question(self):
+        """The first draft of 0.44.0 claimed the asymmetry was *release body
+        mutable, changelog at a tag not*, which reading the subject's own
+        release procedure disproved. The second draft then over-corrected into
+        *"neither prose rung is fixed"* — also wrong, because a hand-maintained
+        changelog is appended to and its old sections are stable.
+
+        What belongs in the procedure is the **question**, since the answer is a
+        property of one project's tooling and is cheap to measure.
+        """
+        section = self._ladder()
+        self.assertRegex(
+            section,
+            r"(?is)generated or hand-maintained",
+            "Phase 2 must put this as a question about the project in hand, not "
+            "as a fact about changelogs",
+        )
+        self.assertRegex(
+            section,
+            r"(?is)hand-maintained[\s\S]{0,60}appended to[\s\S]{0,80}stable across refs",
+            "and must say what the other answer implies, or the reader applies "
+            "the generated case everywhere",
+        )
+
+    def test_the_subjects_own_tooling_is_labelled_as_its_own(self):
+        """`rumdl` is one project. Its `vership`/`extract-changelog.sh` pipeline
+        is evidence that the question is worth asking, not a description of how
+        releases work."""
+        self.assertRegex(
+            self._ladder(),
+            r"(?is)`rumdl`'s release tooling is\s+`rumdl`'s, not a description of how projects release",
+            "the worked example has to be scoped to its subject, or the next "
+            "reader generalises one project's release script",
+        )
+
+    def test_the_prose_warns_that_the_two_prose_rungs_may_not_be_independent(self):
+        """The ladder cross-checks rung 1 against rung 2. On the subject it was
+        built from, rung 1 is *produced from* rung 2 by an awk slice, so
+        agreement is the same text twice — measured byte-identical. Elsewhere
+        they may be genuinely two sources, so the instruction is to check."""
+        section = self._ladder()
+        self.assertRegex(
+            section,
+            r"(?is)\*\*Check before treating them as\s+independent\*\*",
+            "a reader who does not know the notes are generated from the "
+            "changelog will read agreement as corroboration",
+        )
+        self.assertRegex(
+            section,
+            r"(?is)release notes by hand[\s\S]{0,140}genuinely two sources",
+            "and the other answer has to be there too, or 'check' reads as "
+            "'assume they are the same'",
+        )
+
+    def test_what_holds_regardless_is_stated_and_is_narrow(self):
+        self.assertRegex(
+            self._ladder(),
+            r"(?is)rung 3 cannot be rewritten without rewriting\s+history",
+            "the ladder's one un-rewritable source has to be named as such",
+        )
+
+    def test_the_prose_says_the_later_read_can_be_emptier(self):
+        """Rotation and regeneration pull opposite ways. `astral-sh/ruff` moves
+        old entries into `changelogs/`, so its root file at the default branch
+        has *less* for an old version than the file at that version's tag. A
+        reader told only about regeneration would treat the later read as
+        strictly better."""
+        section = self._ladder()
+        self.assertRegex(
+            section,
+            r"(?is)later read is not automatically the better one",
+            "the second read must not be presented as an upgrade",
+        )
+        self.assertRegex(
+            section,
+            r"(?is)rotates old\s+entries out",
+            "and the measured counter-example has to be named",
+        )
+
+    def test_the_script_measures_rather_than_assuming_which_kind_it_faces(self):
+        """The reason the two-ref read is unconditional: deciding the project's
+        changelog style first would be a guess, and the check is silent when
+        both refs agree."""
+        section = self._ladder()
+        self.assertRegex(
+            section,
+            r"(?is)the script measures instead of assuming",
+            "Phase 2 has to say why the second read is unconditional",
+        )
+        self.assertRegex(
+            section,
+            r"(?is)hand-maintained\s+changelog that check is silent",
+            "and that it costs nothing on the common case",
+        )
+
+    def test_the_example_records_that_it_moved_and_when(self):
+        """A worked example that silently changed meaning is worse than a stale
+        one — the counts still match, so nothing looks wrong."""
+        section = self._ladder()
+        self.assertIn("2026-09-05", section)
+        self.assertIn("v0.2.66", section, "the release that regenerated the changelog")
+
+    def test_the_script_reads_the_changelog_at_both_refs(self):
+        """Naming the problem in prose is not reading the second ref."""
+        code = self.reachable(2)
+        self.assertIn("changelog_at(slug, None)", code)
+        self.assertRegex(
+            code,
+            r"(?is)the section at the default branch DIFFERS",
+            "and it has to say which version differed, or the second read is fetched and discarded",
+        )
+        self.assertRegex(
+            code,
+            r"(?is)both are in the evidence file",
+            "and point at where the fuller text went, or the reader is told a difference "
+            "exists with no way to see it",
+        )
+
+    def test_the_script_reads_the_field_that_moves(self):
+        self.assertIn("updated_at", self.reachable(2))
+        self.assertIn(
+            "edited_since_published",
+            self.reachable(2),
+            "changelog.py has to compare the stamps, not merely fetch them",
+        )
+
+    def test_no_phase_lets_jq_decide_whether_a_body_was_edited(self):
+        """`null > "2026-.."` is `false` in jq, so an API that stopped returning
+        `updated_at` would read as *nothing was ever edited* — this repo's own
+        failure class inside the check written to catch it.
+
+        Both ecosystems, because they reach the answer differently and only one
+        of them has somewhere to put a third state: `changelog.py` compares in
+        Python and can return *unknown*, while `actions.md` is read by a human,
+        so it prints the raw stamps and lets `null` be visible. Neither computes
+        a boolean in the `--jq`. This guard caught the first draft of 0.44.0's
+        own actions block, which did.
+        """
+        for number in (2, 4):
+            with self.subTest(phase=number):
+                self.assertNotRegex(
+                    self.reachable(number),
+                    r"\.updated_at\s*>\s*\.published_at",
+                    "a boolean computed in the --jq cannot distinguish "
+                    "'not edited' from 'the field is gone'",
+                )
+        code = self.reachable(2)
+        self.assertRegex(code, r"published:\s*\.published_at")
+        self.assertRegex(code, r"updated:\s*\.updated_at")
+
+    def test_the_actions_notes_read_carries_both_stamps(self):
+        """The other ecosystem. `actions.md` § Phase 4 calls reading the notes
+        *the method rather than the shortcut*, so the mutability question lands
+        hardest there — and until 0.44.0 no command in that file fetched a
+        release body at all (#130)."""
+        runs = self.reachable(4)
+        self.assertIn("releases/tags/<tag>", runs, "Phase 4 must fetch the notes it sends you to")
+        self.assertIn("updated_at", runs)
+        self.assertIn("published_at", runs)
+
+    def test_the_actions_prose_says_what_an_edit_costs_a_verdict(self):
+        for name, section in self._handoffs(4):
+            if name == "actions.md":
+                self.assertRegex(
+                    section,
+                    r"(?is)can read different notes and reach different verdicts",
+                    "naming the field is not enough — the reader needs the "
+                    "consequence, or `edited=true` reads as trivia",
+                )
+                return
+        self.fail("Phase 4 no longer hands off to actions.md")
+
+
 class TestAPlaceholderForARepositoryPathIsDerived(SkillHarness):
     """#101. `git show "pr-<N>:.github/workflows/<ci>.yml"` never said how to
     learn `<ci>`, so every run invented a way to list the directory or guessed a
@@ -4786,6 +4985,36 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
             "uv's provisioning chatter, which lands in the compared blob",
             "runs",
             r"uv run -q",
+        ),
+        (
+            1,
+            "every `uses:` is SHA-pinned, one of three structural checks (#130)",
+            "runs",
+            r"@\[0-9a-f\]\{40\}",
+        ),
+        (
+            1,
+            "what each workflow grants, and the default an absent block inherits",
+            "runs",
+            r"actions/permissions/workflow",
+        ),
+        (
+            1,
+            "that the diff added no step and changed no trigger",
+            "runs",
+            r"residue exit",
+        ),
+        (
+            4,
+            "the release notes it calls the method rather than the shortcut (#130)",
+            "runs",
+            r"releases/tags/<tag>",
+        ),
+        (
+            4,
+            "whether the notes it is quoting were rewritten after the tag (#131)",
+            "runs",
+            r"updated_at",
         ),
         (
             7,
