@@ -34,17 +34,55 @@ measurements they previously only named, and `changelog.py` reports something ne
   three-second batch — v0.2.61, v0.2.64, v0.2.65 — so it was a deliberate
   backfill after the project fixed its release automation, not a typo repair.
 
-- **The example is not dead; it inverted, and the new shape is stronger.** Rung 2
-  cannot be rewritten: `CHANGELOG.md` read at `v0.2.62` is a blob, and its
-  `0.2.61` section still carries one `### Added` bullet and no fixes. So rungs 1
-  and 2 now **disagree**, and only the commit range settles it. The reconciliation
-  rung — the row whose *"where it runs out"* is **never** — stops being argued and
-  becomes what the subject demonstrates. Same repo, same tag pair, assertions
-  inverted rather than a new subject found.
+- **Reading the subject's own `CONTRIBUTING.md` then corrected this release's
+  first draft, before it merged.** `rumdl` generates `CHANGELOG.md` from
+  conventional commits with `vership`, and the generator was dropping `fix`
+  types. When that was fixed, two things happened on 2026-09-05: the release
+  bodies for v0.2.61/64/65 were rewritten in place at 07:05, and the **v0.2.66
+  release regenerated the whole changelog** at 14:09, retroactively filling in
+  every past version.
 
-- **The durable premise is a property of git, not of maintainers' habits**, and
-  that replaces the old one in the prose: a changelog read at a tag is a blob, a
-  release body is not.
+- **So neither prose rung is fixed.** The `0.2.61` entry reads one `### Added`
+  bullet at refs `v0.2.62`…`v0.2.65` and `### Added` + five `### Fixed` at
+  `v0.2.66` and later. A blob at a ref cannot change; **the section for a version
+  is not a fixed blob**, because a generated changelog is rewritten in full at
+  every release. The first draft of this entry claimed the asymmetry was *release
+  body mutable, changelog immutable*. That was wrong, and only reading how the
+  project generates its notes caught it.
+
+- **And the two prose rungs are not independent here.** `rumdl`'s release
+  workflow builds the body with `scripts/extract-changelog.sh`, an `awk` slice of
+  `CHANGELOG.md`. Measured: the backfilled v0.2.61 body is **byte-identical** to
+  that file's `0.2.61` section at `v0.2.73`. So rung 1 agreeing with rung 2 is
+  the same text twice, not corroboration — and the disagreement above is one
+  source read at two times, not two sources differing. Phase 2 now says to check
+  how a project generates its notes before treating them as independent.
+
+- **Scoped to its subject after review.** `rumdl`'s release tooling is `rumdl`'s.
+  The references now put the two questions — *is the changelog generated or
+  hand-maintained*, and *is rung 1 produced from rung 2* — as questions to
+  measure per project, with both answers spelled out, rather than as facts about
+  changelogs. A hand-maintained changelog is appended to and its old sections
+  are stable across refs, which is the common case.
+
+- **And the later read is not automatically the better one.** `astral-sh/ruff`
+  rotates old entries out of `CHANGELOG.md` into `changelogs/`, so its root file
+  at the default branch ends at `## 0.1.x` and the `0.15.7` section is **gone**
+  there while present at that version's tag. Rotation and regeneration pull in
+  opposite directions, so the second read never replaces the first — it is
+  reported alongside it, and a section absent at the default branch produces no
+  claim at all.
+
+- **The corrected durable claim is narrower: only rung 3 is neither generated
+  from another rung nor rewritable.**
+
+- **`changelog.py` now reads the changelog twice** — at the proposed tag and at
+  the default branch — and names any version whose section differs, carrying the
+  fuller text into the evidence file and into the reconciliation corpus. *"The
+  project documented nothing here"* and *"the project had not documented it yet
+  when this tag was cut"* are different findings and only one is about the bump.
+  On the founding range this moves the verdict from 5 of 5 fixes unreconciled to
+  3 of 5, with both destructive-shaped fixes now named by prose.
 
 - **`changelog.py` now reads both stamps and says so.** Any release in the gap
   whose body moved is marked `EDITED <stamp>, after publication at <stamp>` in
@@ -153,8 +191,14 @@ measurements they previously only named, and `changelog.py` reports something ne
 - **Five entries added to the #127 registry**, three for Phase 1 and two for
   Phase 4, so neither site can silently go back.
 
-- All eleven guards mutation-checked, plus five against `changelog.py`: sixteen
-  mutations, sixteen caught.
+- **`TestAGeneratedChangelogIsRewrittenAtEveryRelease`** (5 tests, offline): the
+  second read is quiet when both refs agree, names only the version that differs,
+  carries the fuller text into the evidence file, feeds it to the reconciliation,
+  and **cannot erase the first read** — a changelog deleted on the default branch
+  must not turn a found section into none.
+
+- All guards mutation-checked: **26 mutations, 26 caught** (11 prose, 15 against
+  `changelog.py`).
 
 ## [0.43.0] — 2026-09-16
 

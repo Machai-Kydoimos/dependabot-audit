@@ -113,33 +113,43 @@ class TestReleaseTagsDisagreeAboutThePrefix(unittest.TestCase):
 class TestARungThatAnsweredCanStillBeIncomplete(unittest.TestCase):
     """The premise behind Phase 2's reconciliation, and behind `changelog.py`.
 
-    The ladder's rungs are not a fallback chain. Prose is what a project chose to
-    say; the commit range is what actually landed, and the two can disagree while
-    every rung returns real, well-formed, correctly-authored content. No exit
-    status anywhere can reach that.
+        The ladder's rungs are not a fallback chain. Prose is what a project chose to
+        say; the commit range is what actually landed, and the two can disagree while
+        every rung returns real, well-formed, correctly-authored content. No exit
+        status anywhere can reach that.
 
-    `rumdl` v0.2.60...v0.2.62 is the case #94 was filed from, and it has already
-    moved once. **Release bodies for published tags are not immutable** -- this
-    file asserted that they were "immutable in practice" until 2026-09-17, when
-    the assertion below went red: the project backfilled a `### Fixed` section
-    into v0.2.61 on 2026-09-05, ten days after cutting the tag, and the API says
-    so only in `updated_at` (#131).
+        `rumdl` v0.2.60...v0.2.62 is the case #94 was filed from, and it has already
+        moved once. **Release bodies for published tags are not immutable** -- this
+        file asserted that they were "immutable in practice" until 2026-09-17, when
+        the assertion below went red: the project backfilled a `### Fixed` section
+        into v0.2.61 on 2026-09-05, ten days after cutting the tag, and the API says
+        so only in `updated_at` (#131).
 
-    What is durable is narrower and belongs to git rather than to a maintainer's
-    habits: **`CHANGELOG.md` read at a tag is a blob and cannot be rewritten.**
-    So the example survived the edit and got sharper. Rungs 1 and 2 used to agree
-    and both omit the fixes; they now *disagree*, and only rung 3 settles it --
-    which is the reconciliation the ladder argues for and previously had no live
-    case of.
+    **Nor is this project's changelog fixed, and that correction is why this
+    docstring was rewritten twice.** `rumdl` *generates* `CHANGELOG.md` from
+    conventional commits and rebuilds it in full at every release, so its `0.2.61`
+    entry carries no fixes at refs v0.2.62..v0.2.65 and five at v0.2.66 and later.
+    No blob changed; the file is regenerated. That is `rumdl`'s tooling and not a
+    property of changelogs -- a hand-maintained one is appended to, and its old
+    sections are stable across refs.
 
-    Note what that costs a live run: the range now **reconciles**, exit `0`,
-    because rung 1 names all five fixes. The founding case for the script passes
-    the script. `tests/test_changelog.py` still carries the notes as published,
-    which is what keeps the original case testable.
+    **And on this project the two prose rungs are not independent.** The release
+    workflow builds the body with `scripts/extract-changelog.sh`, an awk slice of
+    `CHANGELOG.md`; the backfilled v0.2.61 body is byte-identical to that file's
+    section at v0.2.73, which `test_the_two_prose_rungs_are_the_same_text` pins. So
+    their disagreement below is one source read at two times. Elsewhere they may be
+    genuinely two sources -- which is why the references say to check rather than to
+    assume. What holds regardless is only that rung 3 cannot be rewritten without
+    rewriting history.
 
-    These are also the live half of `tests/test_changelog.py`'s recorded
-    fixtures. Those stay green by construction; these say whether they still
-    describe the world.
+        Note what that costs a live run: the range now **reconciles**, exit `0`,
+        because rung 1 names all five fixes. The founding case for the script passes
+        the script. `tests/test_changelog.py` still carries the notes as published,
+        which is what keeps the original case testable.
+
+        These are also the live half of `tests/test_changelog.py`'s recorded
+        fixtures. Those stay green by construction; these say whether they still
+        describe the world.
     """
 
     def test_the_release_notes_were_rewritten_after_the_tag_was_cut(self):
@@ -178,23 +188,52 @@ class TestARungThatAnsweredCanStillBeIncomplete(unittest.TestCase):
             "the destructive fix the example is built around is not in the notes",
         )
 
-    def test_the_changelog_at_the_tag_still_omits_them(self):
-        """The durable half, and the one the example now rests on. This is a
-        blob at a tag: rewriting it would mean rewriting history, not editing a
-        release. Rung 2 says one `### Added` bullet and no fixes, which is what
-        rung 1 said before it was edited."""
+    def _section_61(self, ref: str) -> str:
         text = gh_text(
-            "repos/rvben/rumdl/contents/CHANGELOG.md?ref=v0.2.62",
+            f"repos/rvben/rumdl/contents/CHANGELOG.md?ref={ref}",
             accept="application/vnd.github.raw",
         )
         start = text.index("## [0.2.61]")
-        section = text[start : text.index("## [0.2.60]", start)]
+        return text[start : text.index("## [0.2.60]", start)]
+
+    def test_the_changelog_at_the_proposed_tag_omits_them(self):
+        """What an auditor of the 0.2.60 -> 0.2.62 bump reads, because the
+        procedure reads the changelog at the version being proposed."""
+        section = self._section_61("v0.2.62")
         self.assertIn("### Added", section)
         self.assertNotIn(
             "### Fixed",
             section,
-            "the committed changelog now documents the fixes too -- the two "
-            "prose rungs agree again and the disagreement example is gone",
+            "a blob at a tag cannot change, so this one can only fail if the "
+            "project rewrote history",
+        )
+
+    def test_the_same_section_at_a_later_tag_carries_them(self):
+        """The correction that matters: a *generated* changelog is rewritten in
+        full at every release, so the entry for one version is a function of the
+        ref. Same file, same version, different answer -- and the later answer is
+        the more complete one. This is why `changelog.py` reads both refs."""
+        self.assertIn("### Fixed", self._section_61("v0.2.66"))
+        self.assertIn("stop rewriting Rust source", self._section_61("v0.2.66"))
+        self.assertNotIn(
+            "### Fixed",
+            self._section_61("v0.2.65"),
+            "v0.2.66 is the release that regenerated the changelog; if v0.2.65 "
+            "now carries the fixes too, the boundary moved",
+        )
+
+    def test_the_two_prose_rungs_are_the_same_text(self):
+        """Rung 1 is produced *from* rung 2 here -- the release workflow slices
+        `CHANGELOG.md` with awk -- so the ladder's cross-check is not one. If
+        this stops holding, the project changed how it builds release bodies and
+        the independence caveat in the references needs re-measuring."""
+        body = gh_json("repos/rvben/rumdl/releases/tags/v0.2.61", ".body | @json") or ""
+        notes = [ln for ln in body.split("## Downloads")[0].splitlines() if ln.strip()]
+        section = [ln for ln in self._section_61("v0.2.73").splitlines() if ln.strip()][1:]
+        self.assertEqual(
+            notes,
+            section,
+            "the release body is no longer a verbatim slice of the changelog",
         )
 
     def test_the_same_range_carries_fix_commits(self):

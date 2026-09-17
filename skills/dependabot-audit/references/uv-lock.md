@@ -218,23 +218,70 @@ two being `stop rewriting Rust source when formatting doc comments`, which wrote
 underline`. A run that honored the ladder as written reported "two additive
 releases" and was wrong about the only interesting thing in the bump.
 
-**That example has since moved, and the way it moved is the better argument.**
-On 2026-09-05 `rumdl` backfilled a whole `### Fixed` section into v0.2.61's
-release notes — ten days after cutting the tag, in one batch with two other
-versions. So rung 1 now names all five fixes and **rung 2 still does not**: the
-committed `CHANGELOG.md` read at `v0.2.62` is a blob and carries the same single
-`### Added` bullet it always did. The two prose rungs disagree, and only the
-range says which is right. That is the reconciliation rung doing the job it was
-added for, on the case it was added from.
+**That example has since moved, and how it moved is the more useful lesson.**
+`rumdl` generates `CHANGELOG.md` from conventional commits with `vership`, and
+the generator was dropping `fix` types. When that was fixed, two things happened
+on 2026-09-05: the release bodies for v0.2.61, v0.2.64 and v0.2.65 were rewritten
+in place at 07:05, and at 14:09 the v0.2.66 release **regenerated the whole
+changelog**, retroactively filling in every past version.
 
-**A release body is mutable; a changelog read at a tag is not.** That asymmetry
-is the durable half, and it is a property of git rather than of a maintainer's
-habits. It also means a live run of `changelog.py` over this range now exits
-**`0`** where it exited `1` when #94 was filed — nothing here changed, the
-source did. `published_at` cannot tell you; `updated_at` can, and the script
-reads it and prints `EDITED <stamp>, after publication at <stamp>` on any
-release in the gap that moved. Where you see that, what you are quoting is the
-current text and not the announcement.
+Measured on this one project, and stated as such — **`rumdl`'s release tooling is
+`rumdl`'s, not a description of how projects release:**
+
+| Read | What the `0.2.61` entry says |
+|---|---|
+| release notes, as published 2026-08-26 | one `### Added` bullet |
+| release notes, today | `### Added` + `### Fixed` ×5 |
+| `CHANGELOG.md` at `v0.2.62` … `v0.2.65` | one `### Added` bullet |
+| `CHANGELOG.md` at `v0.2.66` and later | `### Added` + `### Fixed` ×5 |
+
+Rows 3 and 4 are the same file at four refs, and no history was rewritten: each
+blob is exactly what it always was. The *entry for a version* moved because the
+file is **generated**, and `vership` rewrites it in full at every release.
+
+**What generalises is a question, not a rule.** Two of them, and the answer for
+any given project is a measurement:
+
+- **Is the changelog generated or hand-maintained?** A hand-maintained
+  `CHANGELOG.md` is appended to, so its old sections are stable across refs and
+  one read settles it. A generated one is rebuilt from commits each release, so
+  the ref you read it at is a choice that changes the answer. `rumdl` is the
+  second kind; most projects this plugin audits are the first.
+- **Is rung 1 produced *from* rung 2?** On `rumdl` it is: the release workflow
+  builds the body with `scripts/extract-changelog.sh`, an `awk` slice of
+  `CHANGELOG.md`, and the backfilled v0.2.61 body is **byte-identical** to that
+  file's `0.2.61` section at `v0.2.73`. Where that holds, rungs 1 and 2 agreeing
+  is *the same text twice* rather than corroboration. Where a project writes its
+  release notes by hand, or generates them from PR titles rather than from the
+  changelog, they are genuinely two sources. **Check before treating them as
+  independent** — `rumdl` says which it does in one paragraph of its
+  `CONTRIBUTING.md`, and most projects that automate this say so somewhere.
+
+Both questions are cheap and neither needs to be answered in the abstract, which
+is why the script measures instead of assuming: it reads the changelog at both
+refs and reports a difference only when there is one. On a hand-maintained
+changelog that check is silent.
+
+**The later read is not automatically the better one**, which is why it never
+replaces the read at the tag. Measured 2026-09-17: `astral-sh/ruff` rotates old
+entries out of `CHANGELOG.md` into a `changelogs/` directory, so its root file at
+the default branch ends at `## 0.1.x` and the section for `0.15.7` is **gone**
+there while it is present at that version's own tag. Rotation and regeneration
+pull in opposite directions, so the script carries both reads and says which is
+which rather than picking.
+
+**What holds regardless is narrower: rung 3 cannot be rewritten without rewriting
+history, and it is never generated from another rung.** That is the durable half,
+and it is smaller than "the changelog is immutable" — which is what the first
+draft of this section said, and what reading the project's own release procedure
+disproved.
+
+So `changelog.py` reads the changelog **twice** — at the proposed tag and at the
+default branch — and names any version whose section differs between them. It
+also prints `EDITED <stamp>, after publication at <stamp>` for any release body
+that moved, which `published_at` cannot tell you and `updated_at` can. On this
+range both fire, and the run now exits **`0`** where it exited `1` when #94 was
+filed: nothing here changed, the source did.
 
 **The obvious heuristic does not save it.** *"Does this project document its
 fixes at all?"* returns a confident yes — 0.2.56, 0.2.57, 0.2.59 and 0.2.60 all

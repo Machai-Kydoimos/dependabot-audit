@@ -3667,28 +3667,122 @@ class TestARungThatAnsweredCanAlsoHaveBeenRewritten(SkillHarness):
                 return section
         self.fail("Phase 2 no longer hands off to uv-lock.md")
 
-    def test_the_prose_says_which_rung_can_be_rewritten_and_which_cannot(self):
-        """The durable premise is a property of git, not of maintainers: a
-        changelog read at a tag is a blob. Stating only *"notes can change"*
-        leaves the reader no reason to trust rung 2 either."""
+    def test_the_generated_vs_handmaintained_split_is_stated_as_a_question(self):
+        """The first draft of 0.44.0 claimed the asymmetry was *release body
+        mutable, changelog at a tag not*, which reading the subject's own
+        release procedure disproved. The second draft then over-corrected into
+        *"neither prose rung is fixed"* — also wrong, because a hand-maintained
+        changelog is appended to and its old sections are stable.
+
+        What belongs in the procedure is the **question**, since the answer is a
+        property of one project's tooling and is cheap to measure.
+        """
         section = self._ladder()
         self.assertRegex(
             section,
-            r"(?is)release body is mutable.{0,80}changelog read at a tag is not",
-            "Phase 2 has to say which of the two prose rungs can be rewritten "
-            "after the fact and which cannot, or the asymmetry the example now "
-            "rests on is not stated anywhere",
+            r"(?is)generated or hand-maintained",
+            "Phase 2 must put this as a question about the project in hand, not "
+            "as a fact about changelogs",
+        )
+        self.assertRegex(
+            section,
+            r"(?is)hand-maintained[\s\S]{0,60}appended to[\s\S]{0,80}stable across refs",
+            "and must say what the other answer implies, or the reader applies "
+            "the generated case everywhere",
         )
 
-    def test_the_example_records_that_it_moved(self):
-        """A worked example that silently changed meaning is worse than a stale
-        one — the counts still match, so nothing looks wrong."""
-        self.assertIn("2026-09-05", self._ladder())
+    def test_the_subjects_own_tooling_is_labelled_as_its_own(self):
+        """`rumdl` is one project. Its `vership`/`extract-changelog.sh` pipeline
+        is evidence that the question is worth asking, not a description of how
+        releases work."""
         self.assertRegex(
             self._ladder(),
-            r"(?is)rung 1 now names all five fixes and \*\*rung 2 still does not",
-            "the example's point is now the disagreement; if the prose still "
-            "reads as 'both rungs omit', it is describing a state that ended",
+            r"(?is)`rumdl`'s release tooling is\s+`rumdl`'s, not a description of how projects release",
+            "the worked example has to be scoped to its subject, or the next "
+            "reader generalises one project's release script",
+        )
+
+    def test_the_prose_warns_that_the_two_prose_rungs_may_not_be_independent(self):
+        """The ladder cross-checks rung 1 against rung 2. On the subject it was
+        built from, rung 1 is *produced from* rung 2 by an awk slice, so
+        agreement is the same text twice — measured byte-identical. Elsewhere
+        they may be genuinely two sources, so the instruction is to check."""
+        section = self._ladder()
+        self.assertRegex(
+            section,
+            r"(?is)\*\*Check before treating them as\s+independent\*\*",
+            "a reader who does not know the notes are generated from the "
+            "changelog will read agreement as corroboration",
+        )
+        self.assertRegex(
+            section,
+            r"(?is)release notes by hand[\s\S]{0,140}genuinely two sources",
+            "and the other answer has to be there too, or 'check' reads as "
+            "'assume they are the same'",
+        )
+
+    def test_what_holds_regardless_is_stated_and_is_narrow(self):
+        self.assertRegex(
+            self._ladder(),
+            r"(?is)rung 3 cannot be rewritten without rewriting\s+history",
+            "the ladder's one un-rewritable source has to be named as such",
+        )
+
+    def test_the_prose_says_the_later_read_can_be_emptier(self):
+        """Rotation and regeneration pull opposite ways. `astral-sh/ruff` moves
+        old entries into `changelogs/`, so its root file at the default branch
+        has *less* for an old version than the file at that version's tag. A
+        reader told only about regeneration would treat the later read as
+        strictly better."""
+        section = self._ladder()
+        self.assertRegex(
+            section,
+            r"(?is)later read is not automatically the better one",
+            "the second read must not be presented as an upgrade",
+        )
+        self.assertRegex(
+            section,
+            r"(?is)rotates old\s+entries out",
+            "and the measured counter-example has to be named",
+        )
+
+    def test_the_script_measures_rather_than_assuming_which_kind_it_faces(self):
+        """The reason the two-ref read is unconditional: deciding the project's
+        changelog style first would be a guess, and the check is silent when
+        both refs agree."""
+        section = self._ladder()
+        self.assertRegex(
+            section,
+            r"(?is)the script measures instead of assuming",
+            "Phase 2 has to say why the second read is unconditional",
+        )
+        self.assertRegex(
+            section,
+            r"(?is)hand-maintained\s+changelog that check is silent",
+            "and that it costs nothing on the common case",
+        )
+
+    def test_the_example_records_that_it_moved_and_when(self):
+        """A worked example that silently changed meaning is worse than a stale
+        one — the counts still match, so nothing looks wrong."""
+        section = self._ladder()
+        self.assertIn("2026-09-05", section)
+        self.assertIn("v0.2.66", section, "the release that regenerated the changelog")
+
+    def test_the_script_reads_the_changelog_at_both_refs(self):
+        """Naming the problem in prose is not reading the second ref."""
+        code = self.reachable(2)
+        self.assertIn("changelog_at(slug, None)", code)
+        self.assertRegex(
+            code,
+            r"(?is)the section at the default branch DIFFERS",
+            "and it has to say which version differed, or the second read is fetched and discarded",
+        )
+        self.assertRegex(
+            code,
+            r"(?is)both are in the evidence file",
+            "and point at where the fuller text went, or the reader is told a difference "
+            "exists with no way to see it",
         )
 
     def test_the_script_reads_the_field_that_moves(self):

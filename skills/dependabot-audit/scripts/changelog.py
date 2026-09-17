@@ -22,13 +22,32 @@ reading a lazy continuation as a setext underline`. A run that honored the ladde
 as written reported "two additive releases" and was wrong about the only
 interesting thing in the bump.
 
-That example moved on 2026-09-05, when the project backfilled a `### Fixed`
-section into v0.2.61's notes ten days after cutting the tag. Rung 1 now names all
-five; rung 2, a blob at `v0.2.62`, still names none -- so the two prose rungs
-disagree and only the range settles it, which is this script's whole argument
-demonstrated on its own founding case. Live, that range now reconciles at exit
-`0`. `--jq .body` cannot see the edit; `updated_at` can, and
+That example moved on 2026-09-05. The project generates `CHANGELOG.md` from
+conventional commits and the generator was dropping `fix` types; when it was
+fixed, the release bodies for v0.2.61/64/65 were rewritten in place at 07:05 and
+the v0.2.66 release regenerated the whole changelog at 14:09, retroactively
+filling in every past version. So the `0.2.61` entry reads one `### Added` bullet
+at refs v0.2.62..v0.2.65 and `### Added` + five `### Fixed` at v0.2.66 and later.
+
+That is `rumdl`'s tooling, not a general fact about releases, and the two checks
+below are written as measurements rather than as assumptions about any project.
+
+**A release body can be rewritten in place.** True of the GitHub API everywhere,
+not of any one project: `--jq .body` cannot see it, `updated_at` can, and
 `edited_since_published` reads it.
+
+**A changelog's entry for a version may depend on the ref you read it at** --
+when the file is generated it is rebuilt each release, when it is hand-maintained
+it is appended to and old sections are stable. Rather than deciding which kind a
+project is, `main()` reads the changelog at the proposed tag *and* at the default
+branch and reports a difference only where one exists. On a hand-maintained
+changelog that is silent.
+
+One caution the ladder cannot check for itself: on `rumdl`, rung 1 is *produced
+from* rung 2 (`scripts/extract-changelog.sh`, an awk slice), so the two agreeing
+is the same text twice. Elsewhere they may be genuinely independent. What holds
+regardless is only that rung 3 cannot be rewritten without rewriting history.
+Live, this range now reconciles at exit `0`.
 
 **The obvious heuristic does not save it.** "Does this project document its fixes
 at all?" returns a confident yes: 0.2.56, 0.2.57, 0.2.59 and 0.2.60 all carry a
@@ -430,15 +449,20 @@ def gap(
     return published[top:bottom], ""
 
 
-def changelog_at(slug: str, tag: str) -> tuple[str, str] | None:
+def changelog_at(slug: str, tag: str | None) -> tuple[str, str] | None:
     """(filename, text) for the repo's changelog at `tag`, or None if it keeps none.
 
     Two calls and no guessing: list the root at that ref, match a name, fetch it
     raw. A constructed `CHANGELOG.md` 404s on a project that spells it
     `CHANGES.rst`, and the 404 is indistinguishable from having no changelog.
+
+    `tag=None` reads the default branch, which is not the same document. A
+    generated changelog is rewritten in full at every release, so the section for
+    one version is a function of the ref you read it at -- see `main()`.
     """
+    ref = f"?ref={tag}" if tag else ""
     listing = _gh(
-        ["api", f"repos/{slug}/contents?ref={tag}", "--jq", '.[] | select(.type=="file") | .name']
+        ["api", f"repos/{slug}/contents{ref}", "--jq", '.[] | select(.type=="file") | .name']
     )
     if listing is None:
         return None
@@ -449,7 +473,7 @@ def changelog_at(slug: str, tag: str) -> tuple[str, str] | None:
     text = _gh(
         [
             "api",
-            f"repos/{slug}/contents/{name}?ref={tag}",
+            f"repos/{slug}/contents/{name}{ref}",
             "-H",
             "Accept: application/vnd.github.raw",
         ]
@@ -778,15 +802,31 @@ def main() -> int:
         print(f"         ({why})")
 
     found = changelog_at(slug, to_tag)
+    later = changelog_at(slug, None)
     sections = 0
+    regenerated: list[str] = []
     if found:
         name, text = found
+        head_text = later[1] if later else ""
         for row in window or [{"tag": to_tag}]:
-            body = section_for(text, row["tag"].removeprefix("v"))
+            version = row["tag"].removeprefix("v")
+            body = section_for(text, version)
             if body:
                 sections += 1
                 blocks.append(f"## rung 2 -- {name}, {row['tag']}\n\n{body}")
+            head_body = section_for(head_text, version) if head_text else ""
+            if head_body and head_body.strip() != body.strip():
+                regenerated.append(row["tag"])
+                blocks.append(
+                    f"## rung 2 at the default branch -- {name}, {row['tag']}\n\n"
+                    f"**This differs from the same section read at {to_tag}.** A generated\n"
+                    f"changelog is rewritten in full at every release, so the entry for one\n"
+                    f"version is a function of the ref you read it at.\n\n{head_body}"
+                )
         print(f"rung 2 -- {name}: {sections} section(s) for the versions in the gap")
+        for tag in regenerated:
+            print(f"         {tag}: the section at the default branch DIFFERS")
+            print(f"                 from the one at {to_tag} -- both are in the evidence file")
     else:
         print("rung 2 -- no changelog file at this tag")
 
