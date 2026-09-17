@@ -53,11 +53,15 @@ named, and two of them turned out to have been asserting something false.
 - **`references/actions.md` § Phase 4** said *"where the notes and the interface
   disagree, the source settles it"* and supplied no read. It now greps the
   bundled entry point `action.yml` already names, at both refs — and carries the
-  measurement that makes that read honest: the contents API **declines to inline
-  a file over 1 MB**, answering `200` with `"encoding": "none"` and an empty
-  `content`, so the `base64 -d` idiom two blocks above writes a zero-byte file
-  and exits 0. That is the exact failure that block's own comment warns about,
-  one file along. `setup-uv`'s bundle is 3,966,481 bytes; the raw media type
+  measurement that makes that read honest: above **1 MiB** the contents API
+  describes the file and declines to carry it — `200`, a real `size` and `sha`, a
+  working `download_url`, `content` an empty string, and the only notice is
+  `encoding` flipping `base64` to `none`, which is the one field the idiom never
+  reads. GitHub documents it as working *"as normal"*, so it is a success path.
+  `base64 -d` then accepts the bare newline `jq` prints as valid base64 for zero
+  bytes, and `diff` on two empty files exits 0 — the exact failure that block's
+  own comment warns about, one file along. Bracketed in `python/cpython`:
+  1,028,882 bytes still inlines, 1,074,405 does not. `setup-uv`'s bundle is 3,966,481 bytes; the raw media type
   returns all of it, and `isTagPush` goes from **0 occurrences at v9.0.0 to 2 at
   v10.0.1** — a falsifiable answer to which source was right, in one call.
 

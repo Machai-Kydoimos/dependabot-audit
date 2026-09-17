@@ -398,11 +398,20 @@ done
 
 **The `--jq .content` idiom three blocks up silently returns nothing here**, and
 that is worth more than a footnote because it is the same failure that block's own
-comment warns about, one file along. The contents API declines to inline a file
-over 1 MB: it answers `200` with `"encoding": "none"` and `content` an **empty
-string**, so `base64 -d` writes a zero-byte file and exits 0. Measured on
-`astral-sh/setup-uv` at v9.0.0 — `dist/setup/index.cjs` is 3,966,481 bytes,
-`.content` came back length **0**, and the raw media type returned all of it.
+comment warns about, one file along. Above **1 MiB** the contents API describes
+the file and declines to carry it: `200`, a real `size`, a real `sha`, a working
+`download_url`, `content` an **empty string**, and the only notice is `encoding`
+flipping from `base64` to `none` — the one field this idiom never reads. GitHub
+documents it as working *"as normal"*, so it is a success path and not an error.
+
+Every link then behaves correctly and the result is a clean bill: `gh` exits 0 on
+the 200, `--jq .content` prints a bare newline, `base64 -d` accepts a lone newline
+as valid base64 for zero bytes and exits 0, and `diff` on two empty files exits 0
+saying nothing. Measured on `astral-sh/setup-uv` at v9.0.0 — `dist/setup/index.cjs`
+is 3,966,481 bytes, `.content` came back length **0**, and the raw media type
+returned all of it. The boundary is the binary megabyte, not 1,000,000: in
+`python/cpython`, `Python/executor_cases.c.h` at 1,028,882 bytes still inlines and
+`configure` at 1,074,405 does not.
 
 And it answers the question the notes could not. Measured across the same bump:
 
