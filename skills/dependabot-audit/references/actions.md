@@ -413,6 +413,14 @@ returned all of it. The boundary is the binary megabyte, not 1,000,000: in
 `python/cpython`, `Python/executor_cases.c.h` at 1,028,882 bytes still inlines and
 `configure` at 1,074,405 does not.
 
+**The `action.yml` block above keeps the decode on purpose**, because a manifest
+cannot plausibly reach that size and the base64 round-trip there buys a second
+checked failure — the two `||` lines that make an unreadable ref loud. The rule is
+about the *artifact*, not the endpoint: reach for the raw media type whenever the
+path could be a build output. `scripts/precommit.py` already did, and its
+docstring already gave this reason, which is where the answer was sitting while
+this file went without it.
+
 And it answers the question the notes could not. Measured across the same bump:
 
 | | `isTagPush` in the bundle |
