@@ -11,6 +11,88 @@ patch.
 
 ## [Unreleased]
 
+## [0.47.0] — 2026-09-19
+
+**Round twenty-three's two hand-backs, each measured again before it was built,
+and a false claim 0.46.0 shipped.** Both hand-backs change a phase's method, so
+they waited for their own replay instead of riding along in 0.46.0, whose replay
+had already run. That replay, round twenty-four, confirmed both. It also exposed
+a sentence 0.46.0 wrote that was false in the unsafe direction: Phase 2's
+"superset" scan could not see the shapes it named, and its "conclusive" zero was
+a false clean for them.
+
+**Minor, not patch.** Phase 4's reproducer runs a different command, Phase 5 now
+names the sync that a failed reconcile repeats, and Phase 2's scan matches lines
+it could not see before.
+
+### Fixed — the reproducer ran every default rule, and another rule's fix could hide the bug (#136)
+
+- **With every default rule on, another rule can rewrite the input before the rule
+  under test acts, and then all three versions agree.** Round twenty-three's two
+  passes used different inputs, so this was re-measured on one: rumdl's MD026
+  reproducer (`- item` / `  Title.` / `  ======`). Under `--no-config --fix`,
+  0.2.72 and 0.2.74 both give `## Title`, because MD003 turns the heading into ATX
+  first. Under `--enable MD026`, 0.2.72 moves `Title` out of the list item and
+  0.2.74 keeps it: the bug reproduces.
+- **It failed safe, and it still cost an answer.** The block reads agreement as
+  *underivable*, never as clean. But the question this section exists for (did the
+  bug begin before the pin?) then stays open. Round twenty-two took the masked
+  result for agreement and quietly leaned on a second input for its MD026 claim.
+- **The isolation is now a slot in the command.** The tool line carries
+  `<only-the-fixed-rule>`, and the flag is named per tool: `rumdl --enable <RULE>`
+  and `ruff --select <RULE>`. Both were measured; under ruff 0.16.7,
+  `--isolated --fix` applies F401 and F541 together, and `--select F541` applies
+  only F541. The all-agree reading now says it presumes isolation.
+
+### Fixed — three rounds re-derived Phase 5's `--group` design (#137)
+
+- **A hand-back row that recurs is a different problem from a row that was wrong
+  once.** Rounds nineteen, twenty-two and twenty-three each met the plain sync's
+  missing `--group` on #437, which sets `default-groups = []`. Each worked the
+  design out again, and round nineteen got it wrong, calling it a gap that would
+  reproduce the trap. The flag is absent on purpose: sync plainly, reconcile
+  against what Phase 1 named, re-sync. Nothing near the sync blocks said so.
+- **And "re-sync with `--group <name>`" named no command.** On the wheels-held
+  path, a plain `uv sync --locked --group <name>` drops the `--no-build-package`
+  holds. The row's *held N of M to wheels* would then describe a sync that did not
+  build the environment. The reconcile now says to re-run whichever sync built it,
+  strict pair or wheels-held line, with `--group` appended, and both blocks carry
+  a comment saying so. Adding the flag up front, where Phase 1 already named the
+  group, runs the same command once; the reconcile still runs.
+
+### Fixed — 0.46.0's "superset" scan could not see the shapes it named
+
+- **0.46.0 wrote *"its zero is conclusive"*, and the regex was anchored at
+  column 0.** `^(=+|-{2,})…` matches an underline only when the line starts with
+  one. A setext underline inside a blockquote (`> ---`) or a list item
+  (`  ======`) starts with something else. Those are MD065's and MD026's shapes,
+  the two the same paragraph names. So a tree whose only setext headings were
+  quoted or indented scanned to zero, and the text called that zero conclusive.
+  That is a false clean, the unsafe direction.
+- **Measured on five fixtures** (top level, list item, quote, nested quote, quote
+  in a list item): the 0.46.0 regex matched one. `^[[:blank:]>]*(=+|-{2,})…`
+  matches all five. On #437's tree it still lists the same 20 files and 187 lines,
+  so the published numbers stand.
+- **Found by round twenty-four,** which had to write its own grep for MD026's
+  list-item shape and handed that back as a `prose gap`. Round twenty-three had
+  replayed 0.46.0 without meeting it, because #437's tree has 20 top-level `---`
+  lines, so the scan never returned zero there.
+- **Phase 2 now carries a narrowing for each shape it names,** quoted and
+  indented. A guard runs all three regexes as written, with `grep -E`, over seven
+  shapes, and asserts which shapes each one matches. It fails on the exact 0.46.0
+  anchor, and on an indented scan widened to match quotes. Python's `re` could
+  not stand in, because it has no `[[:blank:]]`.
+
+### Verification
+
+| | |
+|---|---|
+| offline suite | 632 tests (629 at 0.46.0) |
+| gates | ruff, ruff-format, mypy, unittest |
+| mutation checks | 7. Each was confirmed to have landed, and each was caught by the test written for it: the slot removed; the all-agree reading unqualified; each of the three `--group` statements removed; the 0.46.0 column-0 anchor restored; the indented scan widened to match quotes |
+| replay | rounds twenty-four and twenty-five, #437 against this branch via `--plugin-dir` ($5.69 and $5.87, 0 permission denials each). Twenty-four ran the reproducer as `--enable "$rule"` and reproduced MD026. It appended `--group dev` to the wheels-held line (held 36 of 37, reconcile exit 0) and raised no `--group` row, the first of four #437 replays not to. It also found the 0.46.0 anchor. Twenty-five ran the corrected superset scan (20 files, exit 0) and both narrowings (exit 1 each) as written, and found no defect in these changes. Their older findings are filed as #139, #140 and #141 |
+| triage list | 31 hits, identical to 0.46.0's; none new |
+
 ## [0.46.0] — 2026-09-19
 
 **Round twenty-two replayed 0.45.0 on the PR it was built from, and every
@@ -5406,7 +5488,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.46.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.43.0...v0.44.0

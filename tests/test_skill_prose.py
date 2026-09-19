@@ -3194,6 +3194,32 @@ class TestPhase5NamesTheGroupsTheInstallCovered(SkillHarness):
             "belongs in the same table rather than in prose beside it",
         )
 
+    def test_the_sync_says_why_it_carries_no_group_and_which_sync_to_repeat(self):
+        """#137. Three replays of #437 re-derived the design (plain sync, reconcile,
+        re-sync), and one of them got it wrong. The flag was never missing; what
+        was missing was any statement of why.
+
+        "Re-sync with `--group`" also named no command. On the wheels-held path a
+        plain re-sync drops the holds, and the row's "held N of M" then
+        describes a sync that did not build the environment.
+        """
+        runs = self.reachable(5)
+        self.assertIn(
+            "# No --group here, by design: the reconcile below decides it",
+            runs,
+            "the strict sync block has to say that its missing --group is the design",
+        )
+        self.assertRegex(
+            runs,
+            r'uv sync --locked "\$\{ARGS\[@\]\}"\s+# a failed reconcile re-runs this with --group <name>',
+            "and the wheels-held line has to say it is the one a failed reconcile re-runs",
+        )
+        self.assertIn(
+            "re-run the sync that built this environment, with `--group <name>` appended",
+            re.sub(r"\s+", " ", self.material(5)),
+            "the reconcile has to name which sync to repeat, not only the flag",
+        )
+
     def test_the_default_is_measured_rather_than_assumed_either_way(self):
         """Both wrong readings are live: that `dev` needs a flag, and that no group does."""
         phase5 = self.material(5)
@@ -3439,6 +3465,51 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
             r"git grep -lE '\^\[\[:blank:\]\]\*>",
             "and the narrowing to the quoted shape has to be a command, not advice",
         )
+
+    def test_the_documented_scans_match_the_shapes_they_claim(self):
+        """Runs the three regexes as written, with `grep -E`, over every shape.
+
+        0.46.0 called the first scan a superset whose zero is conclusive, but it
+        was anchored at column 0, and of five fixtures it matched one. MD065's
+        quoted shape and MD026's list-item shape, the two this passage names, were
+        both invisible to it. A tree carrying only those scanned to zero, and the
+        zero was called conclusive. Round twenty-four found it by needing its own
+        grep for the list-item shape. Python's `re` cannot stand in for `grep`
+        here, because it has no `[[:blank:]]`, which is the point of the POSIX
+        form.
+        """
+        found = re.findall(
+            r"git grep -lE '([^']+)' -- '\*\.md';\s*echo \"(\w+) scan exit", self.material(2)
+        )
+        scans = {label: regex for regex, label in found}
+        self.assertEqual(set(scans), {"shape", "quoted", "indented"}, "the scans Phase 2 documents")
+        shapes = {
+            "top": "---",
+            "setext": "===",
+            "list": "  ======",
+            "tab": "\t---",
+            "quote": "> ---",
+            "nested": ">> ===",
+            "list-quote": "   > ---",
+        }
+        expected = {
+            "shape": set(shapes),
+            "quoted": {"quote", "nested", "list-quote"},
+            "indented": {"list", "tab"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for label, regex in scans.items():
+                hits = set()
+                for name, line in shapes.items():
+                    path = pathlib.Path(tmp) / f"{name}.md"
+                    path.write_text(f"Title\n{line}\n", encoding="utf-8")
+                    done = subprocess.run(["grep", "-qE", regex, str(path)], check=False)
+                    self.assertIn(done.returncode, (0, 1), f"grep could not run the {label} scan")
+                    if done.returncode == 0:
+                        hits.add(name)
+                self.assertEqual(
+                    hits, expected[label], f"the {label} scan matches the wrong shapes"
+                )
 
     def test_no_shell_grep_puts_a_tab_escape_in_a_bracket(self):
         """POSIX ERE reads `\\t` inside brackets as a backslash and a `t`.
@@ -4186,6 +4257,28 @@ class TestAFixAboveTheProposalIsMeasuredWhereCodeMayRun(SkillHarness):
         """The input is synthetic and the question is about the tool; running it
         in `pr-<N>` or `base-<N>` would mix this repo's config into the answer."""
         self.assertIn('F="$SCRATCH/repro-<pkg>"', self.reachable(4))
+
+    def test_the_reproducer_runs_only_the_rule_the_fix_names(self):
+        """#136. With every default rule on, another rule's fix can rewrite the
+        input first, all three versions agree, and the block reads that as "does
+        not reproduce".
+
+        Measured on rumdl's MD026 input: `--no-config --fix` gives `## Title` at
+        0.2.72 and at 0.2.74, because MD003 converts the heading first. With
+        `--enable MD026` the bug reproduces. So the isolation is a slot in the
+        command rather than a caution beside it: a slot gets filled, and a
+        sentence gets read past.
+        """
+        self.assertRegex(
+            self.reachable(4),
+            r'<tool> <write-mode args> <only-the-fixed-rule> "at-\$v\.<ext>"',
+            "the reproducer's tool line has to carry the rule isolation as a slot",
+        )
+        self.assertRegex(
+            self._uv_phase(4),
+            r"(?is)\*\*That last reading holds only once the rule was\s+isolated\.\*\*",
+            "and the reading of an all-agree result has to say it presumes isolation",
+        )
 
     def test_the_exit_lines_are_read_before_the_diffs(self):
         """A run that failed leaves its file as the input, which reads as a

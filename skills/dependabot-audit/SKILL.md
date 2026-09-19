@@ -815,8 +815,8 @@ correctly and reaches *this* reader, who reads the raw file, as a backslash that
 breaks the regex:
 
 ```bash
-git grep -lE '^(=+|-{2,})[[:blank:]]*$' -- '*.md'; echo "shape scan exit: $?"
-git ls-files '*.rs';                                echo "type scan exit: $?"
+git grep -lE '^[[:blank:]>]*(=+|-{2,})[[:blank:]]*$' -- '*.md'; echo "shape scan exit: $?"
+git ls-files '*.rs';                                     echo "type scan exit: $?"
 ```
 
 **Read the exit code, and do not pipe these into `wc`.** `git grep` exits `1` on
@@ -826,16 +826,25 @@ into `inert here`, which is the failure this whole row exists to prevent. `1` is
 a real zero; `128` is `underivable`.
 
 **The shape scan is a superset: its zero is conclusive, and its count is not.**
-It matches every setext underline and every `---` thematic break, and it reads
-neither the line above nor a `>` prefix. On `fpga-board-sim` #437 it listed 20
-files — 187 lines, every one a plain `---` — while the shape rumdl 0.2.74 fixed
-in MD065, a setext heading inside a blockquote (`> Title` over `> ---`), was in
-none of them. Narrow to the shape before quoting a number. For a quoted
-underline:
+It matches an underline-shaped line at any indentation and any blockquote depth.
+That covers every setext underline, whether top-level, in a list item or in a
+quote, plus every `---` thematic break, and it reads no line above. On
+`fpga-board-sim` #437 it listed 20 files, 187 lines, every one a plain `---`. The
+shape rumdl 0.2.74 fixed in MD065 was in none of them: a setext heading inside a
+blockquote, `> Title` over `> ---`. Narrow to the shape before quoting a number.
+The first command below finds a quoted underline; the second finds one inside a
+list item:
 
 ```bash
 git grep -lE '^[[:blank:]]*>[[:blank:]>]*(=+|-{2,})[[:blank:]]*$' -- '*.md'; echo "quoted scan exit: $?"
+git grep -lE '^[[:blank:]]+(=+|-{2,})[[:blank:]]*$' -- '*.md';                echo "indented scan exit: $?"
 ```
+
+Until 0.47.0 the first scan was anchored at column 0 (`^(=+|-{2,})…`). That meant
+it could not see the quoted or list-item shapes this paragraph names, and its
+"conclusive" zero was a false clean for exactly those. Measured on five fixtures
+(top-level, list item, quote, nested quote, quote in a list item), it matched one.
+Round twenty-four found it by needing its own grep for MD026's list-item shape.
 
 Write `[[:blank:]]`, not `[ \t]`: inside a POSIX bracket expression `\t` is a
 backslash and a `t`, so `[ \t]*` misses a trailing tab and matches `---t` —

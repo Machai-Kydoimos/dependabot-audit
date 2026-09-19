@@ -805,9 +805,11 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 # about the tool, not about this repo.
 F="$SCRATCH/repro-<pkg>"; mkdir -p "$F" && cd "$F" || exit 2
 # <input> is the reproducer, written from the fix commit's own test.
+# <only-the-fixed-rule> selects the one rule the fix names, so no other rule's
+# fix rewrites the input first: rumdl --enable <RULE>, ruff --select <RULE>.
 for v in <current> <proposed> <fixed>; do
   cp <input> "at-$v.<ext>"
-  uv run -q --no-project --with "<pkg>==$v" <tool> <write-mode args> "at-$v.<ext>"
+  uv run -q --no-project --with "<pkg>==$v" <tool> <write-mode args> <only-the-fixed-rule> "at-$v.<ext>"
   echo "$v exit: $?"
 done
 diff "at-<current>.<ext>" "at-<proposed>.<ext>"; echo "current vs proposed: $?"
@@ -822,6 +824,17 @@ proposed and fixed different (`1`): the bug predates the pin, the bump neither
 adds nor removes it — not a Hold. **Current and proposed differ** in the buggy
 direction: the bump moves into it — Hold. **Proposed and fixed identical**: the
 reproducer does not reproduce, and the answer is underivable rather than clean.
+
+**That last reading holds only once the rule was isolated.** With every default
+rule on, another rule's fix can rewrite the input before the rule under test
+acts, and then all three versions agree. Measured on rumdl's MD026 reproducer, a
+setext heading inside a list item (`- item` / `  Title.` / `  ======`):
+`--no-config --fix` gives `## Title` at both 0.2.72 and 0.2.74, because MD003
+turns the heading into ATX first. With `--enable MD026`, 0.2.72 moves `Title` out
+of the list item and 0.2.74 keeps it in place: the bug reproduces. Round
+twenty-two saw the first result, took it for agreement, and quietly relied on a
+different input (#136). The same trap on ruff: `--isolated --fix` applies F401
+and F541 together, and `--select F541` applies only F541 (ruff 0.16.7).
 
 **The gate is the reason this lives here and not in Phase 7.** The runs execute
 the proposed version, which is the code under audit, and `--no-execute` defines a
@@ -841,6 +854,8 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 [ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
 
 cd "$SCRATCH/pr-<N>"
+# No --group here, by design: the reconcile below decides it, and a failed one
+# re-runs these two lines with --group <name> appended.
 uv sync --locked --no-build --no-install-project   # every dep resolved to a wheel
 uv sync --locked                                   # then add the project itself
 ```
@@ -885,8 +900,16 @@ printf '%s\n' "$LIST" | grep -E '^(<the packages Phase 1 named>)='; echo "reconc
 ```
 
 Every name Phase 1 listed should come back at the version the PR proposes. A name
-that does not is the group question, and re-syncing with `--group <name>` is what
-answers it. Say in the report which groups the row covers.
+that does not is the group question. **The answer is to re-run the sync that
+built this environment, with `--group <name>` appended.** That is the strict
+pair above, or the wheels-held line below if that is what ran. A plain
+`uv sync --locked --group <name>` drops the wheel holds, and the row's *held N of
+M to wheels* would then describe a sync that did not produce the environment.
+Where Phase 1 already named the group, adding `--group <name>` up front runs the
+same command once. The reconcile still runs, because it is what proves the group
+was installed. Three replays of #437 re-derived this design, one of them wrongly
+(#137); it is written here so the next one reads it instead. Say in the report
+which groups the row covers.
 
 Step 1 is the one with the security value: if it succeeds, every dependency in
 the lockfile resolved to a **wheel** and no third-party build code ran at all. If
@@ -966,7 +989,7 @@ PY
 TOTAL="${ROWS[0]}"; WHEELED=("${ROWS[@]:1}")
 
 ARGS=(); for p in "${WHEELED[@]}"; do ARGS+=(--no-build-package "$p"); done
-uv sync --locked "${ARGS[@]}"
+uv sync --locked "${ARGS[@]}"   # a failed reconcile re-runs this with --group <name>
 echo "held ${#WHEELED[@]} of $TOTAL third-party packages to wheels"
 ```
 
