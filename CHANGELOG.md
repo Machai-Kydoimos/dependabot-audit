@@ -11,6 +11,41 @@ patch.
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-09-19
+
+**Minor, not patch.** Phase 6 now reports a state it used to report as a pass.
+
+### Fixed — `EXPECTED` was counted as a pass (#135)
+
+- **`PASSING` had held `EXPECTED` since 0.14.0, with no reason given.**
+  `EXPECTED` is a `StatusState`: a status nothing has reported yet. `gh` treats it
+  as pending in both of its classifiers (`api/queries_pr.go:446`,
+  `pkg/cmd/pr/checks/aggregate.go:85`). Counted as a pass, a required status that
+  never reported would print `OK` beside the green rows and stay out of *"N
+  context(s) not settled"*, the one line that tells a reader something is still
+  outstanding. It now falls to `unsettled`, like every value neither set names.
+- **No run has ever received it, and the entry says so.** Under a ruleset, GitHub
+  leaves an unreported requirement out of the rollup rather than adding an
+  `EXPECTED` row. Three measurements agree:
+  - this repo's `Test (Python 3.99)`, on 2026-08-15, produced no row;
+  - `pytest-dev/pytest` #13618's `docs/readthedocs.org:pytest`, on 2026-09-19,
+    produced no row;
+  - 60 open pytest PRs carried 118 status rows, and none was `EXPECTED`.
+
+  Classic branch protection is unmeasured. Either way, the change can only turn
+  an `OK` into *not settled*.
+- **Of the fourteen values in the two enums, it was the only one read more
+  favourably here than `gh` reads it.** Two others also differ:
+  `ACTION_REQUIRED` (`gh`: failing; here: not settled) and `STARTUP_FAILURE`
+  (`gh`: pending; here: failing). Neither difference can produce a pass, so both
+  are unchanged.
+- **Three tests, mutation-checked in both directions.** Putting `EXPECTED` back
+  into `PASSING` fails two of them; putting it into `FAILING` fails a different
+  two. The first attempt at that check fell into the 0.16.0 bytecode trap.
+  `CONTRIBUTING.md` already warned about it, but gave no mechanism, and the
+  mechanism is why the trap keeps catching people. The warning now explains that
+  the cached bytecode is keyed on the source's size and its mtime in whole seconds.
+
 ## [0.45.0] — 2026-09-19
 
 **Round twenty-one of the replay gate, and what it found — including a false
@@ -5279,7 +5314,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.45.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.46.0...HEAD
+[0.46.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.42.0...v0.43.0
