@@ -11,6 +11,133 @@ patch.
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-09-19
+
+**Round twenty-two replayed 0.45.0 on the PR it was built from, and every
+change reached the run — with three things left behind.** `fpga-board-sim` #437
+ran against the installed 0.45.0: 35 turns, $5.23, 0 permission denials, and every
+evidence row matched its own command output.
+
+- All six executing blocks opened with the `$MAY_EXECUTE` gate.
+- `audit.py` read the predecessor's attestation and reported that rumdl 0.2.72
+  stopped shipping an sdist.
+- `EDITED` stayed quiet on the asset upload that tripped it in round twenty-one.
+
+Two of the three defects are 0.45.0 fixes that were not carried through: a
+command it measured as unsafe was still recommended in three places, and a
+counted note miscounted the item it added. The third is older. The run itself
+handed back a Phase 2 scan that counts every thematic break as exposure. This
+release ships those three fixes with #135, and it was replayed again (round
+twenty-three) before it was committed.
+
+**Minor, not patch.** Phase 6 now reports a state it used to report as a pass,
+Phase 2's content scan reports candidates instead of exposure, and Phase 5 and
+`audit.py` name a different command.
+
+### Fixed — `EXPECTED` was counted as a pass (#135)
+
+- **`PASSING` had held `EXPECTED` since 0.14.0, with no reason given.**
+  `EXPECTED` is a `StatusState`: a status nothing has reported yet. `gh` treats it
+  as pending in both of its classifiers (`api/queries_pr.go:446`,
+  `pkg/cmd/pr/checks/aggregate.go:85`). Counted as a pass, a required status that
+  never reported would print `OK` beside the green rows and stay out of *"N
+  context(s) not settled"*, the one line that tells a reader something is still
+  outstanding. It now falls to `unsettled`, like every value neither set names.
+- **No run has ever received it, and the entry says so.** Under a ruleset, GitHub
+  leaves an unreported requirement out of the rollup rather than adding an
+  `EXPECTED` row. Three measurements agree:
+  - this repo's `Test (Python 3.99)`, on 2026-08-15, produced no row;
+  - `pytest-dev/pytest` #13618's `docs/readthedocs.org:pytest`, on 2026-09-19,
+    produced no row;
+  - 60 open pytest PRs carried 118 status rows, and none was `EXPECTED`.
+
+  Classic branch protection is unmeasured. Either way, the change can only turn
+  an `OK` into *not settled*.
+- **Of the fourteen values in the two enums, it was the only one read more
+  favourably here than `gh` reads it.** Two others also differ:
+  `ACTION_REQUIRED` (`gh`: failing; here: not settled) and `STARTUP_FAILURE`
+  (`gh`: pending; here: failing). Neither difference can produce a pass, so both
+  are unchanged.
+- **Three tests, mutation-checked in both directions.** Putting `EXPECTED` back
+  into `PASSING` fails two of them; putting it into `FAILING` fails a different
+  two. The first attempt at that check fell into the 0.16.0 bytecode trap.
+  `CONTRIBUTING.md` already warned about it, but gave no mechanism, and the
+  mechanism is why the trap keeps catching people. The warning now explains that
+  the cached bytecode is keyed on the source's size and its mtime in whole seconds.
+
+### Fixed — three sites still recommended the command 0.45.0 measured building the environment
+
+- **0.45.0 fixed the block and left the advice.** It measured that `uv run
+  python -V` syncs before it answers, installing the project editable and so
+  running its build backend. It then changed Phase 5's inspection block to
+  `.venv/bin/python -V` behind the `$MAY_EXECUTE` gate. Three other sites went on
+  recommending the old command:
+  - the Phase 5 sentence in `SKILL.md` naming where the interpreter comes from;
+  - the *which interpreter* row of `uv-lock.md`'s qualifier table;
+  - the forked-package advice that `audit.py` prints, which appears on every
+    forked lockfile, #437's `rpds-py` included.
+
+  `test_audit.py` asserted that stale advice as the thing to record.
+- **It was latent, not reached.** Round twenty-two's run followed the block
+  rather than the advice. A reader who followed the printed advice would have run
+  the build backend. `audit.py` prints it during Phase 1, which `--no-execute`
+  keeps, so that would have happened outside any gate.
+- **The 0.45.0 guard read the wrong artifact for this.** It checks what Phase 5
+  *executes*, and prose and printed strings are both outside that. The new guard
+  reads every shipped file whole, with whitespace flattened because `SKILL.md` is
+  hard-wrapped. Each failing form may appear only in the table row that records it
+  failing. Reverting any one of the three sites fails the guard; the `audit.py`
+  site also fails its own test.
+
+### Fixed — the shape scan counted every thematic break as exposure
+
+- **Phase 2's content scan reported 20 exposed files on #437, and none carried the
+  shape.** `git grep -lE '^(=+|-{2,})[ \t]*$'` matches every setext underline
+  *and* every `---` thematic break, and it reads neither the line above nor a `>`
+  prefix. On `fpga-board-sim` at #437's merge it listed 20 files and 187 lines,
+  every one a plain `---`. The shape rumdl 0.2.74 fixed in MD065 was in none of
+  them. That shape, taken from the fix commit's own test, is a setext heading
+  inside a blockquote (`> Title` over `> ---`). The sentence after the block
+  said *"Exposure is how many files carry the shape"*, so a run taking the block
+  at its word would have reported 20 exposed files. Round twenty-two's report
+  treats any such file as making the follow-up urgent.
+- **The run caught it itself.** It narrowed the count by hand and handed the
+  narrowing back, classified `correct`. The finding sat in the *Gap it filled*
+  column, not in the classification: *"the documented regex matches every `---`
+  thematic break (20 files), so it overstates exposure for MD065"*.
+- **The scan is now labelled a superset:** its zero is conclusive and its count
+  is not. Phase 2 also gives the narrowing command for the quoted shape, measured
+  at 0 files on the same tree, exit 1.
+- **And `[ \t]` was wrong in its own right.** Inside a POSIX bracket expression,
+  `\t` is a backslash and a `t`. Measured on git 2.55.0: `[ \t]*` misses a
+  trailing tab and matches `---t` and `---\`. The block now uses `[[:blank:]]`.
+  A guard forbids `\t` inside a bracket in any `grep` in the skill's fenced shell
+  blocks; the only hit it has ever had is the line it replaced.
+
+### Fixed — `gate_diff.py` said "Three things" over four
+
+- 0.45.0 added a fourth reading of *"no run changed any file"* ("the gate scanned
+  nothing") and left the sentence introducing the list saying three. It is the
+  counted-list drift that `CONTRIBUTING.md` names and that Phase 2's scope table
+  is already guarded against, this time in a script's output. The count is now
+  tested against the items it counts.
+
+### Verification
+
+| | |
+|---|---|
+| offline suite | 629 tests (622 at 0.45.0) |
+| live integration | 39 tests, none skipped |
+| gates | ruff, ruff-format, mypy, unittest |
+| mutation checks | 9. Each was confirmed to have landed, and each was caught by the test written for it: `EXPECTED` into `PASSING` and into `FAILING`; each of the three `uv run python -V` sites; the tab in the bracket; the superset sentence; the narrowing command; the note's count |
+| replay | round twenty-three, #437 against this branch via `--plugin-dir`: 41 turns, $5.63, 0 permission denials. It ran the `[[:blank:]]` superset scan and the quoted scan as written, and read the first as candidates (*"narrowing the superset scan"*). It recorded the interpreter with `.venv/bin/python -V`, and `audit.py` printed the new advice. `gate_diff.py` printed "Four things" |
+| triage list | 31 hits, identical to 0.45.0's; none new |
+
+Round twenty-three found no defect in these fixes, and its two hand-backs are
+filed rather than folded in, because each changes a phase's method and needs its
+own replay: **#136** (the reproducer runs every default rule, and MD003 hid a
+real MD026 bug) and **#137** (three rounds re-derived Phase 5's `--group` design).
+
 ## [0.45.0] — 2026-09-19
 
 **Round twenty-one of the replay gate, and what it found — including a false
@@ -5279,7 +5406,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.45.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.46.0...HEAD
+[0.46.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.42.0...v0.43.0

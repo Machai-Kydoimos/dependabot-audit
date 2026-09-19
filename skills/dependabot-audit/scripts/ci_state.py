@@ -53,7 +53,14 @@ FAILING = frozenset({"FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE", "ER
 # Not failures. NEUTRAL and SKIPPED are the normal result of a security scan on a
 # diff that does not touch the scanned surface — treating them as red makes the
 # row noise on most bumps, which trains the reader to skip the row that matters.
-PASSING = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED", "EXPECTED"})
+#
+# `EXPECTED` is deliberately in neither set, so it reads as not settled. It is a
+# StatusState — a status nothing has reported yet — and `gh` buckets it pending.
+# It sat in this set from 0.14.0 to 0.45.0 with no reason given, which would have
+# printed a required status that never reported as `OK` and left it out of the
+# not-settled line (#135). Anything outside both sets lands in `unsettled`: the
+# safe reading of a value this script has no rule for.
+PASSING = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 
 # `mergeStateStatus`, classified **exhaustively**. The enum is closed — eight
 # values, introspected — and both sets are written out so that anything else is

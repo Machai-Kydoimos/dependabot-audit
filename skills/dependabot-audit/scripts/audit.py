@@ -1044,9 +1044,10 @@ def render(report: dict[str, Any]) -> None:
         print("      uv splits a package across blocks under different resolution-markers.")
         print("      A frozen install materialises only the resolution matching the")
         print("      interpreter and platform present — which need not be the highest")
-        print("      pin. Name the one Phase 5 exercised (`uv run python -V` inside the")
-        print("      synced environment) rather than reporting the install as though it")
-        print("      covered every fork, and do not report an unaudited pin as verified.\n")
+        print("      pin. Name the one Phase 5 exercised (`.venv/bin/python -V` in its")
+        print("      worktree; `uv run` would sync first, running the build backend)")
+        print("      rather than reporting the install as though it covered every fork,")
+        print("      and do not report an unaudited pin as verified.\n")
 
     for att in report.get("attestations", []):
         if not att["artifacts"]:

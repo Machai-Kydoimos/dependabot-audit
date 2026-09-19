@@ -1125,7 +1125,7 @@ as true of every one:
 | Qualifier | Why the bare row overstates it |
 |---|---|
 | **which install** | the script-suppressing flags are the documented default and they weaken the proof: a package that genuinely needs its install script is not exercised. Re-running without them is a legitimate choice — say which produced the row |
-| **which interpreter** | the install materialised one fork of a forked lockfile. `uv run python -V`, not the auditor's `python3` |
+| **which interpreter** | the install materialised one fork of a forked lockfile. `.venv/bin/python -V` from the block above — not the auditor's `python3`, and not `uv run`, which syncs first |
 | **which forks were only verified, and which were not checked at all** | of the forks Phase 1 audited it checked every pin and Phase 5 installed one; the lockfile's other forks got neither. Name both sets rather than letting the install stand for them |
 | **which groups** | the sync installs the default groups, and a bump outside them is absent with nothing to show for it. Reconcile against the set Phase 1 named, above |
 

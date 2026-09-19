@@ -969,6 +969,48 @@ class TestNeutralResultsAreNotFailures(CiStateHarness):
         self.assertNotIn("not settled", out)
 
 
+class TestAnExpectedStatusIsNotAPass(CiStateHarness):
+    """`EXPECTED` is a StatusState: a status nothing has reported yet (#135).
+
+    From 0.14.0 to 0.45.0 it sat in `PASSING` with no reason given, where `gh`
+    itself buckets it pending. Read as a pass, a required status that never
+    reported printed `OK` beside the green ones and stayed out of the not-settled
+    line — the one row that tells a reader something is still outstanding.
+
+    No measurement has yet seen GitHub return it in a rollup: an unreported
+    requirement under a ruleset gets no row at all. So this pins the reading, not
+    a reproduction, and the fixture is the shape GitHub would have to send.
+    """
+
+    def _expected(self):
+        fake, _ = self._fake_gh([
+            page([check_run("test", "SUCCESS", required=True),
+                  status_context("docs/readthedocs.org:proj", "EXPECTED", required=True)])
+        ])  # fmt: skip
+        return fake
+
+    def test_an_expected_status_is_not_settled(self):
+        report = self._json(self._expected())
+        self.assertEqual(
+            [c["name"] for c in report["unsettled"]],
+            ["docs/readthedocs.org:proj"],
+            "a status nothing has reported is outstanding, not concluded",
+        )
+        _, out, _ = self._run(self._expected())
+        self.assertIn("1 context(s) not settled: docs/readthedocs.org:proj", out)
+
+    def test_an_expected_required_status_does_not_print_ok(self):
+        _, out, _ = self._run(self._expected())
+        self.assertNotIn("OK  required  docs/readthedocs.org:proj", out)
+        self.assertIn("OK  required  test  SUCCESS", out, "the control row must still pass")
+
+    def test_an_expected_status_is_not_red_either(self):
+        """Not a pass, and not a failure: nothing has run that could fail."""
+        report = self._json(self._expected())
+        self.assertEqual(report["red"], [])
+        self.assertEqual(report["required_red"], [])
+
+
 class TestTheRollupBelongsToTheCommitUnderAudit(CiStateHarness):
     def test_a_rollup_for_another_commit_is_flagged(self):
         """Bots rebase. A rollup for the new head, read into a report whose other

@@ -17,6 +17,7 @@ import contextlib
 import io
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -264,6 +265,29 @@ class TestTheGateSaysHowMuchItLookedAt(GateDiffHarness):
         self.assertIn("4. the gate scanned nothing", note)
         self.assertIn("All checks passed!", note, "the measured case where `said:` is not enough")
         self.assertIn("--show-files", note)
+
+    def test_the_note_counts_its_own_items(self):
+        """0.45.0 added item 4 and left the sentence above it saying "Three".
+
+        A counted list goes stale the moment a row is added, and the sentence
+        keeps reading as complete — the trap CONTRIBUTING names, and the one
+        Phase 2's scope table is already guarded against. This is the same guard
+        on a script's output. Found replaying `fpga-board-sim` #437 (round
+        twenty-two), where the note printed "Three things" over four.
+        """
+        tree = git_repo(self)
+        _, out, _ = self._run(tree, [("locked", "true"), ("proposed", "true")])
+        note = out.split("NOTE:", 1)[1].split("RESULT:", 1)[0]
+        said = re.search(r"\b(Two|Three|Four|Five|Six) things look like this", note)
+        self.assertIsNotNone(said, "the note no longer says how many things look like this")
+        assert said is not None
+        words = {"Two": 2, "Three": 3, "Four": 4, "Five": 5, "Six": 6}
+        items = re.findall(r"(?m)^\s+\d\. ", note)
+        self.assertEqual(
+            words[said.group(1)],
+            len(items),
+            f"the note says {said.group(1)} things and lists {len(items)}",
+        )
 
 
 class TestNothingTouched(GateDiffHarness):

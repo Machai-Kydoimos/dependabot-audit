@@ -252,6 +252,12 @@ module was edited and the test imported the previously compiled one. A
 verification method that silently checks the wrong artifact is this repo's own
 theme one level up — and it fails in the reassuring direction, because an
 uncaught mutation reads as "this test is weak" rather than "this run was a lie".
+It is intermittent, which is why it recurs: the cached bytecode is keyed on the
+source's size and its mtime in whole seconds, so it goes stale only when an edit
+keeps the size and lands in the same second. Two mutants of one constant are
+exactly that. In 0.46.0, `"EXPECTED"` added to `FAILING` after it had been added
+to `PASSING` (same length, same second) ran the `PASSING` mutant's bytecode, and
+the one test aimed at the `FAILING` direction read as not discriminating.
 
 **Write the check from the evidence, not from the change.** A test or a caveat
 derived from the fix it guards can only ever confirm it, errors included — it is

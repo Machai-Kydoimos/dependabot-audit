@@ -1547,7 +1547,12 @@ wheels = [
         )
         self.assertIn("one pin installed", out)
         self.assertIn("artifacts verified against the registry", out)
-        self.assertIn("uv run python -V", out, "the interpreter is the thing to record")
+        self.assertIn(".venv/bin/python -V", out, "the interpreter is the thing to record")
+        self.assertNotIn(
+            "uv run python -V",
+            out,
+            "`uv run` syncs before it answers -- advice that builds the environment it asks about",
+        )
 
     def test_an_unforked_lockfile_says_nothing_about_forks(self):
         """The row would be noise on most lockfiles, and noise trains the reader

@@ -815,8 +815,8 @@ correctly and reaches *this* reader, who reads the raw file, as a backslash that
 breaks the regex:
 
 ```bash
-git grep -lE '^(=+|-{2,})[ \t]*$' -- '*.md'; echo "shape scan exit: $?"
-git ls-files '*.rs';                         echo "type scan exit: $?"
+git grep -lE '^(=+|-{2,})[[:blank:]]*$' -- '*.md'; echo "shape scan exit: $?"
+git ls-files '*.rs';                                echo "type scan exit: $?"
 ```
 
 **Read the exit code, and do not pipe these into `wc`.** `git grep` exits `1` on
@@ -824,6 +824,22 @@ no match and `128` when it could not run, and both print nothing — so
 `git grep … | wc -l` reports `0` at exit 0 either way, turning "could not run"
 into `inert here`, which is the failure this whole row exists to prevent. `1` is
 a real zero; `128` is `underivable`.
+
+**The shape scan is a superset: its zero is conclusive, and its count is not.**
+It matches every setext underline and every `---` thematic break, and it reads
+neither the line above nor a `>` prefix. On `fpga-board-sim` #437 it listed 20
+files — 187 lines, every one a plain `---` — while the shape rumdl 0.2.74 fixed
+in MD065, a setext heading inside a blockquote (`> Title` over `> ---`), was in
+none of them. Narrow to the shape before quoting a number. For a quoted
+underline:
+
+```bash
+git grep -lE '^[[:blank:]]*>[[:blank:]>]*(=+|-{2,})[[:blank:]]*$' -- '*.md'; echo "quoted scan exit: $?"
+```
+
+Write `[[:blank:]]`, not `[ \t]`: inside a POSIX bracket expression `\t` is a
+backslash and a `t`, so `[ \t]*` misses a trailing tab and matches `---t` —
+measured on git 2.55.0, and shipped in this block until 0.46.0.
 
 Exposure is how many files carry the shape, and **zero is a finding like any
 other** — the same `inert here` the first two rows earn by running something,
@@ -956,9 +972,10 @@ verified but not installed. "Frozen install passed under `--no-build
 passed", because it is one a reader can falsify. A bump into a group the sync
 does not install is absent from the environment with nothing to show for it —
 the reference has the measurement and the reconciliation that catches it.
-`uv run python -V` from inside the synced environment is where the interpreter
-comes from — not the auditor's own `python3` — and `resolution-markers` is why
-the two can differ.
+`.venv/bin/python -V` in the synced worktree is where the interpreter comes
+from — not the auditor's own `python3`, and not `uv run`, which syncs before it
+answers and so runs the build backend — and `resolution-markers` is why the two
+can differ.
 
 Gate on exit codes. `cmd | tail && next` gates on `tail`, so a failing suite sails
 through; use `set -o pipefail` or separate calls.
