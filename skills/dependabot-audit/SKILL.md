@@ -1455,6 +1455,20 @@ today*. That turns the question into one about the entry's kind:
 | a **new or changed behaviour** — a new default, a widened scope, a new rule | only at or above that release, so the **proposal** gains it and the current pin never had it | the bump moves **into** it — **Hold** |
 | unclear which | **underivable**, per Phase 0 — say so, and do not let the Hold row take it by default |  |
 
+**A fix released *after* the proposal is the one case the table cannot derive.**
+Everything above is about the adopted range. When the gap between the proposal
+and the true latest carries a fix — round twenty-one hit three, rumdl `--fix`
+bugs fixed in 0.2.74 against a proposal of 0.2.72 — *"fixed in 0.2.74"* says
+where the bug ends and not where it began, and where it began is the Hold
+question. Two routes, cheapest first: the fix's own text often names the
+release that regressed, which settles it against the pin with nothing run; and
+otherwise the ecosystem's Phase 4 runs the fix's reproducer at the current,
+proposed and fixed versions (`references/uv-lock.md` § Phase 4). **Where Phase 4
+did not run** — `--no-execute`, `$MAY_EXECUTE=no`, or an ecosystem that cannot
+run the tool — the answer is **underivable**, and it takes neither the Hold row
+nor the follow-up row by default. It is not decided here, because deciding it
+means running the code under audit, and this phase runs under `--no-execute`.
+
 Where an advisory exists the answer is stronger and mechanical: run `audit.py`
 against the **base branch's** lockfile as well as the PR's, and compare the two
 vulnerability sets. A finding present in the PR's and absent from the base's is

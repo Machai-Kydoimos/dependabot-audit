@@ -309,17 +309,81 @@ def check_attestations(
         "unattested": len(artifacts) - len(attested),
         "previous": None,
         "changed": False,
+        "dropped": False,
+        "previous_unattested": False,
+        "previous_version": previous,
     }
-    if not previous or not attested:
+    if not previous:
         return result
 
+    # The predecessor is read whether or not this release is attested. Until
+    # 0.45.0 an unattested release returned here without looking, so a project
+    # that attested its last release and not this one printed "none -- normal":
+    # the one attestation change that looks like a stolen upload token, read as
+    # the ordinary case. Round twenty-one of the replay gate flagged the gap.
     releases = files_by_version(project)
-    for record in releases.get(previous, []):
-        before = publisher_of(record, cache)
-        if before:
-            result["previous"] = {"version": previous, "publisher": before}
+    before = next(
+        (b for b in (publisher_of(r, cache) for r in releases.get(previous, [])) if b), None
+    )
+    if before:
+        result["previous"] = {"version": previous, "publisher": before}
+        if attested:
             result["changed"] = any(_publisher_id(before) != _publisher_id(p) for p in attested)
-            break
+        else:
+            result["dropped"] = True
+    elif releases.get(previous):
+        result["previous_unattested"] = True
+    return result
+
+
+def check_artifact_set(
+    entry: dict[str, Any], project: dict[str, Any], *, previous: str = ""
+) -> dict[str, Any]:
+    """What the previous release published that this one does not.
+
+    **A loss between releases reads as nothing unless something compares them.**
+    `rumdl` 0.2.72 is the only release from 0.2.67 to 0.2.74 published with no
+    sdist -- measured 2026-09-19, the rest carry one sdist and seven wheels -- so
+    a lockfile moving onto it silently loses the build-from-source fallback for
+    any platform without a wheel. Every hash matched and every check passed,
+    because each looks at one release at a time. Round twenty-one found it by
+    hand.
+
+    Compares what PyPI *published* for the two versions, not what either lockfile
+    pinned: the question is whether the project stopped shipping something, and
+    a lockfile's own environment markers would confuse that with a change in this
+    repo. A wheel is named by its `python-abi-platform` tag, so a raised
+    `manylinux` floor shows up as the old tag no longer published -- which is
+    true, and is exactly the systems that lose a wheel.
+
+    Reported, not a verdict: a dropped sdist is a portability change rather than
+    a compromise, and it does not make the audit unclean on its own.
+    """
+    result: dict[str, Any] = {
+        "name": entry["name"],
+        "version": entry["version"],
+        "previous": previous,
+        "sdist_dropped": False,
+        "wheels_dropped": [],
+    }
+    if not previous:
+        return result
+    releases = files_by_version(project)
+    before, now = releases.get(previous, []), releases.get(entry["version"], [])
+    if not before or not now:
+        return result
+
+    def kinds(files: list[dict[str, Any]]) -> tuple[bool, set[str]]:
+        # `name-version[-build]-python-abi-platform.whl`: the tag triple is the
+        # last three fields whether or not a build tag is present.
+        wheels = [f["filename"][: -len(".whl")] for f in files if f["filename"].endswith(".whl")]
+        sdist = len(wheels) < len(files)
+        return sdist, {"-".join(stem.split("-")[-3:]) for stem in wheels}
+
+    had_sdist, had_tags = kinds(before)
+    has_sdist, has_tags = kinds(now)
+    result["sdist_dropped"] = had_sdist and not has_sdist
+    result["wheels_dropped"] = sorted(had_tags - has_tags)
     return result
 
 
@@ -329,6 +393,11 @@ def _publisher_id(publisher: dict[str, Any]) -> tuple[str, str, str]:
         str(publisher.get("repository", "")),
         str(publisher.get("workflow", "")),
     )
+
+
+def was_version(att: dict[str, Any]) -> str:
+    """The predecessor an attestation result was compared against."""
+    return str(att.get("previous_version") or "the previous release")
 
 
 def format_publisher(publisher: dict[str, Any]) -> str:
@@ -983,6 +1052,15 @@ def render(report: dict[str, Any]) -> None:
         if not att["artifacts"]:
             continue
         head = f"=== {att['name']} {att['version']}: build provenance"
+        if att.get("dropped"):
+            before = format_publisher(att["previous"]["publisher"])
+            print(f"{head}  <-- ATTESTATION DROPPED")
+            print(f"      {att['previous']['version']} was built by {before}")
+            print(f"      {att['version']} carries no attestation at all")
+            print("      The project attested its last release and not this one. That")
+            print("      is what an upload from outside its CI looks like -- a stolen")
+            print("      token, a manual publish -- and it is worth explaining first.\n")
+            continue
         if att["changed"]:
             before = format_publisher(att["previous"]["publisher"])
             now = format_publisher(next(a["publisher"] for a in att["artifacts"] if a["publisher"]))
@@ -1002,8 +1080,29 @@ def render(report: dict[str, Any]) -> None:
                 print(f"      {att['unattested']} of {len(att['artifacts'])} artifacts unattested")
             print("      PyPI's summary of a PEP 740 attestation, not an independent")
             print("      signature check — stronger than a hash echo, not proof.\n")
+        elif att.get("previous_unattested"):
+            print(f"{head}\n      none, and none on {was_version(att)} either --")
+            print("      this project does not attest its releases, so there is no")
+            print("      change here to report\n")
         else:
-            print(f"{head}\n      none — normal for a release predating Trusted Publishing\n")
+            print(f"{head}\n      none -- PyPI carries no attestation for these artifacts")
+            print("      (no predecessor was compared, so whether that is new is unknown)\n")
+
+    for art in report.get("artifact_sets", []):
+        lost = (["the sdist"] if art["sdist_dropped"] else []) + art["wheels_dropped"]
+        if not lost:
+            continue
+        print(
+            f"=== {art['name']} {art['version']}: artifacts {art['previous']} "
+            "published and this does not"
+        )
+        for item in lost:
+            print(f"      {item}")
+        if art["sdist_dropped"]:
+            print("      With no sdist, a platform that has no wheel has no install at all")
+            print("      from this release -- not a slower one. Reported, not a verdict.\n")
+        else:
+            print("      Systems matching these tags lose a wheel. Reported, not a verdict.\n")
 
     vulns = report["vulns"]
     if vulns["hits"]:
@@ -1133,6 +1232,7 @@ def main() -> int:
         "provenance": [],
         "currency": [],
         "attestations": [],
+        "artifact_sets": [],
         "skipped": skipped,
     }
     # Fork structure comes from the whole lockfile, not just the selected set: a
@@ -1184,16 +1284,13 @@ def main() -> int:
             pinned, newest = fork_context(entry, pins)
             report["provenance"].append(check_provenance(entry, project))
             report["currency"].append(check_currency(entry, project, pinned=pinned, newest=newest))
+            # A forked package's `was` names every base version at once; only
+            # compare against a predecessor when it is unambiguous.
+            previous = was.get(key, "") if "," not in was.get(key, "") else ""
             report["attestations"].append(
-                check_attestations(
-                    entry,
-                    project,
-                    # A forked package's `was` names every base version at once;
-                    # only compare when it is unambiguous.
-                    previous=was.get(key, "") if "," not in was.get(key, "") else "",
-                    cache=publisher_cache,
-                )
+                check_attestations(entry, project, previous=previous, cache=publisher_cache)
             )
+            report["artifact_sets"].append(check_artifact_set(entry, project, previous=previous))
         except ValueError as exc:
             # A version this script cannot order is one whose currency it cannot
             # judge. Refusing is the contract; sorting it to the bottom quietly is
@@ -1209,10 +1306,11 @@ def main() -> int:
     report["clean"] = (
         all(p["ok"] for p in report["provenance"])
         and all(c["current"] or c["held_back"] for c in report["currency"])
-        # A publisher that moved between two attested releases is a finding. A
-        # *missing* attestation is not — it is normal for anything predating
-        # Trusted Publishing, and flagging it would make the row noise.
-        and not any(a["changed"] for a in report["attestations"])
+        # A publisher that moved between two attested releases is a finding, and
+        # so is one that *disappeared* -- the previous release attested, this one
+        # does not. An attestation that was never there is not: most of PyPI has
+        # none, and flagging it would make the row noise.
+        and not any(a["changed"] or a.get("dropped") for a in report["attestations"])
         and not report["vulns"]["hits"]
     )
 

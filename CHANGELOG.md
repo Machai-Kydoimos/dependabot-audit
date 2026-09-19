@@ -11,6 +11,156 @@ patch.
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-09-19
+
+**Round twenty-one of the replay gate, and what it found — including a false
+claim 0.44.0 shipped.** `fpga-board-sim` #437 (the rumdl bump) replayed against
+0.44.0 via `--plugin-dir`: 44 turns, $5.90, `is_error: false`, **0 permission
+denials**, and a report that disclosed its own improvisation. Every hand-back row
+was verified against the code or the registry before anything was changed; all
+six held, and verifying them surfaced more than they named. Ships with #133.
+
+**Minor, not patch.** Phase 4, Phase 5 and Phase 7 change what they verify, and
+`audit.py` reports two new findings.
+
+### Fixed — 0.44.0's `EDITED` marker fired on asset uploads
+
+- **A false claim, from the check written to stop false claims.** `rumdl` v0.2.73
+  was published 17:36:49 and its fourteen assets uploaded at 19:07:29, one second
+  before `updated_at`. `changelog.py` printed *"EDITED … This is the current
+  text, not what went out with the tag"* about a body **byte-identical** to its
+  changelog section at the tag. That `updated_at` moves for asset uploads was
+  measured and written into 0.44.0's own changelog; the check was built as a bare
+  `updated > published` anyway.
+- **The discriminator was in the same response.** The latest asset's
+  `updated_at`: on the real rewrites (rumdl v0.2.61/.64/.65, hours to days on) the
+  release stamp sits the full gap past the last asset; on asset-only changes it
+  sits within a second. A release is now marked only when it changed after
+  publication **and** not within a minute of its last upload; one with no assets
+  is still marked, since nothing can explain it away. A missing asset list is
+  `unknown`, never clean. The evidence-file sentence now says the text *may* not
+  be what shipped, which is all the stamp can prove.
+- The replay's report did not mention the marker, and its cooldown timestamp
+  (19:07) came from PyPI's upload time — the correct field. So the false claim
+  misled nothing this time; the audit stepped over the noise. Measured, not assumed.
+
+### Fixed — rung 2 read three changelog shapes to nothing (#133)
+
+- **Setext headings.** `pre-commit/pre-commit` writes `4.6.2 - 2026-08-10` over a
+  rule of `=`. An ATX-only parser walked all 72,898 bytes and found no version —
+  on the `pre-commit` ecosystem's own repository. pytest's reStructuredText uses
+  the same `=`/`-` levels, so one rule covers both.
+- **Redirect stubs.** `pytest-dev/pytest`'s root `CHANGELOG.rst` is 230 bytes
+  pointing at the 500,693-byte `doc/en/changelog.rst`. A file with no version
+  headings is now a signpost: one same-repository hop, at the ref being read (not
+  the branch in the pointer's URL), named in the output. With nowhere to go it
+  says *"carries no version headings at all"*, never *"0 sections"*.
+- **Headings inside code fences — found while fixing the other two.**
+  `python/mypy` puts `# comment` lines in Python examples; read as level-1
+  headings they cut sections short. `## Mypy 2.0` came back as **34 of its 246
+  lines**; three of mypy's six latest sections were truncated. Masked in practice,
+  since mypy's `v2.2.0` tags never match its `## Mypy 2.2` headings, but live for
+  any project that heads versions at `##` and comments its examples.
+- **Finding the section is not reconciling against it, and the prose says so.**
+  The matcher compares wording, which fits generated changelogs. With pytest's
+  section read in full, 21 of 21 commits stay unreconciled; the fix puts 3,851
+  bytes of its changelog in the evidence file where there were none. On a
+  hand-written changelog the unreconciled count is a **ceiling**. PR-number
+  matching was measured as a follow-up and has a low ceiling on pytest (2 of 21)
+  because it cites issue numbers where its commits cite PRs.
+- Controls unchanged on real files: rumdl, ruff, uv, black, pydantic.
+
+### Fixed — a loss between releases read as nothing
+
+- **An attestation that disappears printed "none — normal".** `check_attestations`
+  returned before reading the predecessor whenever the current release was
+  unattested, so a project that attested its last release and not this one — the
+  shape of an upload from outside its CI — was reported as the ordinary case. It
+  now reads the predecessor either way; a drop prints `ATTESTATION DROPPED` and
+  makes the audit unclean.
+- **And the message asserted a cause nobody checked**: *"normal for a release
+  predating Trusted Publishing"*, printed for September 2026 releases. It now says
+  what was measured — *"none, and none on 0.2.72 either"*, or that no predecessor
+  was compared.
+- **A dropped sdist went unnoticed.** rumdl 0.2.72 is the only release from 0.2.67
+  to 0.2.74 with no sdist; every per-release check passed. `check_artifact_set`
+  compares what PyPI published for the two versions — the sdist and each wheel's
+  `python-abi-platform` tag — reported, not a verdict.
+- **The publisher-change verdict had never been tested end to end.** Deleting it
+  from the `clean` computation left every test green. Both it and the drop are now
+  driven through `main()`, with controls for never-attested and same-publisher.
+
+### Fixed — the execution gate had no test, and three blocks lacked it
+
+- **Deleting `$MAY_EXECUTE` from any one of the six gated blocks in `uv-lock.md`
+  left every prose test green.** The plugin's first safety control — *"This audit
+  executes the code it audits"* — was untested per block. A new guard requires the
+  gate on every block in Phases 4 and 5 that runs code, with a floor on how many
+  it checked, and forbids execution in the phases `--no-execute` keeps. Prototyped
+  first, per #127: nine hits, all genuine, two defects; one widening then found a
+  third and three false positives, and was narrowed on that count.
+- **Three Phase 5 blocks ran code ungated.** `uv run python -V` syncs before it
+  runs — installing the project editable, which runs its build backend. A floor
+  `uv sync`. And the group reconciliation's `uv pip list`.
+- **Each "inspection" had its own silent failure, measured on uv 0.12.17.**
+  `uv run --no-sync` builds an empty `.venv` and reports its Python. A bare
+  `uv pip list` with no `.venv` exits 0 listing **uv's own managed Python**. The
+  blocks now read `.venv/bin/python -V` (exit 127 with no environment) and
+  `uv pip list --python .venv/bin/python` (exit 2), capture before filtering, and
+  carry the gate.
+- **And the package list runs code.** With a `.pth` file planted in the
+  environment, `python -V` does not execute it — the version prints before `site`
+  initialises — but `uv pip list --python …` and any `python -c` do. A `.pth` file
+  is an ordinary way for a package to run code at interpreter start; after Phase 5
+  syncs, every package came from the PR's lockfile. That is why the block is gated
+  and why the guard counts `uv pip` as execution.
+- Phase 2's one tool run under `--no-execute` — the **locked** tool, with
+  `--no-project` — is a registered exception, narrowly: re-measured on 0.12.17
+  that `--no-project` keeps a probe project's `setup.py` from running.
+
+### Fixed — a fix released after the proposal
+
+- **Phase 7's table cannot derive it, and now says so.** *"Fixed in 0.2.74"* says
+  where a bug ends, not where it began; where it began is the Hold question.
+  Rounds twenty and twenty-one audited the same PR and improvised **two different
+  methods** for it — the second running the proposed version with no gate.
+- **The method lives in Phase 4, not in Phase 7 where the replay proposed it.**
+  `--no-execute` defines a run as Phases 0–3 and 6–7 without ever reaching
+  `$MAY_EXECUTE`, so an execution block in Phase 7 would run under the flag that
+  forbids it. Phase 7 asks; checks first whether the fix names its regressing
+  release (pre-commit writes *"Regressed in 4.6.1"*); otherwise points at Phase 4's
+  gated reproducer at the current, proposed and fixed versions; and where Phase 4
+  did not run, calls it **underivable** — neither Hold nor follow-up by default.
+- The reproducer reads the three `exit:` lines first: a run that failed leaves its
+  file as the input, which reads as a version that changed nothing.
+
+### Fixed — "touched 0" could mean "scanned nothing"
+
+- `gate_diff.py` captured every run's output and printed none of it. Each run now
+  shows the tool's last line as `said:`, and the all-zero note has a **fourth
+  cause**. Measured: `rumdl` ends *"No issues found in 41 files"* (and *"No
+  markdown files found"* on an empty tree); `ruff format` ends *"255 files left
+  unchanged"*; **`ruff check --fix` ends *"All checks passed!"* at exit 0 whether
+  it checked 214 files or none**, so for it the note names `--show-files`.
+
+### Fixed — `claude plugin eval` was described as unavailable
+
+- It opened on 2026-09-16 (2.1.273). README and CONTRIBUTING said otherwise for
+  three days. Both now carry the lesson that survived the change: an empty suite
+  fails exactly as the early-access refusal did — exit 1, empty stdout, reason on
+  stderr — so a CI step keyed on exit status cannot tell *blocked* from *no cases
+  yet*.
+
+### Verification
+
+- 622 offline tests (561 at 0.44.0), 39 live integration tests, all four gates.
+- **Mutation-checked throughout; every survivor became a test or a fix.** Among
+  them: a test helper that swallowed `KeyError`, so a "phrase is absent" assertion
+  could pass on empty output; and a guard on the bare word *setext* that survived
+  deleting the claim, because the word appears in two unrelated rumdl fix subjects.
+- `tools/triage_unsupplied.py`, read in full per CONTRIBUTING: 31 hits, 2 new,
+  both instructions to read output a supplied command just produced.
+
 ## [0.44.0] — 2026-09-17
 
 **A release body is not immutable, and reading `.body` cannot tell you it
@@ -5129,7 +5279,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.44.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.45.0...HEAD
+[0.45.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.44.0...v0.45.0
 [0.44.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.43.0...v0.44.0
 [0.43.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.42.0...v0.43.0
 [0.42.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.41.0...v0.42.0

@@ -24,7 +24,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(
@@ -37,6 +37,7 @@ from audit import (
     _is_prerelease,
     _normalize,
     _version_key,
+    check_artifact_set,
     check_attestations,
     check_currency,
     check_provenance,
@@ -49,6 +50,7 @@ from audit import (
     load_lock,
     main,
     pypi_sourced,
+    render,
     select_targets,
 )
 
@@ -767,6 +769,148 @@ class TestAttestations(unittest.TestCase):
         self.assertIsNone(result["previous"])
 
 
+class TestALossBetweenReleasesIsReported(TestAttestations):
+    """Round twenty-one of the replay gate, 2026-09-19. Two losses read as nothing.
+
+    Every check here looked at one release at a time, so something the previous
+    release had and this one lacks could only be found by comparing them -- and
+    nothing did. An attestation that disappears and an sdist that disappears
+    both passed every row.
+    """
+
+    def _render(self, report_part: dict[str, Any]) -> str:
+        """The whole of `render()`, not a slice: an exception here fails the test
+        rather than returning whatever printed before it, because a test asserting
+        a phrase is *absent* passes on empty output."""
+        report = {
+            "lock": "uv.lock",
+            "provenance": [],
+            "currency": [],
+            "skipped": [],
+            "forks": [],
+            "selection": [],
+            "attestations": report_part.get("attestations", []),
+            "artifact_sets": report_part.get("artifact_sets", []),
+            "vulns": {"hits": [], "queried": 0, "errors": []},
+            "clean": True,
+        }
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            render(report)
+        text = out.getvalue()
+        self.assertIn("build provenance", text, "render() never reached the attestation rows")
+        return text
+
+    def test_an_attestation_that_disappears_is_a_finding(self):
+        """The previous release named the project's CI; this one names nobody.
+        That is the shape of an upload from outside the pipeline, and until
+        0.45.0 it printed "none -- normal"."""
+        result = self._check(*self._project(previous_publisher=PUBLISHER), previous="1.0")
+        self.assertTrue(result["dropped"])
+        self.assertFalse(result["changed"], "a drop is its own finding, not a publisher change")
+        self.assertEqual(result["previous"]["publisher"], PUBLISHER)
+
+    def test_the_drop_is_rendered_as_one(self):
+        result = self._check(*self._project(previous_publisher=PUBLISHER), previous="1.0")
+        out = self._render({"attestations": [result]})
+        self.assertIn("ATTESTATION DROPPED", out)
+        self.assertIn("1.0 was built by GitHub python-attrs/attrs", out)
+
+    def test_a_project_that_never_attests_says_so_and_names_the_release_compared(self):
+        """Stay quiet about the ordinary case -- but say what was measured, not a
+        reason nobody checked."""
+        result = self._check(*self._project(), previous="1.0")
+        self.assertTrue(result["previous_unattested"])
+        self.assertFalse(result["dropped"])
+        out = self._render({"attestations": [result]})
+        self.assertIn("none on 1.0 either", out)
+
+    def test_the_unmeasured_explanation_is_gone(self):
+        """0.44.0 printed "normal for a release predating Trusted Publishing" for
+        rumdl and ruff releases from September 2026. It never checked a date; it
+        asserted a cause."""
+        for result in (
+            self._check(*self._project(), previous="1.0"),
+            self._check(*self._project()),
+        ):
+            self.assertNotIn(
+                "predating Trusted Publishing", self._render({"attestations": [result]})
+            )
+
+    def test_with_no_predecessor_the_output_says_the_question_was_not_asked(self):
+        out = self._render({"attestations": [self._check(*self._project())]})
+        self.assertIn("no predecessor was compared", out)
+
+
+class TestAnArtifactThatStopsBeingPublishedIsReported(unittest.TestCase):
+    """rumdl 0.2.72 is the only release from 0.2.67 to 0.2.74 with no sdist."""
+
+    WHEELS = ("py3-none-manylinux_2_28_x86_64", "py3-none-win_amd64", "py3-none-macosx_11_0_arm64")
+
+    def _project(
+        self,
+        *,
+        before_sdist: bool = True,
+        now_sdist: bool = True,
+        now_wheels: tuple[str, ...] = WHEELS,
+    ) -> dict[str, Any]:
+        def files(version: str, sdist: bool, tags: tuple[str, ...]) -> list[dict[str, Any]]:
+            out = [pypi_file(f"rumdl-{version}-{tag}.whl") for tag in tags]
+            if sdist:
+                out.append(pypi_file(f"rumdl-{version}.tar.gz"))
+            return out
+
+        meta: dict[str, Any] = pypi_meta(
+            "0.2.72",
+            [],
+            releases={
+                "0.2.67": files("0.2.67", before_sdist, self.WHEELS),
+                "0.2.72": files("0.2.72", now_sdist, now_wheels),
+            },
+        )
+        return meta
+
+    def _check(self, project: dict[str, Any], previous: str = "0.2.67") -> dict[str, Any]:
+        return check_artifact_set(
+            {"name": "rumdl", "version": "0.2.72"}, project, previous=previous
+        )
+
+    def test_a_dropped_sdist_is_reported(self):
+        result = self._check(self._project(now_sdist=False))
+        self.assertTrue(result["sdist_dropped"])
+        self.assertEqual(result["wheels_dropped"], [])
+
+    def test_a_dropped_platform_is_named_by_its_tag(self):
+        result = self._check(self._project(now_wheels=self.WHEELS[:2]))
+        self.assertEqual(result["wheels_dropped"], ["py3-none-macosx_11_0_arm64"])
+
+    def test_a_gain_is_not_a_loss(self):
+        """0.2.72 -> 0.2.74 brought the sdist back. That is not a finding."""
+        result = self._check(self._project(before_sdist=False, now_sdist=True))
+        self.assertFalse(result["sdist_dropped"])
+
+    def test_the_same_set_is_quiet(self):
+        result = self._check(self._project())
+        self.assertFalse(result["sdist_dropped"])
+        self.assertEqual(result["wheels_dropped"], [])
+
+    def test_a_build_tag_does_not_shift_the_platform(self):
+        """`name-version-BUILD-python-abi-platform.whl`: the triple is the last
+        three fields, so a build tag must not change what gets compared."""
+        project = self._project()
+        project["files"] = [
+            f
+            if not f["filename"].startswith("rumdl-0.2.72-py3-none-win")
+            else pypi_file("rumdl-0.2.72-1-py3-none-win_amd64.whl")
+            for f in project["files"]
+        ]
+        self.assertEqual(self._check(project)["wheels_dropped"], [])
+
+    def test_no_predecessor_compares_nothing(self):
+        result = self._check(self._project(now_sdist=False), previous="")
+        self.assertFalse(result["sdist_dropped"])
+
+
 FORK_PINS = {"rpds-py": ["0.30.0", "2026.6.3"], "rumdl": ["0.2.53"]}
 SPLIT = FORK_PINS["rpds-py"]
 
@@ -845,6 +989,97 @@ source = {{ editable = "." }}
 
     def _meta(self):
         return pypi_meta("0.2.53", [pypi_file("rumdl-0.2.53-py3-none-any.whl")])
+
+
+class TestAnAttestationChangeReachesTheVerdict(_MainHarness):
+    """The field is not the finding; the exit status is.
+
+    Mutation-checked 2026-09-19: deleting the dropped-attestation term from the
+    `clean` computation left every test green, and so did deleting the
+    publisher-change term -- a finding the docstrings had called one since
+    attestations were added, never once driven through `main()`.
+    """
+
+    INTEGRITY = "https://pypi.org/integrity/rumdl/{v}/x"
+
+    def _meta_with(self, publishers: dict[str, dict[str, str] | None]) -> dict[str, Any]:
+        releases = {}
+        for version, publisher in publishers.items():
+            record = pypi_file(f"rumdl-{version}-py3-none-any.whl")
+            if publisher is not None:
+                record["provenance"] = self.INTEGRITY.format(v=version)
+            releases[version] = [record]
+        meta: dict[str, Any] = pypi_meta("0.2.53", [], releases=releases)
+        return meta
+
+    def _run_attested(
+        self, publishers: dict[str, dict[str, str] | None]
+    ) -> tuple[int | str | None, str]:
+        base = write_lock(self, self.LOCK.replace('version = "0.2.53"', 'version = "0.2.52"', 1))
+        pr = write_lock(self, self.LOCK)
+        meta = self._meta_with(publishers)
+        bundles = {self.INTEGRITY.format(v=v): p for v, p in publishers.items() if p is not None}
+
+        def fake_get_json(url, payload=None, accept=None):
+            if "osv.dev" in url:
+                return {"results": [{} for _ in json.loads(payload)["queries"]]}
+            if url in bundles:
+                return {"attestation_bundles": [{"publisher": bundles[url]}]}
+            return meta
+
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch("audit._get_json", fake_get_json),
+            mock.patch.object(sys, "argv", ["audit.py", pr, "--changed-vs", base]),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            try:
+                code: int | str | None = main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, out.getvalue()
+
+    def test_a_dropped_attestation_makes_the_audit_unclean(self):
+        code, out = self._run_attested({"0.2.52": PUBLISHER, "0.2.53": None})
+        self.assertIn("ATTESTATION DROPPED", out)
+        self.assertEqual(code, 1, "a dropped attestation is a finding, and findings exit 1")
+
+    def test_a_changed_publisher_makes_the_audit_unclean(self):
+        code, out = self._run_attested({"0.2.52": PUBLISHER, "0.2.53": OTHER_PUBLISHER})
+        self.assertIn("PUBLISHER CHANGED", out)
+        self.assertEqual(code, 1)
+
+    def test_a_project_that_never_attests_stays_clean(self):
+        """The control: absence throughout is the ordinary case and must not
+        turn every unattested lockfile red."""
+        code, out = self._run_attested({"0.2.52": None, "0.2.53": None})
+        self.assertIn("none on 0.2.52 either", out)
+        self.assertEqual(code, 0)
+
+    def test_the_same_publisher_stays_clean(self):
+        code, _ = self._run_attested({"0.2.52": PUBLISHER, "0.2.53": PUBLISHER})
+        self.assertEqual(code, 0)
+
+    def test_a_dropped_sdist_is_printed_and_does_not_change_the_verdict(self):
+        """Reported, not a verdict: a portability change, not a compromise."""
+        base = write_lock(self, self.LOCK.replace('version = "0.2.53"', 'version = "0.2.52"', 1))
+        pr = write_lock(self, self.LOCK)
+        meta = pypi_meta(
+            "0.2.53",
+            [],
+            releases={
+                "0.2.52": [
+                    pypi_file("rumdl-0.2.52-py3-none-any.whl"),
+                    pypi_file("rumdl-0.2.52.tar.gz"),
+                ],
+                "0.2.53": [pypi_file("rumdl-0.2.53-py3-none-any.whl")],
+            },
+        )
+        code, out, _ = self._run([pr, "--changed-vs", base], meta=meta)
+        self.assertIn("artifacts 0.2.52 published and this does not", out)
+        self.assertIn("the sdist", out)
+        self.assertEqual(code, 0)
 
 
 class TestMainContract(_MainHarness):

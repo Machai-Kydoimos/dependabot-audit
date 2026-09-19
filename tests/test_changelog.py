@@ -58,6 +58,7 @@ from changelog import (
     edited_since_published,
     gap,
     github_slug,
+    headings,
     labelled,
     main,
     match_tag,
@@ -67,6 +68,7 @@ from changelog import (
     resolve_repo,
     section_for,
     valid_slug,
+    version_headings,
 )
 
 # --- recorded: rvben/rumdl, the bump behind #94 ------------------------------
@@ -228,6 +230,7 @@ class Repo:
         commits: list[str] | None = None,
         edited: dict[str, str] | None = None,
         files_at_head: dict[str, str] | None = None,
+        asset_uploads: dict[str, str] | None = None,
     ) -> None:
         self.slug = slug
         self.releases = releases or []
@@ -238,6 +241,9 @@ class Repo:
         # tag -> the `updated_at` a rewritten body carries. Absent means the
         # release still reads as it was published.
         self.edited = edited or {}
+        # tag -> when its assets were uploaded. `updated_at` follows an upload, so
+        # a tag here moves both stamps together, the way GitHub does.
+        self.asset_uploads = asset_uploads or {}
         self.tags = tags or [tag for tag, _ in (releases or [])]
         self.files = files or {}
         self.commits = commits or []
@@ -268,7 +274,9 @@ def fake_gh(repo: Repo, log: list[str] | None = None) -> Any:
                         "body": body,
                         "at": published,
                         "published": published,
-                        "updated": repo.edited.get(tag, published),
+                        "updated": repo.edited.get(tag, repo.asset_uploads.get(tag, published)),
+                        "assets": 14 if tag in repo.asset_uploads else 0,
+                        "assets_updated": repo.asset_uploads.get(tag),
                     }
                 )
                 for tag, body in repo.releases
@@ -416,8 +424,9 @@ class TestARungThatAnsweredCanAlsoBeRewritten(ChangelogHarness):
         that outlives the run."""
         _, out, evidence = self.run_main(self.rewritten(), "--from", "0.2.60", "--to", "0.2.62")
         self.assertIn("v0.2.61: EDITED 2026-09-05T07:05:04Z", out)
+        self.assertIn("and not by an asset upload", out)
         self.assertIn("EDITED 2026-09-05T07:05:04Z", evidence)
-        self.assertIn("not what went out with the tag", evidence)
+        self.assertIn("may not be the text that went out with the tag", evidence)
 
     def test_only_the_rewritten_one_is_marked(self):
         _, _, evidence = self.run_main(self.rewritten(), "--from", "0.2.60", "--to", "0.2.62")
@@ -446,6 +455,66 @@ class TestARungThatAnsweredCanAlsoBeRewritten(ChangelogHarness):
                 {"published": "2026-08-26T19:24:23Z", "updated": "2026-08-26T19:24:23Z"}
             )
         )
+
+    def test_an_asset_upload_is_not_an_edit(self):
+        """Round twenty-one, 2026-09-19, real stamps. rumdl v0.2.73 was published
+        17:36:49 and its assets uploaded 19:07:29; `updated_at` is 19:07:30. The
+        body is byte-identical to its changelog section at the tag. 0.44.0 marked
+        it EDITED and told the reader the text was not what shipped."""
+        self.assertIsNone(
+            edited_since_published(
+                {
+                    "published": "2026-09-11T17:36:49Z",
+                    "updated": "2026-09-11T19:07:30Z",
+                    "assets": 14,
+                    "assets_updated": "2026-09-11T19:07:29Z",
+                }
+            )
+        )
+
+    def test_an_edit_long_after_the_assets_is_still_an_edit(self):
+        """rumdl v0.2.61, real stamps: assets went up with the release, the body
+        was rewritten 9.5 days later. The asset list must not excuse that."""
+        mark = edited_since_published(
+            {
+                "published": "2026-08-26T19:24:23Z",
+                "updated": "2026-09-05T07:05:04Z",
+                "assets": 14,
+                "assets_updated": "2026-08-26T19:24:22Z",
+            }
+        )
+        self.assertIsNotNone(mark)
+        self.assertIn("EDITED 2026-09-05T07:05:04Z", mark or "")
+
+    def test_a_change_with_no_assets_to_explain_it_is_marked(self):
+        """actions/checkout publishes no assets; v6.0.2 changed twelve days on."""
+        mark = edited_since_published(
+            {
+                "published": "2026-01-09T19:53:28Z",
+                "updated": "2026-01-22T16:41:24Z",
+                "assets": 0,
+                "assets_updated": None,
+            }
+        )
+        self.assertIn("EDITED", mark or "")
+
+    def test_a_missing_asset_list_is_unknown_not_clean(self):
+        """Without the list, an upload cannot be ruled in or out. Saying *edited*
+        would be the 0.44.0 false positive; saying nothing would be the silent
+        zero. Neither."""
+        self.assertEqual(
+            edited_since_published(
+                {"published": "2026-09-11T17:36:49Z", "updated": "2026-09-11T19:07:30Z"}
+            ),
+            "edit status unknown -- the release carried no asset list",
+        )
+
+    def test_the_whole_run_is_quiet_about_an_asset_upload(self):
+        repo = self.rumdl_61_62()
+        repo.asset_uploads = {"v0.2.62": "2026-08-27T15:00:00Z"}
+        _, out, evidence = self.run_main(repo, "--from", "0.2.60", "--to", "0.2.62")
+        self.assertNotIn("EDITED", out)
+        self.assertNotIn("EDITED", evidence)
 
     def test_created_at_is_not_what_it_compares_against(self):
         """`at` falls back to `created_at`, which on an untouched release is
@@ -553,6 +622,249 @@ class TestAGeneratedChangelogIsRewrittenAtEveryRelease(ChangelogHarness):
         self.assertEqual(
             status, self.run_main(self.rumdl_61_62(), "--from", "0.2.60", "--to", "0.2.62")[0]
         )
+
+
+# `pre-commit/pre-commit` CHANGELOG.md at v4.6.2, first 21 lines, verbatim. Setext:
+# every version is a line of text over a rule of `=`, subsections are ATX `###`.
+PRECOMMIT_CHANGELOG = """\
+4.6.2 - 2026-08-10
+==================
+
+### Fixes
+- Fix `language: node` hooks that contain `"scripts": {"build": ...}` with
+  npm 11.x.
+    - Regressed in 4.6.1.
+    - #3737 issue by @mheiges.
+    - #3743 PR by @asottile.
+
+4.6.1 - 2026-07-21
+==================
+
+### Fixes
+- Install `language: node` hooks via `git`.
+    - Fixes npm 12.x compatibility
+    - #3719 PR by @asottile.
+    - #3517 issue by @ojob.
+"""
+
+# `pytest-dev/pytest` CHANGELOG.rst at 8.4.2, all 230 bytes, verbatim. It is the
+# name every changelog matcher looks for, and it is a signpost.
+PYTEST_STUB = """\
+=========
+Changelog
+=========
+
+The pytest CHANGELOG is located `here <https://docs.pytest.org/en/stable/changelog.html>`__.
+
+The source document can be found at: https://github.com/pytest-dev/pytest/blob/main/doc/en/changelog.rst
+"""
+
+# The shape of the real `doc/en/changelog.rst`: RST, versions over `=`,
+# subsections over `-`. Abridged; the headings are as pytest writes them.
+PYTEST_REAL = """\
+Changelog
+=========
+
+pytest 8.4.2 (2025-09-03)
+=========================
+
+Bug fixes
+---------
+
+- `#13312 <https://github.com/pytest-dev/pytest/issues/13312>`_: Fixed a possible ``KeyError`` crash on PyPy.
+
+pytest 8.4.1 (2025-06-17)
+=========================
+
+Bug fixes
+---------
+
+- `#13461 <https://github.com/pytest-dev/pytest/issues/13461>`_: Corrected ``_pytest.terminal.TerminalReporter.isatty``.
+"""
+
+# `python/mypy`'s shape: versions at `##`, Python in the examples. A `#` comment
+# inside a fence is not a heading, and until #133 it ended the section.
+MYPY_FENCED = """\
+# Mypy Release Notes
+
+## Mypy 2.0
+
+### Allow redefinitions
+
+```python
+# mypy: allow-redefinition
+def f() -> None:
+    x = 1
+```
+
+### Other notable fixes
+
+- Fix crash on a recursive alias.
+
+## Mypy 1.20
+
+- Earlier.
+"""
+
+
+class TestAChangelogIsReadInTheShapeItIsWrittenIn(unittest.TestCase):
+    """#133. Three shapes rung 2 read successfully and parsed to nothing.
+
+    Each is a file that was fetched in full, at exit 0, and then reported as
+    *"no section for this version"* -- which reads exactly like *"the project
+    documented nothing"*, this plugin's own failure class. Measured 2026-09-19:
+
+    - `pre-commit/pre-commit` heads versions setext-style, `4.6.2 - 2026-08-10`
+      over `===`. 72,898 bytes, zero sections found. It is the `pre-commit`
+      ecosystem's own repository.
+    - `pytest-dev/pytest`'s root `CHANGELOG.rst` is 230 bytes pointing at
+      `doc/en/changelog.rst`, which is 500,693 bytes.
+    - `python/mypy` heads versions at `##` and puts `# comment` lines inside
+      code fences, which read as level-1 headings and ended sections early:
+      `## Mypy 2.0` came back as 34 of its 246 lines.
+
+    Controls measured unchanged on real files: rumdl, ruff, uv, black, pydantic.
+    """
+
+    def test_a_setext_version_heading_is_found(self):
+        section = section_for(PRECOMMIT_CHANGELOG, "4.6.2")
+        self.assertTrue(section.startswith("4.6.2 - 2026-08-10"))
+        self.assertIn("#3743 PR by @asottile", section)
+
+    def test_a_setext_section_stops_at_the_next_version_and_not_at_its_subsections(self):
+        """`### Fixes` is level 3 and sits inside a level-1 version; it must not
+        end the section, and `4.6.1` must."""
+        section = section_for(PRECOMMIT_CHANGELOG, "4.6.2")
+        self.assertIn("### Fixes", section)
+        self.assertNotIn("4.6.1 - 2026-07-21", section)
+        self.assertNotIn("Install `language: node` hooks via `git`", section)
+
+    def test_the_later_setext_version_is_found_too(self):
+        self.assertIn(
+            "Install `language: node` hooks via `git`", section_for(PRECOMMIT_CHANGELOG, "4.6.1")
+        )
+
+    def test_rst_uses_the_same_two_levels(self):
+        """pytest underlines versions with `=` and subsections with `-`, so a
+        version section spans its `Bug fixes` and ends at the next version."""
+        section = section_for(PYTEST_REAL, "8.4.2")
+        self.assertIn("#13312", section)
+        self.assertIn("Bug fixes", section)
+        self.assertNotIn("#13461", section)
+
+    def test_an_rst_overlined_title_is_a_heading(self):
+        found = headings(PYTEST_STUB.splitlines())
+        self.assertIn((1, "Changelog"), found.values())
+
+    def test_a_comment_inside_a_fence_does_not_end_the_section(self):
+        section = section_for(MYPY_FENCED, "2.0")
+        self.assertIn("# mypy: allow-redefinition", section)
+        self.assertIn("Fix crash on a recursive alias", section, "the section was cut at the fence")
+        self.assertNotIn("Earlier.", section)
+
+    def test_a_thematic_break_after_a_blank_line_is_not_a_heading(self):
+        """`---` after a blank line is a rule, not an underline. Treating it as
+        one would turn the paragraph *above the blank* into a heading."""
+        text = "## 1.0.0\n\nSome note.\n\n---\n\nMore about 1.0.0.\n\n## 0.9.0\n\n- old\n"
+        section = section_for(text, "1.0.0")
+        self.assertIn("More about 1.0.0.", section)
+        self.assertNotIn("- old", section)
+
+    def test_the_last_line_of_a_paragraph_is_not_a_heading(self):
+        """Stricter than CommonMark on purpose: a changelog heads a version with
+        one line, so text directly under other text is prose even with a rule
+        beneath it."""
+        text = "## 2.0.0\n\nA long note that\nwraps onto 1.9.0 here\n---\n\n- still 2.0.0\n"
+        self.assertIn("- still 2.0.0", section_for(text, "2.0.0"))
+        self.assertEqual(section_for(text, "1.9.0"), "")
+
+    def test_yaml_front_matter_is_not_a_heading(self):
+        text = "---\ntitle: Release notes for 3.1.0\n---\n\n## 3.1.0\n\n- real entry\n"
+        found = headings(text.splitlines())
+        self.assertEqual([title for _, title in found.values()], ["3.1.0"])
+
+    def test_a_list_item_over_a_rule_is_not_a_heading(self):
+        text = "## 1.2.0\n\n- item one\n---\n\n- item two\n"
+        self.assertEqual(len(headings(text.splitlines())), 1)
+
+    def test_a_signpost_carries_no_version_headings(self):
+        self.assertEqual(version_headings(PYTEST_STUB), 0)
+        self.assertGreater(version_headings(PYTEST_REAL), 0)
+        self.assertGreater(version_headings(PRECOMMIT_CHANGELOG), 0)
+
+
+class TestAStubIsFollowedOnceAndNeverReportedAsNone(ChangelogHarness):
+    """The other half of #133. A matched name is not a changelog."""
+
+    def pytest_repo(self, *, real_at: str | None = "doc/en/changelog.rst") -> Repo:
+        files = {"CHANGELOG.rst": PYTEST_STUB}
+        if real_at:
+            files[real_at] = PYTEST_REAL
+        return Repo(
+            "pytest-dev/pytest",
+            releases=[("8.4.2", "notes"), ("8.4.1", "older notes")],
+            files=files,
+            commits=["Fix KeyError on PyPy (#13566)"],
+        )
+
+    def test_the_pointer_is_followed_to_the_real_file(self):
+        _, out, evidence = self.run_main(self.pytest_repo(), "--from", "8.4.1", "--to", "8.4.2")
+        self.assertIn("doc/en/changelog.rst (via the pointer in CHANGELOG.rst)", out)
+        self.assertIn("1 section(s)", out)
+        self.assertIn("#13312", evidence)
+
+    def test_the_pointer_is_fetched_at_the_ref_being_read_not_the_one_in_its_url(self):
+        """pytest's URL says `blob/main/`. Following that from a tag read would
+        answer a question about a different commit."""
+        log: list[str] = []
+        repo = self.pytest_repo()
+        with mock.patch("changelog._gh", fake_gh(repo, log)):
+            from changelog import changelog_at
+
+            changelog_at("pytest-dev/pytest", "8.4.2")
+        followed = [call for call in log if "doc/en/changelog.rst" in call]
+        self.assertTrue(followed, "the pointer was never followed")
+        self.assertTrue(all("?ref=8.4.2" in call for call in followed), followed)
+
+    def test_a_stub_with_nowhere_to_go_says_so(self):
+        """What must never happen is the stub reading as "no changelog"."""
+        _, out, _ = self.run_main(
+            self.pytest_repo(real_at=None), "--from", "8.4.1", "--to", "8.4.2"
+        )
+        self.assertIn("carries no version headings at all", out)
+        self.assertIn("it is not 'none'", out)
+        self.assertNotIn("0 section(s)", out)
+
+    def test_a_pointer_to_another_signpost_is_not_taken(self):
+        """Following a pointer to a file that is no more a changelog than the stub
+        would name it in the output as though one had been found. Stay on the
+        original, and say it is a signpost."""
+        repo = self.pytest_repo(real_at=None)
+        repo.files["doc/en/changelog.rst"] = "Changelog\n=========\n\nSee the website.\n"
+        _, out, _ = self.run_main(repo, "--from", "8.4.1", "--to", "8.4.2")
+        self.assertNotIn("via the pointer", out)
+        self.assertIn("rung 2 -- CHANGELOG.rst carries no version headings at all", out)
+
+    def test_a_pointer_into_another_repository_is_not_followed(self):
+        stub = PYTEST_STUB.replace("pytest-dev/pytest/blob", "someone-else/fork/blob")
+        repo = self.pytest_repo()
+        repo.files["CHANGELOG.rst"] = stub
+        _, out, _ = self.run_main(repo, "--from", "8.4.1", "--to", "8.4.2")
+        self.assertNotIn("via the pointer", out)
+
+    def test_a_real_changelog_is_never_redirected(self):
+        """Only a file with no version headings of its own is followed out of.
+        A real changelog that happens to mention a docs path stays the answer."""
+        real_with_mention = PRECOMMIT_CHANGELOG + "\nSee also docs/changelog.md for history.\n"
+        repo = Repo(
+            "pre-commit/pre-commit",
+            releases=[("v4.6.2", "n"), ("v4.6.1", "n")],
+            files={"CHANGELOG.md": real_with_mention, "docs/changelog.md": PYTEST_REAL},
+            commits=["Merge pull request #3743 from pre-commit/npm-build-scripts-11-x"],
+        )
+        _, out, _ = self.run_main(repo, "--from", "4.6.1", "--to", "4.6.2")
+        self.assertIn("rung 2 -- CHANGELOG.md: 1 section(s)", out)
+        self.assertNotIn("via the pointer", out)
 
 
 class TestTheReconciliationCanAlsoSayYes(ChangelogHarness):
