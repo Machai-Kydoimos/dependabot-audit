@@ -152,12 +152,12 @@ def _code_only(source: str, *, printed: bool = True) -> str:
 
     `printed=False` additionally drops the string constants a script hands to
     `print()`. **That is for negative assertions only, and it is not the default.**
-    What a script prints is output, not a call — `audit.py` advises the reader to
-    run ``uv run python -V`` inside the synced environment, and once `reachable()`
-    began following scripts named in the ecosystem references, that sentence made
-    the `--no-execute` guard fire on Phase 1: the guard that catches a phase
-    *executing* the audited project, defeated by a phase *mentioning* it. Same
-    failure the harness docstring names, one artifact over.
+    What a script prints is output, not a call — `audit.py` tells the reader which
+    command records the interpreter, and once `reachable()` began following
+    scripts named in the ecosystem references, that sentence (then naming
+    ``uv run python -V``) made the `--no-execute` guard fire on Phase 1: the guard
+    that catches a phase *executing* the audited project, defeated by a phase
+    *mentioning* it. Same failure the harness docstring names, one artifact over.
 
     It stays opt-in because printed text is exactly what several positive guards
     are about — Phase 6's hedge is asserted as `CONSISTENT WITH` in `reachable(6)`
@@ -933,6 +933,41 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
             runs,
             "`uv run` syncs before it runs, so asking it which environment was built "
             "builds one -- executing the project's build backend",
+        )
+
+    def test_the_failing_forms_are_named_only_where_they_are_measured_failing(self):
+        """0.45.0 fixed the block and left three sites recommending the same form.
+
+        The guard above reads what Phase 5 *executes*. A sentence in `SKILL.md`,
+        the qualifier table in `uv-lock.md` and the forked-package advice
+        `audit.py` prints are none of those, so all three went on saying
+        `uv run python -V` after the release that measured it building the
+        environment it asks about. Found by replaying `fpga-board-sim` #437
+        against 0.45.0 (round twenty-two).
+
+        So this reads every shipped file whole, printed strings and prose
+        included: each failing form may appear only in the row of the table that
+        records it failing. Whitespace is flattened first because `SKILL.md` is
+        hard-wrapped, and a phrase split across a line break is invisible to a
+        line-by-line match.
+        """
+        where_measured = {
+            "uv run python -V": "| `uv run python -V` | **builds one**",
+            "uv run --no-sync python -V": "| `uv run --no-sync python -V` | creates an **empty**",
+        }
+        offenders = []
+        for path in sorted(PLUGIN.rglob("*")):
+            if path.suffix not in {".md", ".py"}:
+                continue
+            flat = re.sub(r"\s+", " ", path.read_text(encoding="utf-8"))
+            for form, row in where_measured.items():
+                extra = flat.count(form) - flat.count(row)
+                if extra > 0:
+                    offenders.append(f"{path.relative_to(PLUGIN)}: {form} x{extra}")
+        self.assertEqual(
+            offenders,
+            [],
+            "a form measured to fail is recommended somewhere other than the table that says so",
         )
 
     def test_the_package_list_is_pinned_to_that_environment(self):
@@ -3383,6 +3418,46 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
             dict(self.phases)[2],
             "the reader has to be told why the obvious shortening is wrong",
         )
+
+    def test_the_shape_scan_is_read_as_a_superset(self):
+        """Its regex matches every `---` thematic break and reads no `>` prefix.
+
+        On `fpga-board-sim` #437 it listed 20 files, all of them plain `---`,
+        while the shape at issue was in none. The sentence that followed it said
+        *"Exposure is how many files carry the shape"*, so a run taking the block
+        at its word reported 20 exposed files and an urgency that did not exist.
+        Round twenty-two narrowed it by hand and said so in its hand-back.
+        """
+        phase2 = dict(self.phases)[2]
+        self.assertIn(
+            "its zero is conclusive, and its count is not",
+            re.sub(r"\s+", " ", phase2),
+            "a superset count read as exposure is a finding nobody measured",
+        )
+        self.assertRegex(
+            self.material(2),
+            r"git grep -lE '\^\[\[:blank:\]\]\*>",
+            "and the narrowing to the quoted shape has to be a command, not advice",
+        )
+
+    def test_no_shell_grep_puts_a_tab_escape_in_a_bracket(self):
+        """POSIX ERE reads `\\t` inside brackets as a backslash and a `t`.
+
+        So `[ \\t]*` misses a trailing tab and matches `---t` — measured on git
+        2.55.0 — and the shape scan shipped it until 0.46.0. Python's `re` would
+        read it as a tab, which is why it looks right to anyone who writes Python.
+        Scoped to `grep` in fenced shell blocks: prose may name the trap.
+        """
+        bracket_tab = re.compile(r"\[[^\]\n]*\\t[^\]\n]*\]")
+        offenders = []
+        for path in [SKILL, *sorted((PLUGIN / "references").glob("*.md"))]:
+            for lang, body in FENCE.findall(path.read_text(encoding="utf-8")):
+                if lang not in {"bash", "sh", "shell", ""}:
+                    continue
+                for line in body.splitlines():
+                    if "grep" in line and bracket_tab.search(line):
+                        offenders.append(f"{path.name}: {line.strip()[:80]}")
+        self.assertEqual(offenders, [], "use [[:blank:]] for space-or-tab in a shell regex")
 
 
 class TestPhase0ClearsAStaleWorktreeRegistration(SkillHarness):

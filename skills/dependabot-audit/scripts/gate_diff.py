@@ -281,7 +281,7 @@ def render(report: dict[str, Any]) -> None:
         print()
 
     if report["nothing_touched"]:
-        print("NOTE: no run changed any file. Three things look like this, and they")
+        print("NOTE: no run changed any file. Four things look like this, and they")
         print("      are not the same result — decide which before quoting it:")
         print("      1. the gate was given a read-only mode (`--check`), so this")
         print("         measured the wrong thing — re-run with the write mode;")
