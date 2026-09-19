@@ -313,28 +313,27 @@ that the required contexts come from the API rather than an authored list. It
 cannot check
 whether Phase 6 gets run at all, or whether an unexpected file in the diff
 actually stops the audit. That is behavioral and belongs in `claude plugin eval`,
-which is in early access and **still unavailable on this account**.
-
-The subcommand is present in the CLI and prints a complete `--help` — options for
-graders, ablation arms, cost ceilings, thresholds — which reads exactly like a
-feature you can use. Invoking it does not:
+which **opened on this account on 2026-09-16** (Claude Code 2.1.273) after months
+in early access. The ten cases are designed in #32 and not yet written, so today
+the suite is empty — and says so:
 
 ```
-$ claude plugin eval dependabot-audit >out 2>err
+$ claude plugin eval dependabot-audit >out 2>err </dev/null
 $ echo $?
 1
-$ cat out          # empty — the refusal is on stderr
+$ cat out          # empty
 $ cat err
-`plugin eval` is currently in early access
+No eval cases found under …/dependabot-audit/0.43.0.
 ```
 
-**The refusal goes to stderr, and stdout is empty.** So a CI step added on the
-strength of the help text has nothing to grep: a check written against the
-subcommand's output sees a clean, empty result and reports on it. The exit code
-is the only signal, which is the same lesson `SKILL.md` Phase 5 carries about
-`cmd | tail && next` — and this claim used to read *"it exits 0"* here, taken
-through a `| head` that returned `head`'s status rather than `claude`'s. Checked
-0.12.0; worth re-checking rather than assuming, in either direction.
+**That is the same shape the early-access refusal had**: exit 1, empty stdout, the
+reason on stderr. So a CI step keyed on the exit status cannot tell *"blocked"*
+from *"no cases yet"*, and one grepping stdout sees nothing either way — read
+stderr. This paragraph used to say the subcommand was unavailable, and before
+that that it *"exits 0"* — the second taken through a `| head` that returned
+`head`'s status rather than `claude`'s, which is the lesson `SKILL.md` Phase 5
+carries about `cmd | tail && next`. Worth re-checking rather than assuming, in
+either direction: it has now been wrong twice.
 
 That gap is real, and it is where the defects keep turning up. Seven have now
 shipped in the prose and nowhere else:

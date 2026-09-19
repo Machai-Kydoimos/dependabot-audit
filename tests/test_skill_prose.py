@@ -44,6 +44,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from typing import ClassVar
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -912,13 +913,32 @@ class TestPhase5SaysWhatItActuallyExercised(SkillHarness):
     """
 
     def test_the_interpreter_is_read_from_the_synced_environment(self):
-        """The auditor's own `python3` need not be the one uv chose."""
+        """The auditor's own `python3` need not be the one uv chose.
+
+        This guard used to pin `uv run python -V`, and that form is unsafe:
+        measured 2026-09-19, `uv run` syncs first -- installing the project
+        editable, which runs the PR's build backend -- and the block carried no
+        `$MAY_EXECUTE` gate. `--no-sync` instead builds an empty `.venv` and
+        reports its Python. The environment's own interpreter can do neither.
+        """
+        runs = self.reachable(5)
         self.assertIn(
-            "uv run python -V",
-            self.reachable(5),
+            ".venv/bin/python -V",
+            runs,
             "Phase 5 must record the interpreter that produced the row, from inside "
             "the environment rather than from the shell that ran the audit",
         )
+        self.assertNotIn(
+            "uv run python -V",
+            runs,
+            "`uv run` syncs before it runs, so asking it which environment was built "
+            "builds one -- executing the project's build backend",
+        )
+
+    def test_the_package_list_is_pinned_to_that_environment(self):
+        """With no `.venv`, a bare `uv pip list` exits 0 listing uv's own managed
+        Python -- a different environment, reported as this one."""
+        self.assertIn("uv pip list --python .venv/bin/python", self.reachable(5))
 
     def test_the_forks_that_were_only_verified_are_named(self):
         phase5 = self.material(5).lower()
@@ -3163,9 +3183,21 @@ class TestPhase5NamesTheGroupsTheInstallCovered(SkillHarness):
         re-introduces the defect one layer up, because the names would be read
         off the PR title, which a grouped bump does not carry.
         """
+        # Two lines since 0.45.0, not one: the list is captured and its status
+        # checked before it is filtered, because piping it straight into grep
+        # handed uv's failure to grep's "no match". Both halves are asserted so
+        # neither can go on its own.
+        runs = self.reachable(5)
         self.assertRegex(
-            self.reachable(5),
-            r"uv pip list[^\n]*Phase 1 named",
+            runs,
+            r"LIST=\$\(uv pip list --python \.venv/bin/python",
+            "the environment's package list has to be captured from this "
+            "environment -- a bare `uv pip list` lists uv's own Python when there "
+            "is no .venv, at exit 0",
+        )
+        self.assertRegex(
+            runs,
+            r'"\$LIST" \| grep -E [^\n]*Phase 1 named',
             "nothing checks the bumped packages against what was installed. That "
             "is the one test a wrong dependency group cannot pass, and the set to "
             "check against has to be the one Phase 1 derived",
@@ -3838,6 +3870,265 @@ class TestARungThatAnsweredCanAlsoHaveBeenRewritten(SkillHarness):
                 )
                 return
         self.fail("Phase 4 no longer hands off to actions.md")
+
+
+class TestRungTwoReadsTheChangelogItFinds(SkillHarness):
+    """#133. Three shapes that were fetched in full and parsed to nothing.
+
+    `pre-commit/pre-commit` heads versions setext-style; `pytest-dev/pytest`'s
+    root changelog is a 230-byte signpost; `python/mypy`'s `# comment` lines in
+    code fences read as headings and cut sections short. Each reported *"no
+    section"*, which reads as *"documented nothing"*.
+    """
+
+    def _ladder(self) -> str:
+        for name, section in self._handoffs(2):
+            if name == "uv-lock.md":
+                return section
+        self.fail("Phase 2 no longer hands off to uv-lock.md")
+
+    def test_the_script_reads_both_heading_syntaxes_outside_code(self):
+        code = self.reachable(2)
+        self.assertIn("SETEXT_RULE", code, "setext headings are not recognised")
+        self.assertIn("FENCE_OPEN", code, "code fences are not skipped")
+
+    def test_the_script_follows_a_signpost_and_says_so(self):
+        code = self.reachable(2)
+        self.assertIn("_follow_pointer", code)
+        self.assertIn(
+            "via the pointer in", code, "a followed pointer has to be named in the output"
+        )
+        self.assertIn(
+            "carries no version headings at all",
+            code,
+            "a signpost with nowhere to go must be reported as one, not as '0 sections'",
+        )
+
+    def test_the_prose_says_a_matched_name_is_not_always_a_changelog(self):
+        self.assertRegex(
+            self._ladder(),
+            r"(?is)a matched name is not always a changelog",
+        )
+
+    def test_the_prose_names_both_heading_syntaxes(self):
+        """Specific to the bullet, not the word: "setext" appears elsewhere in
+        this section, and a guard on the bare word survived deleting the claim."""
+        section = self._ladder()
+        self.assertRegex(
+            section, r"(?is)reads headings in both Markdown syntaxes, and outside code only"
+        )
+        self.assertRegex(
+            section,
+            r"(?is)`4\.6\.2 - 2026-08-10` over a rule of `=` \(setext\)",
+            "the measured shape that parsed to nothing has to stay named",
+        )
+        self.assertRegex(section, r"(?is)`## Mypy 2\.0` came back as 34 of its 246\s+lines")
+
+    def test_the_prose_says_finding_the_section_is_not_reconciling_against_it(self):
+        """Measured: pytest stays at 21 of 21 unreconciled with its section read
+        in full, because the matcher compares wording and a hand-written
+        changelog paraphrases. The prose must not let the fix read as a verdict
+        improvement."""
+        section = self._ladder()
+        self.assertRegex(
+            section,
+            r"(?is)finding the section is not the same as reconciling against it",
+        )
+        self.assertRegex(
+            section,
+            r"(?is)unreconciled count is a \*\*ceiling\*\*",
+            "and the direction has to be right: the matcher misses paraphrases, "
+            "so the unreconciled count overstates",
+        )
+
+
+class TestEveryBlockThatRunsTheCodeUnderAuditIsGated(unittest.TestCase):
+    """The plugin's first safety control, and until 0.45.0 nothing tested it.
+
+    `SKILL.md` opens *"This audit executes the code it audits"*, and Phases 4
+    and 5 gate on `$MAY_EXECUTE` so a non-bot, cross-repository or pull-only PR
+    never gets its code run. Mutation-checked 2026-09-19: deleting the gate from
+    **any one** of the six execution blocks in `uv-lock.md` left every prose
+    test green. The existing guards test *how* the gate is written and that it
+    crosses the Phase 0 handoff -- not that the blocks carry it.
+
+    And two did not. `uv-lock.md` § Phase 5 ran `uv run python -V` -- which syncs
+    first, installing the project and running its build backend -- and a floor
+    `uv sync`, both ungated. Round twenty-one's hand-written reproducer loop
+    was ungated too, because nothing supplied it with one.
+
+    **Prototyped before building**, per the #127 lesson: over every Phase 4 and 5
+    block in `SKILL.md` and the references, the pattern below matches nine
+    blocks, all nine genuinely executing, and flagged exactly the two defects.
+    No exceptions needed, which is what makes this a gate rather than a list.
+
+    `--no-execute` is *not* covered here and cannot be: that flag is the
+    operator's and never reaches `$MAY_EXECUTE`. It is honoured by the phases it
+    removes from the run, which is why no execution block may live outside 4 and
+    5 -- see the second test.
+    """
+
+    GATE = '[ "${MAY_EXECUTE:-}" = yes ]'
+    # The auditor's own `python3 -c` -- computing a date, querying PyPI -- is not
+    # here; only an environment's interpreter runs the code under audit, so the
+    # pattern is `/bin/python -c`. The first widening caught three of the former
+    # as false positives and was narrowed on that count.
+    #
+    # `uv pip` and `python -c` belong here although they read like inspection.
+    # Measured 2026-09-19: both start the environment's interpreter with `site`
+    # enabled, which executes any `.pth` file an installed package ships --
+    # `uv pip list --python .venv/bin/python` included. `python -V` does not; it
+    # prints before `site` initialises, which is why Phase 5 reads the version
+    # that way and still gates the block for the package list beside it.
+    RUNS = re.compile(
+        r"\buv (?:run|sync|pip)\b|gate_diff\.py|\bpre-commit (?:run|try-repo)\b"
+        r"|\$PC (?:run|try-repo)\b|\bpytest\b|\buvx \S+@|\bnpm (?:ci|install)\b"
+        r"|/bin/python3? -c\b"
+    )
+    # Ten, measured: the `uv run`/`sync`/gate blocks, and two Phase 5 blocks that
+    # read the environment -- counted because `uv pip list` runs installed `.pth`
+    # code. The second of those was ungated until the widening found it.
+    FLOOR = 10
+    # The one execution form allowed outside Phases 4 and 5: the tool at the
+    # version the repo *already* runs, never the proposal, with `--no-project`
+    # so the audited project is never installed. `uv-lock.md` § Phase 2 uses it
+    # under `--no-execute` on purpose. Re-measured 2026-09-19 on uv 0.12.17: with
+    # `--no-project` a probe project's `setup.py` does not run and no `.venv`
+    # appears; without it, both happen.
+    LOCKED_TOOL = re.compile(r"^\s*uv run(?: -q)? --no-project --with \S+==<locked>\s")
+
+    def _documents(self) -> list[tuple[str, str]]:
+        docs = [("SKILL.md", SKILL.read_text(encoding="utf-8"))]
+        for ref in sorted((PLUGIN / "references").glob("*.md")):
+            docs.append((ref.name, ref.read_text(encoding="utf-8")))
+        return docs
+
+    def _executing_blocks(self, wanted: set[int]) -> Iterator[tuple[str, int, str]]:
+        for name, text in self._documents():
+            for number, section in phases(text):
+                if number not in wanted:
+                    continue
+                for block in bash_blocks(section):
+                    if self.RUNS.search(block):
+                        yield name, number, block
+
+    def test_every_executing_block_in_phases_4_and_5_opens_with_the_gate(self):
+        seen = 0
+        for name, number, block in self._executing_blocks({4, 5}):
+            seen += 1
+            with self.subTest(doc=name, phase=number, first=block.strip().splitlines()[0][:70]):
+                self.assertIn(
+                    self.GATE,
+                    block,
+                    "this block runs code under audit and does not test $MAY_EXECUTE "
+                    "first -- a non-bot or cross-repository PR would have it run",
+                )
+        self.assertGreaterEqual(
+            seen,
+            self.FLOOR,
+            f"checked only {seen} executing blocks; the pattern or the documents "
+            f"changed, and a guard that matches nothing passes on nothing",
+        )
+
+    def test_no_phase_that_survives_no_execute_runs_the_code(self):
+        """`--no-execute` defines the run as Phases 0-3 and 6-7. An execution
+        block there would run under the flag that forbids it, whatever
+        `$MAY_EXECUTE` says -- which is why round twenty-one's reproducer went
+        into Phase 4 and not into Phase 7, where the replay proposed it."""
+        allowed = 0
+        for name, number, block in self._executing_blocks({0, 1, 2, 3, 6, 7, 8}):
+            offending = [
+                line
+                for line in block.splitlines()
+                if self.RUNS.search(line) and not self.LOCKED_TOOL.match(line)
+            ]
+            allowed += not offending
+            with self.subTest(doc=name, phase=number):
+                self.assertFalse(
+                    offending,
+                    f"{name} Phase {number} runs code outside Phases 4 and 5: "
+                    f"{offending[:1]}. Move it there, or make it the locked tool "
+                    f"with --no-project -- nothing else survives --no-execute.",
+                )
+        self.assertGreaterEqual(
+            allowed,
+            1,
+            "the registered exception matched nothing -- if Phase 2's locked-tool "
+            "run is gone, delete LOCKED_TOOL rather than keep an exemption for nothing",
+        )
+
+    def test_the_exception_does_not_stretch_to_the_proposal(self):
+        """The exemption is for the version the repo already trusts. The same
+        line at `<proposed>` runs the code under audit."""
+        for line in (
+            "uv run --no-project --with ruff==<proposed> ruff check x.py",
+            "uv run --with ruff==<locked> ruff check x.py",
+            "uv run ruff check x.py",
+        ):
+            with self.subTest(line=line):
+                self.assertIsNone(self.LOCKED_TOOL.match(line))
+        self.assertIsNotNone(
+            self.LOCKED_TOOL.match("uv run --no-project --with <tool>==<locked> <tool> check f")
+        )
+
+
+class TestAFixAboveTheProposalIsMeasuredWhereCodeMayRun(SkillHarness):
+    """Round twenty-one, 2026-09-19. Three rumdl `--fix` bugs fixed in 0.2.74,
+    against a proposal of 0.2.72: *"fixed in 0.2.74"* says where a bug ends, not
+    where it began, and where it began is the Hold question.
+
+    Rounds twenty and twenty-one audited the same PR and improvised two
+    different methods for it; the second ran the proposed version with no
+    `$MAY_EXECUTE` gate. The replay proposed putting the method in Phase 7 --
+    which runs under `--no-execute` -- so it lives in Phase 4 instead, and Phase 7
+    only asks the question.
+    """
+
+    def _uv_phase(self, number: int) -> str:
+        for name, section in self._handoffs(number):
+            if name == "uv-lock.md":
+                return section
+        self.fail(f"Phase {number} no longer hands off to uv-lock.md")
+
+    def test_phase_7_asks_but_does_not_decide(self):
+        phase7 = self.flat(7)
+        self.assertIn("a fix released *after* the proposal", phase7)
+        self.assertIn(
+            "it is not decided here, because deciding it means running the code under audit",
+            phase7,
+            "Phase 7 runs under --no-execute; it may not be where the code runs",
+        )
+        self.assertIn(
+            "the answer is **underivable**, and it takes neither the hold row nor the follow-up row by default",
+            phase7,
+        )
+
+    def test_the_cheap_route_comes_first(self):
+        """pre-commit writes "Regressed in 4.6.1" under the entry itself."""
+        self.assertRegex(self._uv_phase(4), r"(?is)\*\*First, check whether the fix says\.\*\*")
+
+    def test_the_reproducer_runs_outside_the_repositorys_trees(self):
+        """The input is synthetic and the question is about the tool; running it
+        in `pr-<N>` or `base-<N>` would mix this repo's config into the answer."""
+        self.assertIn('F="$SCRATCH/repro-<pkg>"', self.reachable(4))
+
+    def test_the_exit_lines_are_read_before_the_diffs(self):
+        """A run that failed leaves its file as the input, which reads as a
+        version that changed nothing."""
+        self.assertRegex(
+            self._uv_phase(4),
+            r"(?is)\*\*Read the three `exit:` lines before either `diff`\.\*\*",
+        )
+
+    def test_the_all_zero_note_has_four_causes(self):
+        section = self._uv_phase(4)
+        self.assertRegex(section, r'(?is)"no run changed any file" has four\s+causes')
+        self.assertRegex(section, r"(?is)it scanned nothing at all")
+        self.assertRegex(
+            section,
+            r"(?is)`ruff check --fix` ends `All checks passed!` at exit 0 whether it\s+checked 214 files or an empty directory",
+            "the measured case where the tool's own last line cannot rule it out",
+        )
 
 
 class TestAPlaceholderForARepositoryPathIsDerived(SkillHarness):

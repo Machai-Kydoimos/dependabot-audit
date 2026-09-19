@@ -223,6 +223,49 @@ class TestSafety(GateDiffHarness):
         self.assertIn("at least two", err)
 
 
+class TestTheGateSaysHowMuchItLookedAt(GateDiffHarness):
+    """Round twenty-one, 2026-09-19. "Touched 0 files" and "scanned 0 files" were
+    the same line, because every run's output was captured and none printed.
+
+    The audit re-ran each tool by hand to find out whether anything had been
+    scanned. Measured on the replay subject: `rumdl` and `ruff format` end with a
+    file count, and `ruff check --fix` ends `All checks passed!` whether it
+    checked 214 files or an empty directory.
+    """
+
+    def test_each_run_shows_the_tools_last_word(self):
+        tree = git_repo(self)
+        _, out, _ = self._run(
+            tree,
+            [
+                ("locked", "printf 'scanning\\nSuccess: No issues found in 41 files (25ms)\\n'"),
+                ("proposed", "printf 'No markdown files found to check.\\n'"),
+            ],
+        )
+        self.assertIn("said: Success: No issues found in 41 files (25ms)", out)
+        self.assertIn("said: No markdown files found to check.", out)
+
+    def test_a_silent_tool_is_shown_as_silent(self):
+        tree = git_repo(self)
+        _, out, _ = self._run(tree, [("locked", "true"), ("proposed", "true")])
+        self.assertIn("said: (nothing)", out)
+
+    def test_a_long_last_line_is_cut_not_dropped(self):
+        tree = git_repo(self)
+        _, out, _ = self._run(tree, [("locked", "printf '%0300d\\n' 0"), ("proposed", "true")])
+        line = next(row for row in out.splitlines() if "said: 000" in row)
+        self.assertTrue(line.rstrip().endswith("..."))
+        self.assertLess(len(line), 140)
+
+    def test_the_note_names_scanning_nothing_and_the_tool_it_cannot_see_through(self):
+        tree = git_repo(self)
+        _, out, _ = self._run(tree, [("locked", "true"), ("proposed", "true")])
+        note = out.split("NOTE:", 1)[1]
+        self.assertIn("4. the gate scanned nothing", note)
+        self.assertIn("All checks passed!", note, "the measured case where `said:` is not enough")
+        self.assertIn("--show-files", note)
+
+
 class TestNothingTouched(GateDiffHarness):
     def test_a_run_that_changed_nothing_says_so(self):
         """Measuring a --check invocation measures the weaker signal; say it."""

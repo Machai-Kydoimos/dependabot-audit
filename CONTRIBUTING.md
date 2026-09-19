@@ -293,16 +293,18 @@ It closes that half and no other. **Two gaps stay open, and they are different
 gaps** — treating the suite's green as coverage of either is the mistake:
 
 - **Whether the model follows the phases.** Behavioral, belongs in
-  `claude plugin eval`, still unavailable on this account. The README says so and
-  should keep saying so — and note *how* it is unavailable, because the shape is
-  this repo's own theme: the subcommand exists, prints a full `--help`, and then
-  refuses with ``plugin eval` is currently in early access` **on stderr, with an
-  empty stdout**, at exit 1. A check written from the help text has nothing to
-  grep and reports a clean empty result; the exit code is the only signal.
-  Verify by invoking it, not by reading `--help` — and **not through a pipe**:
-  this claim read *"at exit 0"* until 2026-08-16, measured as
-  `claude plugin eval … | head`, which returns `head`'s status. Phase 5's own
-  trap, landing on the measurement that argues for measuring.
+  `claude plugin eval`, which **opened on this account on 2026-09-16** (2.1.273)
+  and has no cases yet — #32 holds the design. Note *how* it reports that,
+  because the shape is this repo's own theme and it outlived the early-access
+  refusal unchanged: **exit 1, empty stdout, the reason on stderr**, whether the
+  reason is *"currently in early access"* or *"No eval cases found"*. A CI step
+  keyed on the exit status cannot tell blocked from empty; one grepping stdout
+  sees nothing either way. Read stderr. Verify by invoking it, not by reading
+  `--help` — and **not through a pipe**: this claim read *"at exit 0"* until
+  2026-08-16, measured as `claude plugin eval … | head`, which returns `head`'s
+  status. Phase 5's own trap, landing on the measurement that argues for
+  measuring. And it then read *"still unavailable"* for three days after it
+  wasn't.
 
   When it does open up, know in advance what it will and will not discharge. It
   can replay PRs whose right answer a human already established and grade whether

@@ -230,11 +230,33 @@ def compare(base: dict[str, Any], other: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def last_line(output: str, width: int = 100) -> str:
+    """The tool's own last word, which is usually its summary -- and the only
+    place it says how much it looked at.
+
+    Round twenty-one of the replay gate, 2026-09-19: this script captured every
+    run's output and printed none of it, so "touched 0 files" could not be told
+    apart from "scanned 0 files", and the audit re-ran each tool by hand to find
+    out. Measured on the replay subject: `rumdl check --fix` ends
+    `No issues found in 41 files`, and on an empty tree `No markdown files found
+    to check.`; `ruff format` ends `255 files left unchanged`. `ruff check --fix`
+    ends `All checks passed!` in both cases, which is why the NOTE in `render`
+    names it rather than promising this line is always enough.
+    """
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    last = lines[-1]
+    return last if len(last) <= width else last[: width - 3] + "..."
+
+
 def render(report: dict[str, Any]) -> None:
     print(f"tree: {report['tree']}\n")
     for run in report["runs"]:
         print(f"  {run['label']:<12} exit {run['exit']:<3} touched {len(run['changed'])} file(s)")
         print(f"  {'':<12} {run['command']}")
+        said = last_line(run.get("output", ""))
+        print(f"  {'':<12} said: {said}" if said else f"  {'':<12} said: (nothing)")
     print()
 
     for cmp_ in report["comparisons"]:
@@ -266,7 +288,12 @@ def render(report: dict[str, Any]) -> None:
         print("      2. the tree already satisfies every version, which is a real")
         print("         agreement and the strongest kind — say so;")
         print("      3. the gate has no write mode (a type checker, a test suite),")
-        print("         so exit code is the only signal, and it is the weaker one.\n")
+        print("         so exit code is the only signal, and it is the weaker one;")
+        print("      4. the gate scanned nothing -- a path or config that matches no")
+        print("         file makes 'touched 0' trivially true. Read each run's `said:`")
+        print("         line above: `rumdl` and `ruff format` report a file count, but")
+        print("         `ruff check` prints 'All checks passed!' at exit 0 whether it")
+        print("         checked 214 files or none. For it, count with --show-files.\n")
 
     print("RESULT:", "GATES AGREE" if report["agree"] else "GATES DIFFER")
     print("This is the mechanical half of Phase 4. Whether a difference matters")

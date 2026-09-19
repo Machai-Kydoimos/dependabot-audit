@@ -295,6 +295,31 @@ measured rather than reasoned:
 - **It finds the changelog by listing the repo root**, rather than assuming
   `CHANGELOG.md`. A guessed name 404s, and a 404 reads exactly like "this project
   keeps no changelog" — the tag trap above, one file over.
+- **And a matched name is not always a changelog.** `pytest-dev/pytest`'s root
+  `CHANGELOG.rst` is **230 bytes** saying the changelog lives elsewhere; the real
+  one is **500,693 bytes** at `doc/en/changelog.rst`. A file with no
+  version-bearing headings is treated as a signpost: the script follows one
+  same-repository path it names, at the ref being read, and says it did. Where
+  there is nowhere to go it says *"carries no version headings at all"* — never
+  *"0 sections"*, which would read as a changelog with nothing to say (#133).
+- **It reads headings in both Markdown syntaxes, and outside code only.**
+  `pre-commit/pre-commit` writes `4.6.2 - 2026-08-10` over a rule of `=` (setext)
+  rather than `## 4.6.2` (ATX); pytest's reStructuredText does the same with `=`
+  for versions and `-` for subsections. An ATX-only read found no version in
+  either. And `python/mypy` puts `# comment` lines in its Python examples, which
+  an unfenced read took for headings: `## Mypy 2.0` came back as 34 of its 246
+  lines.
+
+  **Finding the section is not the same as reconciling against it**, and the
+  difference is measured. The reconciliation matches a commit's *wording*, which
+  fits a generated changelog whose entries *are* the commit subjects. A
+  hand-written one paraphrases: with pytest's 8.4.2 section now read in full,
+  **21 of 21** commits still come back unreconciled, and pre-commit's 4.6.2
+  stays at **2 of 3**. What the fix changes is what reaches you — **3,851 bytes**
+  of pytest's changelog in the evidence file where there were none. **Read it**;
+  on a hand-written changelog the unreconciled count is a **ceiling** — the
+  matcher misses paraphrases, so it overstates what the prose left out — and it
+  is not a verdict until you have.
 - **It says which classifier ran.** Where the project writes conventional
   commits it reads only fix types; where it does not, it filters nothing —
   because a filter keyed on `fix(` reports **zero fixes** for `mypy`
@@ -735,11 +760,74 @@ under a config that disables specific rules a newly added rule is live the momen
 it lands, and under one that enables specific rules it is inert.
 
 A gate with no write mode — a type checker, a test suite — leaves the tree
-untouched and `gate_diff` says so. But **"no run changed any file" has three
+untouched and `gate_diff` says so. But **"no run changed any file" has four
 causes**, and the tool deliberately does not choose between them: you gave a
 read-only invocation, or the tree already satisfies every version, or the gate has
-nothing to write. Only the first is a mistake; the second is a real agreement.
-Decide which, and say so — do not report the weaker reading by default.
+nothing to write, or **it scanned nothing at all**. Only the first is a mistake;
+the second is a real agreement; the fourth makes the zero meaningless. Decide
+which, and say so — do not report the weaker reading by default.
+
+Each run now prints the tool's last line as `said:`, because that is where a tool
+says how much it looked at. Measured on this repository's own gates:
+`rumdl check --fix` ends `No issues found in 41 files`, and on an empty tree
+`No markdown files found to check.`; `ruff format` ends `255 files left
+unchanged`. **`ruff check --fix` ends `All checks passed!` at exit 0 whether it
+checked 214 files or an empty directory** — so for that gate the line cannot rule
+the fourth cause out, and `ruff check --show-files . | grep -c '\.py'` can (214
+against 0). Round twenty-one of the replay gate re-ran every tool by hand to get
+this, because the output was captured and never shown.
+
+### A fix *above* the proposal: was the bug already in the current pin?
+
+`SKILL.md` Phase 7 decides Hold against follow-up on whether the bump moves
+**into** a problem. For an entry in the adopted range the table there derives it.
+For a fix released **after** the proposed version it cannot: *"fixed in 0.2.74"*
+says where a bug ends, not where it began — and where it began is the whole
+question. If it began between the current pin and the proposal, the bump moves
+into it and that is a Hold; if it predates the pin, the bump changes nothing and
+it is a follow-up.
+
+**First, check whether the fix says.** Changelogs and fix commits often name the
+release that regressed — `pre-commit` writes *"Regressed in 4.6.1"* under the
+entry itself. Compare that to the current pin and stop; nothing needs to run.
+
+**Otherwise, run the fix's own reproducer at the three versions.** The fix commit
+usually adds the regression test whose input shows the bug; read it with
+`gh api repos/<owner>/<repo>/commits/<sha>` and keep the input small:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
+
+# Outside the repository's trees: the input is synthetic, and the question is
+# about the tool, not about this repo.
+F="$SCRATCH/repro-<pkg>"; mkdir -p "$F" && cd "$F" || exit 2
+# <input> is the reproducer, written from the fix commit's own test.
+for v in <current> <proposed> <fixed>; do
+  cp <input> "at-$v.<ext>"
+  uv run -q --no-project --with "<pkg>==$v" <tool> <write-mode args> "at-$v.<ext>"
+  echo "$v exit: $?"
+done
+diff "at-<current>.<ext>" "at-<proposed>.<ext>"; echo "current vs proposed: $?"
+diff "at-<proposed>.<ext>" "at-<fixed>.<ext>"; echo "proposed vs fixed: $?"
+```
+
+**Read the three `exit:` lines before either `diff`.** A run that failed — an
+install that broke, a flag an old version does not know — leaves its file exactly
+as the input, and that reads as a version that changed nothing. Then read the two
+`diff` statuses together. **Current and proposed identical** (`0`),
+proposed and fixed different (`1`): the bug predates the pin, the bump neither
+adds nor removes it — not a Hold. **Current and proposed differ** in the buggy
+direction: the bump moves into it — Hold. **Proposed and fixed identical**: the
+reproducer does not reproduce, and the answer is underivable rather than clean.
+
+**The gate is the reason this lives here and not in Phase 7.** The runs execute
+the proposed version, which is the code under audit, and `--no-execute` defines a
+run as Phases 0–3 and 6–7 without ever reaching `$MAY_EXECUTE` — so a block in
+Phase 7 would run under the flag that forbids it. Round twenty-one wrote this
+loop by hand, correctly, and without the gate, because nothing supplied one.
 
 ## Phase 5 — Independent reproduction
 
@@ -782,7 +870,18 @@ already derived which packages moved, and the environment will say which ones it
 has:
 
 ```bash
-uv pip list --format=freeze | grep -E '^(<the packages Phase 1 named>)='
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
+cd "$SCRATCH/pr-<N>" || exit 2
+
+# Pinned to this environment, and captured rather than piped: a bare `uv pip
+# list` with no .venv exits 0 listing uv's own Python, and a pipe would hand
+# its status to grep, whose "no match" then reads as "not installed".
+LIST=$(uv pip list --python .venv/bin/python --format=freeze); RC=$?
+[ "$RC" -eq 0 ] || { echo "could not list the environment ($RC) — underivable, not absent" >&2; exit 2; }
+printf '%s\n' "$LIST" | grep -E '^(<the packages Phase 1 named>)='; echo "reconcile exit: $?"
 ```
 
 Every name Phase 1 listed should come back at the version the PR proposes. A name
@@ -953,9 +1052,38 @@ it built**, rather than the auditor's own `python3`, which may not be the
 interpreter uv chose:
 
 ```bash
-uv run python -V                  # inside the synced environment
-uv pip list --format=freeze       # the versions actually materialised
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
+cd "$SCRATCH/pr-<N>" || exit 2
+.venv/bin/python -V; echo "interpreter exit: $?"
+uv pip list --python .venv/bin/python --format=freeze; echo "list exit: $?"
 ```
+
+**Both lines read the environment Phase 5 built, and neither can make one.**
+Each obvious form fails silently, measured with uv 0.12.17 on the replay subject:
+
+| Form | With no `.venv` |
+|---|---|
+| `uv run python -V` | **builds one** — `uv run` syncs first, installing the project editable, which runs its build backend. That is the PR's code, and this block used to run it with no `$MAY_EXECUTE` gate |
+| `uv run --no-sync python -V` | creates an **empty** `.venv`, reports *its* Python at exit 0 |
+| `uv pip list --format=freeze` | exits **0** listing uv's own managed Python — *"Using Python 3.13.12 environment at ~/.local/share/uv/python/…"* — a different environment, reported as this one |
+| `.venv/bin/python -V` | exit **127**, *No such file or directory* |
+| `uv pip list --python .venv/bin/python` | exit **2**, *No virtual environment … found* |
+
+The last two are the ones above. Key on both `exit` lines: a missing environment
+means Phase 5 did not build one, which is a finding about Phase 5, not an answer
+about the interpreter.
+
+**And the package list runs code, which is why this block is gated.** Measured
+with a `.pth` file planted in the environment: `.venv/bin/python -V` does **not**
+execute it — the version prints before `site` initialises — but
+`uv pip list --python .venv/bin/python` **does**, because uv starts the
+interpreter to inspect it, and so does any `python -c`. A `.pth` file is an
+ordinary way for a package to run code at interpreter start, and every package in
+this environment came from the PR's lockfile. Once Phase 5 has synced, launching
+that interpreter with `site` enabled is running the code under audit.
 
 The Phase 1 script prints the fork list — `forked packages: uv pins these at more
 than one version` — covering the **whole lockfile**, so the names and versions to
@@ -975,7 +1103,13 @@ name from the second group** — that asserts a check the run did not make.
 version** and it is a deliberate escalation, not the default:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
+cd "$SCRATCH/pr-<N>" || exit 2
 uv sync --locked --python <floor>   # the floor from requires-python
+echo "floor sync exit: $?"
 ```
 
 It costs an interpreter download and can fail for reasons that have nothing to

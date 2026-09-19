@@ -107,6 +107,7 @@ Requires Python 3.11+. Network: `gh api`, and PyPI for `--package`.
 from __future__ import annotations
 
 import argparse
+import datetime
 import difflib
 import json
 import os
@@ -117,7 +118,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 TIMEOUT = 60
 
@@ -186,6 +187,24 @@ CHANGELOG_NAME = re.compile(
 # which version is `section_for`'s problem, and it is harder than it looks: the
 # link target carries the *previous* version.
 HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+# A setext heading is a line of text with a rule of `=` (level 1) or `-` (level 2)
+# under it. `pre-commit/pre-commit` heads every version this way, and so does
+# `pytest`'s reStructuredText changelog, which uses the same two characters.
+SETEXT_RULE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+# Lines that cannot be the text of a setext heading: list items, blockquotes,
+# tables, HTML. A `-` rule under a list item is a thematic break, not a heading.
+NOT_PARAGRAPH = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s|>|\||<)")
+FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+VERSION_TOKEN = re.compile(r"\d+\.\d+")
+# A repo-relative path to something named like a changelog, bare or inside a
+# `github.com/<owner>/<repo>/blob/<ref>/` URL. Only ever followed from a file
+# that carries no version headings of its own -- see `changelog_at`.
+POINTER = re.compile(
+    r"(?:github\.com/(?P<slug>[\w.-]+/[\w.-]+)/blob/[^/\s]+/)?"
+    r"(?P<path>(?:[\w.-]+/)+(?:changelog|changes|history|news|release[-_]?notes)[\w.-]*"
+    r"\.(?:md|rst|txt))",
+    re.IGNORECASE,
+)
 
 # How alike two entries must read before one counts as the other. Deliberately
 # forgiving of rewording and deliberately not of omission -- see the module
@@ -336,7 +355,7 @@ def resolve_repo(package: str) -> str:
     )
 
 
-def releases(slug: str) -> list[dict[str, str]]:
+def releases(slug: str) -> list[dict[str, Any]]:
     """Every published release, newest first: tag, body, date, both stamps.
 
     `--paginate` because a long-lived project's current release is not on page
@@ -360,7 +379,8 @@ def releases(slug: str) -> list[dict[str, str]]:
             "--paginate",
             "--jq",
             ".[] | {tag: .tag_name, body: .body, at: (.published_at // .created_at), "
-            "published: .published_at, updated: .updated_at}",
+            "published: .published_at, updated: .updated_at, "
+            "assets: (.assets | length), assets_updated: ([.assets[].updated_at] | max)}",
         ]
     ).strip()
     if not rows:
@@ -371,19 +391,63 @@ def releases(slug: str) -> list[dict[str, str]]:
         fail(f"the release list for {slug} did not parse: {exc}")
 
 
-def edited_since_published(row: dict[str, str]) -> str | None:
-    """ "EDITED" where a release body changed after its tag was cut, else None.
+# How close the release's `updated_at` must sit to its last asset upload for the
+# upload to explain it. Measured 0-1s on every asset-explained release checked.
+ASSET_SLACK = datetime.timedelta(seconds=60)
 
-    Returns the marker, not a bool, so the caller cannot accidentally render a
-    missing answer as a clean one: where either stamp is absent this says
+
+def _when(stamp: str) -> datetime.datetime:
+    return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def edited_since_published(row: dict[str, Any]) -> str | None:
+    """ "EDITED" where a release changed after publication and no asset upload
+    explains it; None when untouched or when an upload does.
+
+    **`updated_at` moves for asset uploads too, and 0.44.0 marked those as
+    edits.** Round twenty-one of the replay gate, 2026-09-19: `rumdl` v0.2.73 was
+    published 17:36:49 and its fourteen assets uploaded at 19:07:29, one second
+    before `updated_at` -- and this printed *"EDITED ... This is the current
+    text, not what went out with the tag"* about a body that is byte-identical
+    to its changelog section at the tag. A false claim, from the check written to
+    stop false claims. The fact that assets move `updated_at` was already
+    measured and written into 0.44.0's changelog; the check was built without it.
+
+    The discriminator is in the same response: the latest asset's `updated_at`.
+    Measured on the real edits -- rumdl v0.2.61, .64, .65, rewritten hours to
+    days later -- the release's stamp sits the full gap past the last asset;
+    on the asset-only ones it sits within a second. Where a release has no
+    assets at all, nothing can explain the change away, and it is marked.
+
+    What this cannot see: a body edited in the same minute an asset was
+    re-uploaded. And "changed" is all it can prove -- a retitle or a prerelease
+    flip moves the stamp too -- which is why the marker says the notes *may* not
+    be the announcement, not that they are not.
+
+    Returns the marker, not a bool, so the caller cannot render a missing answer
+    as a clean one: where a stamp or the asset list is absent this says
     `unknown`, which is a third state and reads as one.
     """
     published, updated = row.get("published"), row.get("updated")
-    if not published or not updated:
+    if (
+        not isinstance(published, str)
+        or not isinstance(updated, str)
+        or not published
+        or not updated
+    ):
         return "edit status unknown -- the release carried no timestamps"
-    if updated > published:
-        return f"EDITED {updated}, after publication at {published}"
-    return None
+    if _when(updated) <= _when(published):
+        return None
+    assets, last_asset = row.get("assets"), row.get("assets_updated")
+    if assets is None:
+        return "edit status unknown -- the release carried no asset list"
+    if (
+        isinstance(last_asset, str)
+        and last_asset
+        and _when(updated) - _when(last_asset) <= ASSET_SLACK
+    ):
+        return None
+    return f"EDITED {updated}, after publication at {published}, and not by an asset upload"
 
 
 def match_tag(version: str, published: list[str], slug: str) -> str | None:
@@ -470,15 +534,118 @@ def changelog_at(slug: str, tag: str | None) -> tuple[str, str] | None:
     if not names:
         return None
     name = sorted(names)[0]
-    text = _gh(
-        [
-            "api",
-            f"repos/{slug}/contents/{name}{ref}",
-            "-H",
-            "Accept: application/vnd.github.raw",
-        ]
-    )
+    text = _raw(slug, name, ref)
+    if text and not version_headings(text):
+        followed = _follow_pointer(slug, name, text, ref)
+        if followed:
+            return followed
     return (name, text) if text else None
+
+
+def _raw(slug: str, path: str, ref: str) -> str | None:
+    return _gh(
+        ["api", f"repos/{slug}/contents/{path}{ref}", "-H", "Accept: application/vnd.github.raw"]
+    )
+
+
+def version_headings(text: str) -> int:
+    """How many headings in `text` carry a version-shaped token.
+
+    Zero is the signature of a changelog that is not one -- a signpost. A real
+    changelog heads its sections with versions; a pointer heads itself with the
+    word *Changelog* and says where to look.
+    """
+    return sum(
+        1 for _, title in headings(text.splitlines()).values() if VERSION_TOKEN.search(title)
+    )
+
+
+def _follow_pointer(slug: str, name: str, text: str, ref: str) -> tuple[str, str] | None:
+    """One hop out of a stub, to a path in the same repository, at the same ref.
+
+    **A matched name is not a changelog.** `pytest-dev/pytest` keeps a root
+    `CHANGELOG.rst` of **230 bytes** that says the changelog is elsewhere; the
+    real one is **500,693 bytes** at `doc/en/changelog.rst`. Matching the name
+    was the fix for guessing it (a guessed name 404s, and a 404 reads as "keeps
+    no changelog") -- and the measured hazard is one step past that: the name
+    matched, the file fetched, and it was a signpost, reported exactly as a
+    project with no changelog at all would be (#133).
+
+    Only same-repository paths, only one hop, only from a file with no version
+    headings of its own, and only a target that *has* them. The ref is the one
+    being read, not whatever branch the pointer's URL names -- pytest's says
+    `blob/main/`, and following that from a tag read would answer a question
+    about a different commit.
+    """
+    for match in POINTER.finditer(text):
+        owner = match.group("slug")
+        if owner and owner.lower() != slug.lower():
+            continue
+        path = match.group("path")
+        target = _raw(slug, path, ref)
+        if target and version_headings(target):
+            return (f"{path} (via the pointer in {name})", target)
+    return None
+
+
+def headings(lines: list[str]) -> dict[int, tuple[int, str]]:
+    """Line index -> (level, title) for every heading, ATX and setext alike.
+
+    **Setext, because the `pre-commit` ecosystem's own repository uses it.**
+    `pre-commit/pre-commit` writes `4.6.2 - 2026-08-10` over a rule of `=`, and
+    an ATX-only reader walks all 72,898 bytes of that file and finds no version
+    at all -- a successful read that parses to nothing, reported as "no section"
+    (#133). `pytest`'s changelog is reStructuredText and underlines its versions
+    with `=` and its subsections with `-`, which is the same two-level scheme, so
+    the one rule covers both.
+
+    **Code fences are skipped**, and not as a nicety. `python/mypy` heads its
+    versions at `##` and puts Python in its examples, so a `# comment` inside a
+    fence read as a level-1 heading and ended the section early: measured
+    2026-09-19, `## Mypy 2.0` came back as 34 of its 246 lines, stopped at
+    `# mypy: allow-redefinition`. Three of mypy's six latest sections were cut.
+
+    Stricter than CommonMark in one place, deliberately: the text line must
+    follow a blank line (or an RST overline). A changelog heads a version with
+    one line, and requiring the gap stops the last line of an ordinary paragraph
+    from becoming a heading because a `---` thematic break happens to follow it.
+    YAML front matter is skipped for the same reason -- its closing `---` sits
+    under a `key: value` line.
+    """
+    found: dict[int, tuple[int, str]] = {}
+    start = 0
+    if lines and lines[0].strip() == "---":
+        for index in range(1, len(lines)):
+            if lines[index].strip() in ("---", "..."):
+                start = index + 1
+                break
+    fence = ""
+    for index in range(start, len(lines)):
+        line = lines[index]
+        opened = FENCE_OPEN.match(line)
+        if opened:
+            marker = opened.group(1)
+            if not fence:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence):
+                fence = ""
+            continue
+        if fence:
+            continue
+        atx = HEADING.match(line)
+        if atx:
+            found[index] = (len(atx.group(1)), atx.group(2))
+            continue
+        if index + 1 >= len(lines) or not line.strip():
+            continue
+        rule = SETEXT_RULE.match(lines[index + 1])
+        if not rule or NOT_PARAGRAPH.match(line) or SETEXT_RULE.match(line):
+            continue
+        before = lines[index - 1] if index > start else ""
+        if before.strip() and before.strip() != lines[index + 1].strip():
+            continue
+        found[index] = (1 if rule.group(1)[0] == "=" else 2, line.strip())
+    return found
 
 
 def section_for(text: str, version: str) -> str:
@@ -497,22 +664,19 @@ def section_for(text: str, version: str) -> str:
     answer, and only one of them leads with the number.
     """
     lines = text.splitlines()
+    found = headings(lines)
     wanted = {version, f"v{version}"}
-    for index, line in enumerate(lines):
-        head = HEADING.match(line)
-        if not head:
-            continue
-        level, title = len(head.group(1)), head.group(2)
+    for index, (level, title) in sorted(found.items()):
         label = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", title)
         tokens = {token.strip("[](){}<>,:;.") for token in label.split()}
         if not (tokens & wanted):
             continue
-        body = [line]
-        for following in lines[index + 1 :]:
-            nxt = HEADING.match(following)
-            if nxt and len(nxt.group(1)) <= level:
+        body = [lines[index]]
+        for position in range(index + 1, len(lines)):
+            nxt = found.get(position)
+            if nxt and nxt[0] <= level:
                 break
-            body.append(following)
+            body.append(lines[position])
         return "\n".join(body).rstrip()
     return ""
 
@@ -793,7 +957,7 @@ def main() -> int:
         header = f"## rung 1 -- release notes, {row['tag']} ({row['at']})"
         if mark:
             edits.append(f"{row['tag']}: {mark}")
-            header += f"\n\n**{mark}.** This is the current text, not what went out with the tag."
+            header += f"\n\n**{mark}.** This may not be the text that went out with the tag."
         blocks.append(f"{header}\n\n{row['body']}")
     print(f"rung 1 -- release notes: {len(window)} release(s) in the gap")
     for line in edits:
@@ -823,7 +987,12 @@ def main() -> int:
                     f"changelog is rewritten in full at every release, so the entry for one\n"
                     f"version is a function of the ref you read it at.\n\n{head_body}"
                 )
-        print(f"rung 2 -- {name}: {sections} section(s) for the versions in the gap")
+        if version_headings(text):
+            print(f"rung 2 -- {name}: {sections} section(s) for the versions in the gap")
+        else:
+            print(f"rung 2 -- {name} carries no version headings at all ({len(text)} bytes)")
+            print("         -- a pointer or a stub, not a changelog with nothing to say;")
+            print("            no same-repo path in it led to one. Report it; it is not 'none'.")
         for tag in regenerated:
             print(f"         {tag}: the section at the default branch DIFFERS")
             print(f"                 from the one at {to_tag} -- both are in the evidence file")
