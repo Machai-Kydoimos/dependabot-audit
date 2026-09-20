@@ -143,6 +143,51 @@ def tables(body: str) -> list[list[str]]:
     return found
 
 
+# A module that calls none of these executes nothing, so no string it holds can
+# be a command — whatever that string happens to spell. `os` is deliberately not
+# a module here: `verify_run.py` imports it for `os.environ`, and treating the
+# import as capability would put every non-executing script back in scope.
+_EXEC_MODULES = frozenset({"subprocess", "pty", "runpy", "multiprocessing"})
+_EXEC_CALLS = (
+    "subprocess.",
+    "os.system",
+    "os.popen",
+    "os.exec",
+    "os.spawn",
+    "os.posix_spawn",
+)
+
+
+def _dotted(node: ast.AST) -> str:
+    """`os.path.realpath` for the attribute chain, `""` for anything else."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _can_execute(tree: ast.AST) -> bool:
+    """Can this module run a command at all?
+
+    Imports count as well as calls, because `from subprocess import run` leaves
+    the call spelled `run(...)` with nothing dotted to match.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(a.name.split(".")[0] in _EXEC_MODULES for a in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] in _EXEC_MODULES:
+                return True
+        elif isinstance(node, ast.Call) and _dotted(node.func).startswith(_EXEC_CALLS):
+            return True
+    return False
+
+
 def _code_only(source: str, *, printed: bool = True) -> str:
     """A Python module's executable text, with comments and docstrings removed.
 
@@ -189,6 +234,20 @@ def _code_only(source: str, *, printed: bool = True) -> str:
             and isinstance(first.value.value, str)
         ):
             node.body = node.body[1:] or [ast.Pass()]
+    # #146. A script that executes nothing cannot carry a command in a string,
+    # so its literals are prose and a guard must not read them as code. Adding
+    # `verify_run.py` to Phase 7 made the `--no-execute` guard report that the
+    # phase *builds the audited tree*, off a sentence explaining the trap the
+    # script detects. 0.49.0 reworded the sentence; this fixes the reading.
+    #
+    # Only the literals of a non-executing module go. `subprocess.run(["uv",
+    # "sync"])` carries its command in a string too, and that is the case the
+    # guard exists for — measured: of the nine scripts, seven call
+    # `subprocess.run` and keep every literal they hold.
+    if not _can_execute(tree):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                node.value = ""
     return ast.unparse(tree)
 
 
@@ -1314,9 +1373,16 @@ class TestTheRepoConfigIsReadAtARef(SkillHarness):
     # two refs and reads neither working tree. 0.36.0 added one of each while
     # deriving the workflow list, and a `show`-only pattern called both
     # working-tree reads.
+    # `git grep <pattern> "<ref>" -- <pathspec>` is the fourth form, added in
+    # 0.51.0 with Phase 6's install-step scan: it takes the ref *after* the
+    # pattern rather than joined to the path by a colon, so the three patterns
+    # above called a pinned read a working-tree one. The `[^"\n]*` is what
+    # crosses the single-quoted pattern, and it cannot cross the ref's own quote
+    # — so a `git grep` with no ref still fails, which is the point.
     AT_A_REF = re.compile(
         r'git (?:show|ls-tree[^"\n]*) "(?:pr-<N>|\$\{?BASE_SHA\}?|\$\{?DEFAULT\}?):'
         r'|git diff[^"\n]*"\$\{?BASE_SHA\}?\.{2,3}pr-<N>"'
+        r'|git grep[^"\n]*"(?:pr-<N>|\$\{?BASE_SHA\}?|\$\{?DEFAULT\}?)"'
     )
 
     def test_phase_0_reads_the_gate_list_at_a_ref(self):
@@ -6016,3 +6082,152 @@ class TestPhase2ProvesTheInstrumentBeforeReadingItsSilence(SkillHarness):
             f"a file count taken without --isolated describes a different run: {counts}",
         )
         self.assertIn("same isolation", self.flat(2))
+
+
+class TestAScriptsProseIsNotReadAsItsCode(SkillHarness):
+    """#146. `reachable()` is a phase's shell plus the source of every script it
+    names, and until 0.51.0 that source included string literals — so a script
+    that *explains* a command in its output read as a script that *runs* it.
+
+    Adding `verify_run.py` to Phase 7 made the `--no-execute` guard report that
+    the phase builds and installs the audited tree. `verify_run.py` imports no
+    `subprocess` and executes nothing; the sentence it prints about the trap it
+    detects contains the words. 0.49.0 reworded the sentence, which is bending
+    prose around a blind spot; this fixes the reading instead.
+
+    The obvious fix — strip every literal — would break the guard it protects,
+    because `subprocess.run(["uv", "sync"])` carries its command in a literal
+    too. So capability decides: a module that cannot execute cannot command.
+    """
+
+    def test_a_non_executing_script_carries_no_command(self) -> None:
+        src = (PLUGIN / "scripts/verify_run.py").read_text(encoding="utf-8")
+        self.assertFalse(_can_execute(ast.parse(src)))
+        self.assertNotIn("uv run", _code_only(src))
+
+    def test_the_guard_is_not_passing_because_the_prose_was_bent_again(self) -> None:
+        """Anti-vacuity, and the reason this test exists at all.
+
+        0.49.0 made the suite green by taking the words out of the script. If
+        they go out again the fix above is untested and this stays green on
+        nothing — so pin that the literal is really there to be misread.
+
+        Asserted over the module's **string literals**, not its raw text: a
+        docstring or a comment mentioning `uv run` is stripped before the guard
+        ever sees it, so matching those would be the vacuity this test is for.
+        """
+        tree = ast.parse((PLUGIN / "scripts/verify_run.py").read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+        }
+        literals = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+        ]
+        self.assertTrue(
+            any("uv run" in s for s in literals),
+            "no string literal in verify_run.py spells a command any more, so the "
+            "fix above is being tested against nothing — restore the wording "
+            "rather than this assertion",
+        )
+
+    def test_an_executing_script_keeps_its_command(self) -> None:
+        code = _code_only('import subprocess\nsubprocess.run(["uv", "sync"])\n')
+        self.assertIn("uv", code)
+
+    def test_a_bare_from_import_still_counts_as_capability(self) -> None:
+        """`from subprocess import run` leaves the call spelled `run(...)`, with
+        nothing dotted for a call-name match to find."""
+        code = _code_only('from subprocess import run\nrun(["uv", "sync"])\n')
+        self.assertIn("uv", code)
+
+    def test_os_system_counts_without_importing_subprocess(self) -> None:
+        code = _code_only('import os\nos.system("uv sync")\n')
+        self.assertIn("uv sync", code)
+
+    def test_importing_os_is_not_by_itself_capability(self) -> None:
+        """`verify_run.py` imports `os` for `os.environ`. Treating that as
+        capability would put every non-executing script back in scope and retire
+        the fix."""
+        self.assertFalse(_can_execute(ast.parse('import os\nx = os.environ.get("uv run")\n')))
+
+    def test_every_script_that_shells_out_is_still_scanned(self) -> None:
+        """Measured rather than assumed: seven of the nine scripts call
+        `subprocess.run`, and all seven keep every literal they hold."""
+        executing = [
+            p.name
+            for p in sorted((PLUGIN / "scripts").glob("*.py"))
+            if _can_execute(ast.parse(p.read_text(encoding="utf-8")))
+        ]
+        self.assertNotIn("verify_run.py", executing)
+        self.assertGreaterEqual(len(executing), 6, executing)
+
+
+class TestTheGrepFormStillDiscriminates(SkillHarness):
+    """0.51.0 widened `AT_A_REF` to accept `git grep <pattern> "<ref>"`. A
+    widened pattern that accepts everything retires the guard it belongs to, so
+    the unpinned form has to keep failing."""
+
+    def test_a_grep_without_a_ref_is_still_a_working_tree_read(self) -> None:
+        pat = TestTheRepoConfigIsReadAtARef.AT_A_REF
+        self.assertNotRegex("git grep -nE 'uv sync' -- '.github/workflows/'", pat)
+        self.assertNotRegex("grep -rn 'uv sync' .github/workflows/", pat)
+
+    def test_the_pinned_form_is_accepted(self) -> None:
+        pat = TestTheRepoConfigIsReadAtARef.AT_A_REF
+        self.assertRegex("git grep -nE 'uv sync' \"pr-<N>\" -- '.github/workflows/'", pat)
+
+    def test_the_ref_must_be_a_derived_one(self) -> None:
+        """`"main"` is not a ref this audit derived, and reading at it is the
+        same checkout-drift defect one spelling over."""
+        pat = TestTheRepoConfigIsReadAtARef.AT_A_REF
+        self.assertNotRegex("git grep -nE 'uv sync' \"main\" -- '.github/workflows/'", pat)
+
+
+class TestPhase6AsksTheReachabilityQuestionThatFitsTheDiff(SkillHarness):
+    """#144, handed back by round twenty-seven and declined rather than acted on.
+
+    Phase 6 asked one question — *does a `pull_request` trigger the workflow the
+    diff touched?* — written for an actions bump. A `uv.lock` bump touches no
+    workflow, so that set is empty every time and the intersection with it is
+    too. Read literally, the phase manufactures *"CI is green for reasons
+    unrelated to this diff"* on every dependency bump this plugin exists for,
+    while on #437 every job runs `uv sync --group dev` and then the bumped tools.
+    """
+
+    def test_the_manifest_case_has_its_own_question(self) -> None:
+        flat = self.flat(6)
+        self.assertIn("dependency manifest", flat)
+        self.assertIn("install from it", flat)
+
+    def test_the_manifest_case_has_a_command(self) -> None:
+        """#127's class: the row that had no command is the row that got read
+        off the other row's rule."""
+        runs = self.reachable(6)
+        self.assertIn("install-step scan exit", runs)
+        self.assertIn(".github/workflows/", runs)
+
+    def test_the_empty_list_is_not_read_as_a_finding(self) -> None:
+        flat = self.flat(6)
+        self.assertIn("manufactures that finding on every lockfile bump", flat)
+
+    def test_the_changed_list_is_captured_not_read_off_an_exit_code(self) -> None:
+        """`git diff --name-only` exits 0 printing nothing both when no workflow
+        changed and when it could not run — the `exit 0 is not a zero` trap that
+        0.48.0 fixed in Phase 2's type scan (#141)."""
+        runs = self.reachable(6)
+        self.assertIn("CHANGED=$(git diff --name-only", runs)
+        self.assertIn("underivable, not 'nothing changed'", runs)
+
+    def test_all_three_cases_are_present(self) -> None:
+        flat = self.flat(6)
+        for case in ("a **workflow file**", "a **dependency manifest**", "**neither**"):
+            self.assertIn(case.lower(), flat, f"Phase 6's reachability table is missing {case}")

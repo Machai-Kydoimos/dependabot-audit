@@ -1126,9 +1126,19 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
 # `<workflow>` is Phase 0's derived list, narrowed to what this PR's diff
-# touched — the same derivation, the same token, one filter added.
-git diff --name-only "$BASE_SHA...pr-<N>" -- '.github/workflows/'
-echo "changed-workflow list exit: $?"
+# touched — the same derivation, the same token, one filter added. Captured,
+# because this prints nothing at exit 0 both when no workflow changed and when
+# it could not run, and for a lockfile bump the empty list is the NORMAL result.
+CHANGED=$(git diff --name-only "$BASE_SHA...pr-<N>" -- '.github/workflows/') \
+  || { echo "cannot diff $BASE_SHA...pr-<N> — underivable, not 'nothing changed'" >&2; exit 2; }
+printf 'workflows changed: %s\n' "${CHANGED:-<none — take the manifest question below>}"
+
+# The manifest case: which workflows install from the file this PR changed.
+# Deliberately loose. A `run: |` block puts the command on its own line, so
+# anchoring to the `run:` key would miss the commonest shape of the thing being
+# looked for; comment lines come back too and are read off rather than filtered.
+git grep -nE 'uv (sync|run|pip)|pre-commit|astral-sh/setup-uv' "pr-<N>" -- '.github/workflows/'
+echo "install-step scan exit: $?"
 
 # Then, for each name it gave, read its triggers. Captured, not piped:
 # `sed` succeeds on empty input, so a failed read prints nothing at exit 0 and
@@ -1138,12 +1148,35 @@ TRIGGERS=$(git show "pr-<N>:<workflow>") \
 printf '%s\n' "$TRIGGERS" | sed -n '/^on:/,/^[a-z]/p'
 ```
 
-If the intersection of "workflows the diff touched" and "workflows a
-`pull_request` can trigger" is **empty**, say so plainly: CI is green and it is
-green for reasons unrelated to this diff. Then fall back to Phase 5's run-history
-substitute. Observed: a PR changing only `release.yml`, which triggers on
+**Which workflows to feed that read depends on what the diff changed, and the
+two cases are opposite questions.** The trigger read above is the same command
+either way; the list it runs over is not:
+
+| The diff changed | The question | The list |
+|---|---|---|
+| a **workflow file** | does a `pull_request` trigger *the workflow that changed*? | `$CHANGED` |
+| a **dependency manifest** — `uv.lock`, `.pre-commit-config.yaml` | do the workflows a `pull_request` *does* trigger install from it? | what the install-step scan named |
+| **neither** | nothing is reachable by this route | — and then the green is unattributed |
+
+Row one's empty intersection is the finding: CI is green and green for reasons
+unrelated to this diff. Then fall back to Phase 5's run-history substitute.
+Observed: a PR changing only `release.yml`, which triggers on
 `push: tags: [<prefix>-*]`, carried three green checks — all of them from the
 repo's separate test workflow.
+
+**Row one's rule read onto row two manufactures that finding on every lockfile
+bump.** A `uv.lock` or `.pre-commit-config.yaml` bump touches no workflow file,
+so `$CHANGED` is empty and the intersection is empty with it — every time, by
+construction, for the bumps this plugin exists to audit. On `fpga-board-sim` #437
+every CI job runs `uv sync --group dev` and then the bumped tools, which is as
+reachable as a change gets, and the row-one reading would have called that green
+unrelated. Round twenty-seven met this, declined to write the false finding, and
+handed the gap back instead of acting on it (#144) — which is the recovery not to
+rely on twice.
+
+`git grep` exits `0` found, `1` a real zero and `128` could not run, as in
+Phase 2. A `1` here is the third row and says so; a `128` is `underivable` and
+is not a third row.
 
 **Run the script; it is this phase's three questions in one call.** Every query
 below used to be issued by hand, and three of the seven defects that have shipped
