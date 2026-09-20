@@ -11,6 +11,182 @@ patch.
 
 ## [Unreleased]
 
+## [0.50.0] — 2026-09-20
+
+### What a silent lint run does not prove
+
+Phase 2's `inert here` — *the destructive fix sitting in this gap cannot fire on
+this repo* — is read off a lint run that printed nothing. 0.48.0 (#139) fixed one
+way that reading goes wrong: under an allow-list config the rule is enabled in
+neither run, both go silent, and the silence reads as proof. This version adds
+the two things silence still hides, both of them improvised by round twenty-nine
+before they were written down.
+
+**A silent run and a broken run are the same output, so the run has to be shown
+firing first.** The named run now goes over the fix's own input as a **control**,
+where the rule must fire, before its silence over the repo is read as anything.
+Measured on rumdl 0.2.74 and ruff 0.16.8, and the two tools disagree about
+whether this is even an error:
+
+```
+$ rumdl check --no-config --enable MD999 t.md
+[cli warning] Unknown rule in --enable: MD999 (did you mean: MD009?)
+Success: No issues found in 1 file (2ms)                            # exit 0
+
+$ ruff check --isolated --select NOSUCH999 t.py
+ruff failed
+  Cause: Unknown rule selector `NOSUCH999` in `select` from the CLI   # exit 2
+```
+
+A typo, a rule renamed between versions, or a rule that does not exist yet in the
+locked pin are three ordinary things, and in rumdl all three arrive as a clean
+run. Three more measurements went in with it: `ruff check --isolated --select
+<RULE> --statistics .` prints **nothing at all** on a clean tree — not even `All
+checks passed!`, so the flag that gives the most output when there are findings
+gives the least when there are none; rumdl's success line carries its own file
+count while ruff needs `--show-files`, which must carry the **same isolation**
+(against `exclude = ["vendor"]`, `--show-files` lists 3 files and `--isolated
+--show-files` lists 4, so a count taken with the config describes a different
+run); and a path that does not exist is exit `2`, which matters because the
+control's input is a file the audit just wrote.
+
+**A rule can be neither disabled nor on.** The scope row framed a repo's config as
+two states — an allow-list, which never enables the rule, or a disable-list, under
+which it is live the moment it lands. A newly added rule has a third: **opt-in
+under a disable-list**. Phase 2 now runs the control's input once more with no
+rule named, which answers *is this on by default?* independently of what the repo
+configures. Measured on rumdl 0.2.74, on a file the named run proves carries the
+violation: `--enable MD090` reports it, and the same file with no `--enable`
+reports `MD041` instead and nothing about MD090 — off by default. Round
+twenty-eight read MD090 as live-but-silent under #437's disable-list; that is a
+materially different finding from *nothing ran it at all*.
+
+**And the linter family does not answer it.** On ruff 0.16.8 `N802` is off by
+default while `SIM117` is on — the same `--isolated` run that proves one omitted
+proves the other included. It is a question per rule and per version, which is
+why it is now a run rather than a reading. (This also corrects a sentence of
+0.48.0's: *"leaves the tool on its own defaults, which also omit the rule"* was
+true of the `N802` case it was measured on and is not true in general.)
+
+### Phase 0 no longer loses the default branch to a worktree it already has
+
+Round twenty-nine met a live worktree for `pr-437` left by an earlier audit of the
+same PR. `git worktree prune` ran first, as the procedure specifies, and correctly
+left it alone — it is live, not stale. The fetch then refused, and because both
+refspecs were in one command the refusal took `$DEFAULT` down with it, which is
+what Phase 6's merge simulation needs. Reproduced on git 2.55.0 against a
+synthetic repo:
+
+- combined, with a live worktree on `pr-437`: exit **128**, and `origin/main`
+  stays on its old commit;
+- split, same state: `git fetch origin "$DEFAULT"` exits **0** and advances
+  `origin/main` while the PR refspec still refuses.
+
+So the refspecs are on separate lines. The block also **probes rather than
+reacts**: `git branch --list "pr-<N>" --format='%(worktreepath)'` prints the
+holding worktree's path, or an empty line when none holds it — measured both ways,
+including after `prune`, where the stale case goes empty and the fetch then
+succeeds. That ordering is load-bearing and now has a test: before `prune`, a
+swept worktree answers the same as a live one. Reusing an unfetched `pr-<N>` is
+safe only because the pin assertion is the next thing that runs, and its failure
+message now names the recovery that works — `cleanup.py` first, because "re-run
+Phase 0" on its own refuses again.
+
+### The record sees the Read tool
+
+`plugin-file-read` watches for the audit reading its own procedure by hand, which
+is the signature of the skill not having loaded (#52, and how the 0.22.1 command
+shadowing survived to 0.23.0). The hook matched `Bash` only, so the rule watched
+`cat` and was blind to `Read` — the tool an agent actually reaches for. The
+matcher is now `Bash|Read`, proved against Claude Code with a throwaway plugin
+before being relied on: a Bash entry carries `command`, a Read entry carries
+`file_path` and nothing else, so the record stays small and holds no file
+contents.
+
+The Read half is narrowed twice, and round thirty measured the need for both. It
+matches on **location**, not on the filename pattern the Bash half uses: anything
+under this plugin's own skill directory is this plugin's, and an audited repo
+carrying its own `docs/references/api.md` is the audit doing its job. And it
+matches **`SKILL.md` only, never a reference** — `SKILL.md` is loaded *for* the
+audit, so reading it by hand is the signature of it not having loaded, while a
+reference is fetched *by* the audit, because Read is how a reference loads at
+all. The first version of the rule did not draw that line, and round thirty read
+`references/uv-lock.md` twice, correctly, and was told it had deviated — a
+finding that would have fired on every `uv.lock` audit ever run.
+
+The Bash half still matches a reference, which is a different claim: `wc -l
+references/uv-lock.md` measures the file rather than consulting it, and is what
+round twenty-seven was caught doing.
+
+### Two checks were prototyped and dropped
+
+Both #148 and #149 look mechanisable from the record, and neither is. A rule
+asking whether a named lint run had its default-state probe, and a rule asking
+whether it had a file count, were each written and run against the two recorded
+rounds. Each fired on a round that had established the same thing by a different
+legitimate route — round twenty-eight settled `UP040` with the fix's own input,
+round twenty-nine settled `SIM117` with a loud control and a file count — so each
+scored a false positive on real data at a rate of one round in two.
+
+The boundary underneath both: a `PreToolUse` hook fires **before** the call runs,
+so the record holds what was issued and never what it printed. Every rule here is
+about the shape of a command. `verify_run.py` keeps its four rules, and both its
+docstring and its `RESULT:` line now say this, because a record that cannot hold
+the answer must not be read as having given it.
+
+### What the replay gate showed
+
+Round thirty, `fpga-board-sim` #437, this version as committed: 50 turns, $6.76,
+48 recorded calls, three deviations handed back.
+
+**#147's condition had to be planted, because a clean run cannot reach it.**
+Round twenty-nine's own Phase 7 removed the worktrees it tripped over, so a live
+`pr-437` worktree was recreated at the audit's scratch path first — and the old
+combined fetch confirmed still failing there, exit `128`, on the real repository.
+Round thirty then ran the new block verbatim, reused the worktree, and handed
+back **nothing about it**. The same condition that cost round twenty-nine a
+derived recovery and a filed plugin defect was a non-event.
+
+**The three runs changed two answers, and the audit said which.** `UP040` →
+earned inert, because the control fires at `--target-version py312` and is silent
+at this repo's `py310`. `SIM117` → the instrument is sound, the classic
+nested-`with` shape fires, and the specific 0.16.8 widening is `underivable`
+rather than inert. Its own words: *"my first pass would have claimed `inert here`
+for ruff off the config alone."*
+
+**And it found a defect in one of the fixes under test, which is folded in
+here.** `plugin-file-read` fired on three *correct* reads of
+`references/uv-lock.md`. Reading a reference is the specified path — `SKILL.md`
+Phase 1 says to read it — so the rule was calling the procedure working a
+deviation. The audit reached the same fix independently and added the argument
+that settles it: `references/uv-lock.md` is **29,586 tokens against a
+25,000-token Read cap**, so a correct audit *must* read it at least twice. The
+rule now matches `SKILL.md` only. Validated against round thirty's own record:
+three flagged before, none after, and a `Read` of `SKILL.md` still fires.
+
+No new prose gap. The other two deviations were classed `correct` by the audit
+and read the same way here: supplying the control's input, which is a per-bug
+slot the reference cannot pre-write, and diffing the two gate lists directly.
+
+### Found while building it
+
+- **The prose guard fired on this version's own prose.** Naming `--show-files` in
+  a paragraph without supplying it as a command is exactly #127's class, and
+  `test_every_flag_a_phase_names_is_one_that_phase_runs` failed on it. The command
+  went in rather than the flag coming out.
+- **Two mutation survivors, both test gaps rather than code gaps.** Deleting the
+  third state from the reference's table survived, because SKILL.md's
+  one-sentence version of the same claim kept the phrase in the pooled material
+  the test reads — the claim and the table it is read off are two separate things
+  to lose. And dropping `--isolated` from the file-count command survived, because
+  the test asserted the flag and the sentence separately and a command without
+  `--isolated` still contains `--show-files`. Both tests now pin what they meant.
+- **A third mutation reported "NOT APPLIED" and proved nothing**, which is the
+  hard-wrap failure this repo has hit before: the phrase being mutated spans a
+  newline in the source, so the substitution never matched. Rewritten through the
+  wrap, the guard caught it.
+- `S108` and a `type-arg` both came from the gates rather than from review.
+
 ## [0.49.0] — 2026-09-20
 
 ### The record of what ran
@@ -5749,7 +5925,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.49.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.50.0...HEAD
+[0.50.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.46.0...v0.47.0

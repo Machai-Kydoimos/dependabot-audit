@@ -55,6 +55,8 @@ from verify_run import (  # noqa: E402  # noqa: E402
     count,
     evidence,
     main,
+    reads,
+    under,
     window,
 )
 
@@ -277,6 +279,68 @@ class TestPluginFileRead(unittest.TestCase):
         self.assertNotIn("plugin-file-read", fired(["cat CHANGELOG.md", "head -5 docs/guide.md"]))
 
 
+class TestTheReadToolIsWatchedToo(unittest.TestCase):
+    """0.50.0, #150. Until then the record held Bash only, so this rule watched
+    the *less* likely half of its own case: an agent reading a file reaches for
+    Read, not `cat`.
+
+    The match is on **location**, not on the filename pattern the Bash half uses.
+    An audited repo may carry its own `references/*.md` — reading those is the
+    audit doing its job — and only a file inside this plugin's skill directory
+    is this plugin's.
+    """
+
+    def test_reading_the_skill_through_the_read_tool_is_a_finding(self) -> None:
+        rules = {f.rule for f in check([], [str(SKILL / "SKILL.md")])}
+        self.assertIn("plugin-file-read", rules)
+
+    def test_reading_a_reference_through_the_read_tool_is_not_a_finding(self) -> None:
+        """The asymmetry is the point, and round thirty is why it is here.
+
+        `SKILL.md` is loaded *for* the audit, so reading it by hand means it did
+        not load. A reference is fetched *by* the audit — Read is how a reference
+        loads at all — so a rule matching one fires on every `uv.lock` audit ever
+        run. The first version of this did exactly that: round thirty read
+        `references/uv-lock.md` twice, correctly, and was told it had deviated.
+
+        The Bash half still matches a reference, and that is not the same claim:
+        `wc -l references/uv-lock.md` measures the file rather than consulting it,
+        which is what round twenty-seven was caught doing.
+        """
+        self.assertEqual(check([], [str(SKILL / "references/uv-lock.md")]), [])
+        self.assertIn("plugin-file-read", fired(["wc -l references/uv-lock.md"]))
+
+    def test_the_audited_repos_own_references_are_not_this_plugins(self) -> None:
+        """The false positive that location matching exists to prevent: the
+        Bash-side pattern matches any `references/<name>.md` anywhere."""
+        subject = str(
+            pathlib.Path(tempfile.gettempdir()) / "dbaudit-o-r-437/pr-437/docs/references/api.md"
+        )
+        self.assertTrue(PLUGIN_DOC.search(subject), "the name alone does match — that is the trap")
+        self.assertEqual(check([], [subject]), [])
+
+    def test_a_script_read_is_not_a_document_read(self) -> None:
+        self.assertEqual(check([], [str(SCRIPTS / "verify_run.py")]), [])
+
+    def test_the_detail_says_how_many_came_through_read(self) -> None:
+        found = check(["cat skills/dependabot-audit/SKILL.md"], [str(SKILL / "SKILL.md")])
+        detail = next(f.detail for f in found if f.rule == "plugin-file-read")
+        self.assertIn("2 direct read(s)", detail)
+        self.assertIn("1 of them through the Read tool", detail)
+
+    def test_reads_returns_paths_and_ignores_bash(self) -> None:
+        blob = json.dumps({"tool_name": "Read", "tool_input": {"file_path": "/x.md"}}) + "\n"
+        blob += json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo hi"}}) + "\n"
+        with log_of(blob) as p:
+            self.assertEqual(reads(p), ["/x.md"])
+            self.assertEqual(commands(p), ["echo hi"])
+
+    def test_under_resolves_both_sides(self) -> None:
+        self.assertTrue(under(SKILL, str(SKILL / "references/uv-lock.md")))
+        self.assertFalse(under(SKILL, "/etc/hostname"))
+        self.assertFalse(under(SKILL, str(ROOT / "CHANGELOG.md")))
+
+
 # Verbatim from round twenty-eight (2026-09-20), the first live run with the
 # record switched on. All five of #437's gates carried --frozen inside ONE Bash
 # call, which is what showed that counting calls understates the run.
@@ -424,10 +488,20 @@ class TestTheHookThatWritesTheRecord(unittest.TestCase):
             "hooks.json under the skill directory is never loaded",
         )
 
-    def test_it_is_valid_json_with_a_bash_matcher(self) -> None:
+    def test_it_is_valid_json_and_matches_both_recorded_tools(self) -> None:
+        """`Bash|Read`, proved against Claude Code before being relied on.
+
+        A throwaway plugin with this matcher, one Bash call and one Read call,
+        recorded both: the Bash entry carried `command`, the Read entry carried
+        `file_path` and nothing else. Read is in because reading a plugin file by
+        hand — the deviation `plugin-file-read` exists for — goes through Read far
+        more often than through `cat` (#150).
+        """
         cfg = json.loads(self.HOOKS.read_text(encoding="utf-8"))
         entries = cfg["hooks"]["PreToolUse"]
-        self.assertTrue(any(e.get("matcher") == "Bash" for e in entries))
+        matchers = [e.get("matcher") for e in entries]
+        self.assertTrue(any(m and "Bash" in m for m in matchers), matchers)
+        self.assertTrue(any(m and "Read" in m for m in matchers), matchers)
 
     def test_it_writes_outside_the_audited_repository(self) -> None:
         """Read-only by contract, and a log file is a write. Measured on Claude Code

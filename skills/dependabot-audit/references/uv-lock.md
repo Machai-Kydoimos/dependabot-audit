@@ -449,8 +449,8 @@ wrong about which mode runs on every commit.
 
 **That example is a config that disables a rule. An allow-list config never
 enables one, and dropping it proves nothing at all.** `select = [...]` leaves the
-tool on its own defaults, which also omit the rule, so both runs go silent and
-`inert here` gets written off two runs that tested nothing. Measured on ruff
+tool on its own defaults, and where those omit the rule too both runs go silent
+and `inert here` gets written off two runs that tested nothing. Measured on ruff
 0.16.7 and 0.16.8 against `select = ["E", "F", "I", "UP"]` and a file whose only
 fault is an `N802`:
 
@@ -466,6 +466,79 @@ t.py:1:5: N802 Function name `BadName` should be lowercase          # exit 1
 and the answer is `underivable` rather than `inert here` — take the input from
 the fix's own test. Round twenty-four hit this on #437, whose `select` carries no
 `SIM`, and forced the rules on by hand (#139).
+
+#### Three runs, because silence has three causes
+
+The named run above answers *does the rule fire here*, and its silence is the
+answer this whole section turns on — so the run that produces it is the one thing
+that must not be taken on trust. Same command, same flags, three inputs and one
+omission:
+
+```bash
+# 1. control — the fix's own input, where the rule MUST fire
+uv run --no-project --with <tool>==<locked> <tool> check <no-config> <only-the-fixed-rule> <the fix's own input>
+# 2. exposure — the identical command, this repo's tree
+uv run --no-project --with <tool>==<locked> <tool> check <no-config> <only-the-fixed-rule> .
+# 3. default state — the control's input again, with no rule named
+uv run --no-project --with <tool>==<locked> <tool> check <no-config> <the fix's own input>
+```
+
+| 1 control | 2 exposure | Reading |
+|---|---|---|
+| silent | anything | the **instrument**, not the tree. `underivable` — never `inert here` |
+| fires | silent | `inert here`, and now it is earned: the rule ran and this tree has none |
+| fires | fires | live here. Count them; this is the exposure Phase 7 reports |
+
+**Run 3 is not run 2 over again.** It asks whether the rule is on *without being
+asked for*, which the allow-list / disable-list pair does not cover: a newly
+added rule can be **opt-in under a disable-list**, neither disabled nor on, and a
+config that disables other rules says nothing about it. Measured on rumdl 0.2.74,
+on a file that run 1 proves carries the violation:
+
+```
+$ rumdl check --no-config --enable MD090 t.md
+t.md:3:1: [MD090] Horizontal rule before heading 'Heading' is redundant   # exit 1
+
+$ rumdl check --no-config t.md
+t.md:1:1: [MD041] First line in file should be a level 1 heading          # exit 1
+```
+
+Loud both times, and `MD090` is in neither the second run's output nor its
+defaults. Round twenty-eight read that rule as live-but-silent under #437's
+disable-list; round twenty-nine ran this and found it **off by default**, which
+is a different finding. **The family prefix does not answer it**: on ruff 0.16.8
+`N802` is off by default while `SIM117` is on, so the same `--isolated` run that
+proves one omitted proves the other included. Ask per rule and per version.
+
+**Silence at exit `0` is a documented output of both tools, so read stderr and a
+file count before reading it as clean.** rumdl takes a rule name it does not
+know, says so on stderr, and then reports success:
+
+```
+$ rumdl check --no-config --enable MD999 t.md
+[cli warning] Unknown rule in --enable: MD999 (did you mean: MD009?)
+Success: No issues found in 1 file (2ms)                                 # exit 0
+```
+
+That is a typo, a rule renamed between versions, or a rule that does not exist
+yet in the `<locked>` pin — three ordinary things, all reading as `inert here`.
+ruff refuses the same mistake loudly (`Unknown rule selector` at exit **2**), so
+the two tools disagree about whether this is an error and only one of them stops.
+Three more measurements behind that, all on 0.16.8 / 0.2.74:
+
+- **`--statistics` prints nothing at all on a clean run** — not even
+  `All checks passed!`. The flag that gives the best output when there are
+  findings gives the least when there are none, and that is the run whose silence
+  is being read.
+- **rumdl's success line carries its own file count** (`No issues found in 2
+  files`), so for rumdl the count is free. ruff needs `--show-files`, and it must
+  carry the **same isolation**: against `exclude = ["vendor"]`, `--show-files`
+  lists 3 files and `--isolated --show-files` lists 4, so a count taken with the
+  config does not describe the isolated run.
+- **A path that does not exist is exit `2`, not a clean run** (`Failed to find
+  markdown files`) — worth knowing because run 1's input is a file the audit just
+  wrote, and writing it to the wrong directory is the likeliest way to get a
+  control that cannot fire.
 
 Two ruff traps sit behind that, both measured on 0.16.7 and both quiet:
 
@@ -484,6 +557,10 @@ Two ruff traps sit behind that, both measured on 0.16.7 and both quiet:
 # repo's config sets `preview = true`.
 uv run --no-project --with ruff==<locked> ruff check --isolated --preview --select <RULE> <the same file>
 uv run --no-project --with ruff==<locked> ruff check --statistics <the same file>
+
+# ruff only, and only for run 2 above: the file count rumdl prints for itself.
+# Same flags as the run whose silence is being read, or it describes another one.
+uv run --no-project --with ruff==<locked> ruff check --isolated --select <RULE> --show-files . | wc -l
 ```
 
 ## Phase 3 — Known vulnerabilities

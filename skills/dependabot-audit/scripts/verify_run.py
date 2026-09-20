@@ -9,14 +9,26 @@ exists because the report asserts "I followed this procedure" by silence. On
 transcript showed a flag this procedure names as one not to add.
 
 The record comes from a `PreToolUse` hook (see `hooks/hooks.json`), which appends
-one JSON object per Bash call to `${TMPDIR:-/tmp}/dbaudit-run-<session>.jsonl`.
+one JSON object per matched call to `${TMPDIR:-/tmp}/dbaudit-run-<session>.jsonl`.
 The hook writes there and never into the audited repository: this plugin is
 read-only by contract, and a log file is a write.
 
-The record holds **Bash calls only** — that is the hook's matcher — so a
-deviation carried out through another tool never reaches it. Measured on round
+The record holds **Bash and Read calls** — that is the hook's matcher — so a
+deviation carried out through any other tool never reaches it. Measured on round
 twenty-nine, which returned no finding over 42 recorded calls while the audit
-handed back five real deviations, one of them a plugin defect.
+handed back five real deviations, one of them a plugin defect. `Read` was added
+in 0.50.0 because reading a plugin file by hand, the one deviation this script
+watches for directly, is far likelier to go through `Read` than through `cat`
+(#150) — so the rule was nearly blind in its own direction.
+
+What the record cannot hold is **output**: a `PreToolUse` hook fires before the
+command runs. So every check here is about the *shape* of what was issued, never
+about what it printed. Two rules were prototyped for 0.50.0 and dropped on that
+boundary — one asking whether a named lint run had its default-state probe, one
+asking whether it had a file count — because each fired on a round that had
+established the same thing by a different legitimate route (rounds twenty-eight
+and twenty-nine each used a different one). A check that cannot see the answer
+cannot tell which question was asked.
 
 Scope, stated because the honest boundary matters more than the count: this does
 not diff the run against the procedure line by line. That was prototyped against
@@ -37,6 +49,7 @@ import pathlib
 import re
 import sys
 from dataclasses import dataclass, field
+from typing import Any
 
 SKILL = pathlib.Path(__file__).resolve().parent.parent
 
@@ -156,8 +169,8 @@ def count(pattern: re.Pattern[str], cmds: list[str]) -> int:
     return sum(1 for c in cmds for line in c.splitlines() if pattern.search(line))
 
 
-def commands(log: pathlib.Path) -> list[str]:
-    """Every Bash command the record holds, in order.
+def entries(log: pathlib.Path) -> list[dict[str, Any]]:
+    """Every record the log holds, in order.
 
     A partial final line is normal — the log is appended to while the audit runs
     — and is skipped rather than treated as corruption.
@@ -171,6 +184,15 @@ def commands(log: pathlib.Path) -> list[str]:
             ev = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if isinstance(ev, dict):
+            out.append(ev)
+    return out
+
+
+def commands(log: pathlib.Path) -> list[str]:
+    """Every Bash command the record holds, in order."""
+    out = []
+    for ev in entries(log):
         if ev.get("tool_name") != "Bash":
             continue
         cmd = (ev.get("tool_input") or {}).get("command")
@@ -179,8 +201,39 @@ def commands(log: pathlib.Path) -> list[str]:
     return out
 
 
-def check(cmds: list[str]) -> list[Finding]:
+def reads(log: pathlib.Path) -> list[str]:
+    """Every path the record shows opened with the Read tool.
+
+    The matcher covers `Bash|Read` because reading a file by hand is far more
+    likely to go through Read than through `cat` — so a rule that watches only
+    Bash is blind in the direction it most needs to see (#150). A Read record
+    carries `file_path` and nothing else, measured, so this costs the log almost
+    nothing.
+    """
+    out = []
+    for ev in entries(log):
+        if ev.get("tool_name") != "Read":
+            continue
+        path = (ev.get("tool_input") or {}).get("file_path")
+        if isinstance(path, str) and path.strip():
+            out.append(path)
+    return out
+
+
+def under(parent: pathlib.Path, path: str) -> bool:
+    """Is `path` inside `parent`? Both resolved, so a symlinked $TMPDIR or a
+    worktree reached by two names still compares equal."""
+    try:
+        return pathlib.Path(os.path.realpath(path)).is_relative_to(
+            pathlib.Path(os.path.realpath(parent))
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def check(cmds: list[str], opened: list[str] | None = None) -> list[Finding]:
     findings = []
+    opened = opened or []
 
     def lines_matching(pattern: re.Pattern[str], subset: list[str]) -> list[str]:
         """Every offending line across every offending command, capped for display.
@@ -248,17 +301,33 @@ def check(cmds: list[str]) -> list[Finding]:
             )
 
     read = [c for c in cmds if READ_CMD.search(c) and PLUGIN_DOC.search(c)]
-    if read:
+    # Two narrowings, and round thirty measured the need for both.
+    #
+    # By location, not by filename: anything under this plugin's own skill
+    # directory is this plugin's, and an audited repo carrying its own
+    # `references/*.md` cannot be mistaken for it.
+    #
+    # And `SKILL.md` only, never a reference. SKILL.md is loaded *for* the audit,
+    # so reading it by hand is the signature of it not having loaded (#52). A
+    # reference is fetched *by* the audit — that is how a reference loads at all —
+    # so matching one fires on every `uv.lock` audit ever run. Round thirty read
+    # `references/uv-lock.md` twice through Read, correctly, and the first version
+    # of this rule called it a finding.
+    read_tool = [p for p in opened if pathlib.Path(p).name == "SKILL.md" and under(SKILL, p)]
+    if read or read_tool:
+        shown = [*lines_matching(PLUGIN_DOC, read), *(f"Read({p})" for p in read_tool)]
+        if len(shown) > MAX_SHOWN:
+            shown = [*shown[:MAX_SHOWN], f"... and {len(shown) - MAX_SHOWN} more"]
         findings.append(
             Finding(
                 "plugin-file-read",
-                f"{count(PLUGIN_DOC, read)} command(s) read a plugin document directly rather "
-                "than invoking the "
+                f"{count(PLUGIN_DOC, read) + len(read_tool)} direct read(s) of a plugin document "
+                f"— {len(read_tool)} of them through the Read tool — rather than invoking the "
                 "procedure. That is the signature of the skill not having loaded — it is how the "
                 "0.22.1 command shadowing survived to 0.23.0 — and is a Phase 8 hand-back "
                 "even when "
                 "the report it produced is correct.",
-                lines_matching(PLUGIN_DOC, read),
+                shown,
             )
         )
 
@@ -299,16 +368,17 @@ def main(argv: list[str]) -> int:
         return 128
 
     cmds = commands(log)
+    opened = reads(log)
     if not cmds:
         print(f"underivable: {log} holds no Bash commands.", file=sys.stderr)
         return 128
 
-    results = check(cmds)
+    results = check(cmds, opened)
     defects = [f for f in results if f.kind == "finding"]
     notes = [f for f in results if f.kind == "note"]
 
     print(f"record: {log}")
-    print(f"{len(cmds)} Bash command(s) recorded\n")
+    print(f"{len(cmds)} Bash command(s) and {len(opened)} Read call(s) recorded\n")
     for label, group in (("FINDING", defects), ("NOTE", notes)):
         for f in group:
             print(f"{label} [{f.rule}] {f.detail}")
@@ -322,7 +392,10 @@ def main(argv: list[str]) -> int:
         print(
             "RESULT: no finding. That is not the same as 'no improvisation': this checks "
             "four named "
-            "rules, not every command against the procedure. See the docstring for the boundary."
+            "rules, not every command against the procedure. And it reads what was issued, "
+            "never what it printed — a named lint run recorded here is not thereby a named "
+            "run that fired, so its control and its default-state run are still yours to "
+            "read. See the docstring for the boundary."
         )
     if notes:
         print(f"         {len(notes)} note(s) above limit what the report may claim.")

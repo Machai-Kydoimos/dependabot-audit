@@ -5881,12 +5881,138 @@ class TestPhase7ReadsTheRecordRatherThanRecalling(SkillHarness):
         self.assertIn("read-only", self.flat(7))
         self.assertIn("tmpdir", self.flat(7))
 
-    def test_the_record_covers_bash_only_and_says_so(self) -> None:
+    def test_the_record_covers_two_tools_only_and_says_so(self) -> None:
         """`no finding` over a record that never saw the deviation is the same
         over-reassurance this phase exists to remove, one tool across."""
         flat = self.flat(7)
-        self.assertIn("bash calls and nothing else", flat)
+        self.assertIn("bash and read calls and nothing else", flat)
         self.assertIn("by construction rather than by measurement", flat)
+
+    def test_the_record_holds_commands_not_their_output(self) -> None:
+        """0.50.0, #148's half of the boundary. A `PreToolUse` hook fires before
+        the call runs, so a named lint run being *in* the record says nothing
+        about whether it fired — which is exactly the silence Phase 2's control
+        exists to break. Leaving that unsaid invites the record to be read as
+        proof of the one thing it cannot hold."""
+        flat = self.flat(7)
+        self.assertIn("never what it printed", flat)
+        self.assertIn("pretooluse", flat)
 
     def test_a_note_is_distinguished_from_a_finding(self) -> None:
         self.assertIn("a `note` is not a defect", self.flat(7))
+
+
+class TestPhase0SurvivesAWorktreeItAlreadyHas(SkillHarness):
+    """#147, round twenty-nine. A live worktree for the same PR makes git refuse
+    the fetch, and the two refspecs were in one command — so a refusal about
+    `pr-<N>` silently cost Phase 6 the `origin/$DEFAULT` it needs.
+
+    The stale-registration paragraph did not reach this: it is keyed to `prune`,
+    which correctly leaves a live worktree alone.
+    """
+
+    def test_the_default_branch_is_fetched_on_its_own(self) -> None:
+        """A fetch aborts whole, so sharing a command shares the failure."""
+        block = self.reachable(0)
+        self.assertIn('git fetch origin "$DEFAULT"', block)
+        self.assertNotIn('git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"', block)
+
+    def test_a_live_worktree_is_probed_rather_than_inferred(self) -> None:
+        block = self.reachable(0)
+        self.assertIn("git branch --list", block)
+        self.assertIn("%(worktreepath)", block)
+
+    def test_the_probe_runs_after_prune(self) -> None:
+        """Before `prune`, a stale registration answers the same as a live one."""
+        block = self.reachable(0)
+        self.assertLess(
+            block.index("git worktree prune"),
+            block.index("%(worktreepath)"),
+            "probing before prune reads a swept worktree as live and skips a fetch "
+            "that would have succeeded",
+        )
+
+    def test_reuse_is_covered_by_the_pin_assertion(self) -> None:
+        """Skipping the fetch is only safe because the next thing that runs is the
+        check that this branch is still the PR's head."""
+        block = self.reachable(0)
+        self.assertLess(block.index("%(worktreepath)"), block.index('[ "$FETCHED" = "$HEAD_SHA" ]'))
+
+    def test_the_failure_message_names_the_recovery_that_works(self) -> None:
+        """`re-run Phase 0` alone refuses again: the worktree has to go first."""
+        self.assertIn("cleanup.py removes it", self.reachable(0))
+
+    def test_the_two_causes_of_one_message_are_told_apart(self) -> None:
+        flat = self.flat(0)
+        self.assertIn("live, not stale", flat)
+        self.assertIn("128", flat)
+
+
+class TestPhase2ProvesTheInstrumentBeforeReadingItsSilence(SkillHarness):
+    """#148 and #149, both improvised by round twenty-nine before they were here.
+
+    Phase 2's `inert here` rests on a lint run that printed nothing. Two ordinary
+    things produce that same nothing: a run that never fired, and a rule that was
+    never on. Neither is visible in the exit code — and for rumdl, not in the exit
+    code even when the rule name is wrong.
+    """
+
+    def test_the_control_is_a_command_not_an_instruction(self) -> None:
+        """#127's class: a measurement whose failure mode is silence, asked for
+        in prose with nothing to run."""
+        runs = self.reachable(2)
+        self.assertIn("<the fix's own input>", runs)
+
+    def test_the_default_state_run_names_no_rule(self) -> None:
+        """Run 3 differs from run 2 by an omission, so it is easy to write as a
+        duplicate of it and answer nothing."""
+        runs = self.reachable(2)
+        self.assertIn("<tool> check <no-config> <the fix's own input>", runs)
+
+    def _uv_lock_phase_2(self) -> str:
+        """The reference's own § Phase 2, which is where the decision table is.
+
+        Asserting against `flat(2)` alone let a mutation deleting the third state
+        from the table pass, because SKILL.md's one-sentence version of the same
+        claim kept the phrase in the pooled material. The claim and the table it
+        is read off are two separate things to lose.
+        """
+        return next(s for name, s in self._handoffs(2) if name == "uv-lock.md").lower()
+
+    def test_the_third_state_is_named(self) -> None:
+        self.assertIn("opt-in under a disable-list", self.flat(2))
+        self.assertIn("opt-in under a disable-list", self._uv_lock_phase_2())
+
+    def test_silence_at_exit_zero_is_shown_to_be_a_real_output(self) -> None:
+        """rumdl takes a rule name it does not know and reports success."""
+        flat = self.flat(2)
+        self.assertIn("unknown rule in --enable", flat)
+        self.assertIn("unknown rule selector", flat)
+
+    def test_the_family_prefix_is_ruled_out_as_an_answer(self) -> None:
+        """The cheap wrong shortcut: assuming a rule's default state follows from
+        its linter group. Measured otherwise on one ruff version."""
+        flat = self.flat(2)
+        self.assertIn("n802", flat)
+        self.assertIn("sim117", flat)
+
+    def test_a_silent_control_is_underivable_not_inert(self) -> None:
+        flat = self.flat(2)
+        self.assertIn("the **instrument**, not the tree", flat)
+
+    def test_the_file_count_comes_from_the_same_isolation(self) -> None:
+        """A count taken with the repo's config describes a different file set,
+        measured 3 against 4 — so it is evidence about another run.
+
+        Asserting the flag and the sentence separately is not enough: a command
+        that drops `--isolated` still contains `--show-files`, and the prose
+        saying it matters stays true while the supplied command stops doing it.
+        The flags have to be on one line.
+        """
+        counts = [ln for ln in self.reachable(2).splitlines() if "--show-files" in ln]
+        self.assertTrue(counts, "Phase 2 names a file count and supplies no command for it")
+        self.assertTrue(
+            all("--isolated" in ln for ln in counts),
+            f"a file count taken without --isolated describes a different run: {counts}",
+        )
+        self.assertIn("same isolation", self.flat(2))
