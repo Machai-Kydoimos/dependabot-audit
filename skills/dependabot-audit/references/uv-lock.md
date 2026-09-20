@@ -404,7 +404,7 @@ crate. Report it the way Phase 0 reports an output it could not derive — the
 distinction this plugin preserves everywhere else — and say which of the two the
 row is.
 
-### When the entry names a rule this repo disables
+### When the entry names a rule this repo disables, or never enables
 
 Then the claim rests on a config line, and a config line is an assertion about a
 *file* while the verdict is about the *tool*. Run it both ways:
@@ -415,8 +415,12 @@ resolution. Phase 2 runs under `--no-execute`, so the tool comes from PyPI at th
 locked version instead.
 
 ```bash
+# <no-config> is spelled per tool: rumdl --no-config, ruff --isolated.
+# <only-the-fixed-rule> is Phase 4's slot, here for a second reason: a config
+# that never enables the rule, and a tool that would not run it anyway, are the
+# same silence. rumdl --enable <RULE>, ruff --select <RULE>.
 uv run --no-project --with <tool>==<locked> <tool> check <a representative file>
-uv run --no-project --with <tool>==<locked> <tool> check --no-config <the same file>
+uv run --no-project --with <tool>==<locked> <tool> check <no-config> <only-the-fixed-rule> <the same file>
 ```
 
 Measured on uv 0.12.8 against a project whose `setup.py` writes a file when it
@@ -442,6 +446,45 @@ inert here, and the difference between reporting that and asserting it is one
 command. The escape hatch is spelled differently per tool — `--no-config`,
 `--isolated`, `--config=/dev/null` — and every one of them is cheaper than being
 wrong about which mode runs on every commit.
+
+**That example is a config that disables a rule. An allow-list config never
+enables one, and dropping it proves nothing at all.** `select = [...]` leaves the
+tool on its own defaults, which also omit the rule, so both runs go silent and
+`inert here` gets written off two runs that tested nothing. Measured on ruff
+0.16.7 and 0.16.8 against `select = ["E", "F", "I", "UP"]` and a file whose only
+fault is an `N802`:
+
+```
+$ uv run --no-project --with ruff==0.16.7 ruff check --isolated t.py
+All checks passed!                                                  # exit 0
+
+$ uv run --no-project --with ruff==0.16.7 ruff check --isolated --select N802 t.py
+t.py:1:5: N802 Function name `BadName` should be lowercase          # exit 1
+```
+
+**Read the named run first: silent there, the file never exercised the rule**,
+and the answer is `underivable` rather than `inert here` — take the input from
+the fix's own test. Round twenty-four hit this on #437, whose `select` carries no
+`SIM`, and forced the rules on by hand (#139).
+
+Two ruff traps sit behind that, both measured on 0.16.7 and both quiet:
+
+- **A preview rule needs `--preview` too.** `ruff check --isolated --select
+  PLW1514 p.py` exits `0` saying `warning: Selection PLW1514 has no effect
+  because preview is not enabled`, which reads exactly like a clean run; with
+  `--preview` it reports the violation. `fpga-board-sim` enables that rule this
+  way, through `preview = true` plus `explicit-preview-rules`.
+- **Under `preview = true`, ruff's default output names the rule instead of
+  coding it** — `unspecified-encoding`, not `PLW1514` — so grepping the config
+  run for the code finds nothing where the rule did fire. `--statistics` prints
+  both, `1  PLW1514  unspecified-encoding`, and so does `--output-format json`.
+
+```bash
+# ruff only, and only where the rule the entry names is in preview or the
+# repo's config sets `preview = true`.
+uv run --no-project --with ruff==<locked> ruff check --isolated --preview --select <RULE> <the same file>
+uv run --no-project --with ruff==<locked> ruff check --statistics <the same file>
+```
 
 ## Phase 3 — Known vulnerabilities
 
@@ -1055,6 +1098,62 @@ row is worth:
   reading a secret, or depending on a previous step's `GITHUB_OUTPUT`, execute in
   a context this worktree does not have. Say which gates you ran and which you
   could not, rather than reporting the subset as the whole.
+
+**Run each gate as CI writes it, plain `uv run` included.** `uv run` syncs first,
+and after the sync above it has nothing left to do: that sync is *inexact*, so it
+installs what the default groups lack and removes nothing. Measured on uv 0.12.17
+against #437 (`default-groups = []`) after the wheels-held sync with
+`--group dev`: all five of that repo's CI gates, run as plain `uv run <gate>`,
+printed nothing on stderr and left the package list, the `.venv`'s files,
+`uv.lock` and `git status` identical — and `--no-sync` gave the same gate
+results. Three of four #437 replays routed around this and said the reference did
+not tell them how (#140). There is nothing to route around.
+
+**It is not a no-op by construction, so read each gate's stderr.** The same
+measurement with one thing changed at a time: a default-set package removed from
+the environment comes back (`Installed 1 package`), and touching `pyproject.toml`
+— one of uv's cache keys — rebuilds the project (`Building fpga-simulator @
+file:///…`). Neither happens after a sync that completed, and both announce
+themselves. An `Installed`, `Uninstalled` or `Building` line means that gate ran
+in an environment this row does not describe.
+
+**A tool the environment lacks is not an error either.** `uv run` puts
+`.venv/bin` first on `PATH` and falls through to the rest of it. With the `dev`
+group absent, `uv run ruff check .` ran `~/.local/bin/ruff` **0.16.8** — not the
+locked 0.16.7 — and exited `0` with an empty stderr: a green earned by the
+machine's own tool, at a version the PR never pins.
+
+**So here is the loop, because four replays wrote four different ones.** This
+section said *"run the repo's own gates"* and supplied the grep that finds them
+and no command that runs them, and each round filled the gap its own way —
+`--no-sync` three times, `--frozen` once, each to protect an environment that
+needed no protecting:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+[ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
+cd "$SCRATCH/pr-<N>" || exit 2
+
+# Each gate as its `run:` step writes it, minus the leading `uv run`, which the
+# loop supplies. Add no flag to it: --frozen and --no-sync each hide the line
+# that would have told you the environment moved. A step CI does not run through
+# uv goes in its own call, as CI writes it.
+for g in "<gate 1>" "<gate 2>"; do
+  test -x ".venv/bin/${g%% *}"; echo "${g%% *} in the environment: $?"
+  uv run $g > "$SCRATCH/gate.out" 2> "$SCRATCH/gate.err"; echo "$g exit: $?"
+  sed 's/^/  uv: /' "$SCRATCH/gate.err"   # empty unless the environment moved
+  tail -2 "$SCRATCH/gate.out"
+done
+```
+
+**Read the two lines above each gate's own output.** `in the environment: 0` is
+the `.venv`'s own copy, which is what `uv run` reaches; `1` is the reconcile's
+question arriving one step later — the group carrying that tool was never
+installed — or a gate CI provisions some other way, and either way the green
+belongs to a tool this lockfile did not pin. A `uv:` line means the sync above
+did not leave the environment the row describes.
 
 ### `--locked` checks the whole lockfile; the install materialises one resolution
 

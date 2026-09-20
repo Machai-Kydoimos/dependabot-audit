@@ -806,7 +806,7 @@ confident `inert here` that was never established:
 | The entry names | Why the config cannot answer it | What does |
 |---|---|---|
 | a **dependency** rather than a rule or a flag | it is not in this repo's config, and for a compiled wheel it is not even in this repo's *ecosystem* — a Rust crate inside a Python package, where the advisory lives on crates.io and every PyPI-side scanner is correctly clean | `references/uv-lock.md` § Phase 2 — read the shipped set out of the wheel's own SBOM. `references/actions.md` § Phase 2 for the tag-line question |
-| a rule this repo **disables** | the claim is then about the config *file*, and the verdict is about the *tool*. Config is interpreted: another file can win, a key can be spelled for a different version, a section can go unread | run the gate twice, once with the config and once without, and read the difference |
+| a rule this repo **disables**, or never enables | the claim is then about the config *file*, and the verdict is about the *tool*. Config is interpreted: another file can win, a key can be spelled for a different version, a section can go unread | run the gate twice: once with the config, and once without it **with that rule selected by name** — `ruff --isolated --select <RULE>`, `rumdl --no-config --enable <RULE>` — and read the difference |
 | a **file type** or a **document shape** rather than a setting | there is no config key to grep for. `stop rewriting Rust source when formatting doc comments` is about `.rs` files, and `stop reading a lazy continuation as a setext underline` is about a blockquote followed by a setext underline — neither is a line any config could carry, and "no config line matches" reads as `inert here` | grep the **content** of the tree instead, below |
 
 **The third row is the one with no command in the table**, because its commands
@@ -815,8 +815,8 @@ correctly and reaches *this* reader, who reads the raw file, as a backslash that
 breaks the regex:
 
 ```bash
-git grep -lE '^[[:blank:]>]*(=+|-{2,})[[:blank:]]*$' -- '*.md'; echo "shape scan exit: $?"
-git ls-files '*.rs';                                     echo "type scan exit: $?"
+git grep -lE '^[[:blank:]>]*(=+|-+)[[:space:]]*$' -- '*.md'; echo "shape scan exit: $?"
+git ls-files --error-unmatch '*.rs';                         echo "type scan exit: $?"
 ```
 
 **Read the exit code, and do not pipe these into `wc`.** `git grep` exits `1` on
@@ -824,6 +824,16 @@ no match and `128` when it could not run, and both print nothing — so
 `git grep … | wc -l` reports `0` at exit 0 either way, turning "could not run"
 into `inert here`, which is the failure this whole row exists to prevent. `1` is
 a real zero; `128` is `underivable`.
+
+**`git ls-files` says "none" only with `--error-unmatch`.** Without it a miss
+exits `0` printing nothing, so *there are `.rs` files* and *there are none* reach
+the reader identically — the second line above shipped that way from 0.36.0, and
+round twenty-five caught it by noticing the output was empty at exit `0` (#141).
+With the flag a miss prints `error: pathspec '*.rs' did not match any file(s)
+known to git` and exits `1`: that line **is** the real zero, not a failure to
+report. Measured on git 2.55.0, where both forms exit `128` outside a repository.
+Give it one pathspec per line — with two, a miss on either exits `1` while the
+other still prints its files, and the count then belongs to neither.
 
 **The shape scan is a superset: its zero is conclusive, and its count is not.**
 It matches an underline-shaped line at any indentation and any blockquote depth.
@@ -836,25 +846,60 @@ The first command below finds a quoted underline; the second finds one inside a
 list item:
 
 ```bash
-git grep -lE '^[[:blank:]]*>[[:blank:]>]*(=+|-{2,})[[:blank:]]*$' -- '*.md'; echo "quoted scan exit: $?"
-git grep -lE '^[[:blank:]]+(=+|-{2,})[[:blank:]]*$' -- '*.md';                echo "indented scan exit: $?"
+git grep -lE '^[[:blank:]]*>[[:blank:]>]*(=+|-+)[[:space:]]*$' -- '*.md';  echo "quoted scan exit: $?"
+git grep -lE '^[[:blank:]]+(=+|-+)[[:space:]]*$' -- '*.md';                echo "indented scan exit: $?"
 ```
+
+**The third shape needs the line above, and `git grep` reads one line at a
+time.** An underline at column 0 is a heading under a paragraph line and a
+thematic break under a blank one — on #437 all 187 lines were that shape, so
+neither narrowing above touches them. `scripts/setext.py` reads the line above:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/setext.py"; echo "top-level scan exit: $?"
+```
+
+It exits as the scans above do — `0` found, `1` a real zero, `128` underivable —
+and prints each heading, then how many files it read, because a zero over forty
+files and a zero over none are different answers. It skips fenced code and a
+front-matter block and counts any other non-blank line above, so it over-counts
+rather than missing one. Cross-checked against markdown-it-py 4.2.0 over the
+CommonMark 0.31.2 spec's 655 examples, #437's 41 Markdown files and rumdl's 144:
+23 headings in scope, 23 found, **none missed**, 14 over-counted.
+
+**Two numbers about the same tree, and both are right.** The scan above lists 20
+files and 187 lines on #437; this returns `0 setext underline(s) under a
+paragraph line, in 0 of 41 file(s)` there. One counts the *shape*, thematic
+breaks and all; the other counts the shape with a paragraph line above it, and
+on that tree none of the 187 has one. Round twenty-six ran both and asked for
+this sentence.
 
 Until 0.47.0 the first scan was anchored at column 0 (`^(=+|-{2,})…`). That meant
 it could not see the quoted or list-item shapes this paragraph names, and its
 "conclusive" zero was a false clean for exactly those. Measured on five fixtures
 (top-level, list item, quote, nested quote, quote in a list item), it matched one.
 Round twenty-four found it by needing its own grep for MD026's list-item shape.
+Until 0.48.0 all three asked for **two** dashes and ended on `[[:blank:]]*$`, and
+each of those excluded a real underline: CommonMark takes a single `-` (`Foo`
+over `-` is an `<h2>`, measured with markdown-it-py), and `[[:blank:]]` does not
+match the `\r` a CRLF line ends on, so `git grep` listed no file at all in a CRLF
+repository. Two more false cleans under the same sentence.
 
 Write `[[:blank:]]`, not `[ \t]`: inside a POSIX bracket expression `\t` is a
 backslash and a `t`, so `[ \t]*` misses a trailing tab and matches `---t` —
-measured on git 2.55.0, and shipped in this block until 0.46.0.
+measured on git 2.55.0, and shipped in this block until 0.46.0. End on
+`[[:space:]]*$` rather than `[[:blank:]]*$`, which is space and tab only.
 
 Exposure is how many files carry the shape, and **zero is a finding like any
 other** — the same `inert here` the first two rows earn by running something,
 rather than by finding nothing to grep. Both commands come from a run that
 improvised them unaided, because the phase said "grep this repo's config" and no
-config line could answer.
+config line could answer — the two in the first block above, that is; the
+narrowings came later, from the rounds that had to improvise them in turn.
 
 That second row is Phase 6's rule one phase over. A red check does not carry a
 verdict until it is attributed; a config line does not carry `inert` until the
@@ -863,6 +908,19 @@ fix, against a repo that runs `rumdl check --fix` on every Markdown commit:
 `rumdl check README.md` is clean, `rumdl check --no-config README.md` finds 32.
 The suppression is real — and one command is the difference between reporting
 that and asserting it.
+
+**Name the rule in the second run, because dropping the config only falls back
+to the tool's own defaults.** Those are not every rule. Where the config is an
+allow-list — `select = [...]`, which never enables the rule rather than
+disabling it — both runs are then silent and the row reads `inert here` off two
+runs that tested nothing. Measured on ruff 0.16.7 and 0.16.8 against a `select`
+list carrying no `N`: `ruff check --isolated t.py` passes, while
+`ruff check --isolated --select N802 t.py` reports the `N802` in it. Round
+twenty-four met this on #437, whose `select` has no `SIM`, and forced the rules
+on by hand (#139). **The named run has to fire before the difference means
+anything**: silent in both, the file never exercised the rule, which is
+`underivable` and not `inert here` — take the input from the fix's own test, as
+Phase 4's reproducer does.
 
 ## Phase 3 — Known vulnerabilities
 

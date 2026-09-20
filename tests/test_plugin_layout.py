@@ -26,9 +26,11 @@ whose entire purpose was delegation survived as the thing that broke delegation.
 
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 import re
+import sys
 import unittest
 from typing import ClassVar
 
@@ -95,6 +97,39 @@ class TestNothingShadowsASkill(unittest.TestCase):
             command_names(),
             f"commands/{plugin_name()}.md shadows the plugin's own skill address",
         )
+
+
+class TestEveryScriptRunsOnABareInterpreter(unittest.TestCase):
+    """The scripts run as `python3 "$SCRIPT"` inside the **audited** repository.
+
+    Nothing installs anything there, so an import outside the standard library is
+    a crash on a machine this suite never runs on. CONTRIBUTING has carried that
+    rule since 0.2.0 by listing the scripts it applied to, and the list went stale
+    twice: it named two of four until 0.29.0, and four of seven until 0.48.0. A
+    rule stated as a list stops covering what it was written for the moment a file
+    is added, which is the same defect as a counted sentence in `SKILL.md`. So the
+    directory is the list now, and this reads it.
+    """
+
+    def test_no_script_imports_anything_outside_the_standard_library(self):
+        scripts = sorted((ROOT / "skills/dependabot-audit/scripts").glob("*.py"))
+        self.assertTrue(scripts, "no scripts found — has the directory moved?")
+        for script in scripts:
+            for node in ast.walk(ast.parse(script.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    modules = [node.module or ""] if node.level == 0 else []
+                else:
+                    continue
+                for module in modules:
+                    root = module.split(".")[0]
+                    self.assertIn(
+                        root,
+                        sys.stdlib_module_names,
+                        f"{script.name} imports {module!r}, which the audited "
+                        f"repository's interpreter will not have",
+                    )
 
 
 class TestTheChangelogIndexIsComplete(unittest.TestCase):

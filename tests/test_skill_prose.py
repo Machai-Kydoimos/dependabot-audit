@@ -38,6 +38,7 @@ Every one of those corresponds to a defect that shipped.
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
 import re
 import subprocess
@@ -3381,6 +3382,46 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
             "closed for a red check by attributing it",
         )
 
+    def test_the_second_run_names_the_rule_rather_than_only_dropping_the_config(self):
+        """Dropping the config falls back to the tool's own defaults, which are
+        not every rule.
+
+        Where the config is an allow-list — `select = [...]`, which never enables
+        the rule rather than disabling it — both runs go silent and `inert here`
+        is written off two runs that tested nothing. Measured on ruff 0.16.7 and
+        0.16.8 against a `select` carrying no `N`: `--isolated` passes on a file
+        whose only fault is an `N802`, and `--isolated --select N802` reports it.
+        Round twenty-four met it on #437, whose `select` has no `SIM`, and forced
+        the rules on by hand (#139).
+        """
+        phase2 = self.material(2)
+        for flag in ("--select", "--enable"):
+            self.assertIn(
+                flag,
+                phase2,
+                f"the second run has to name the rule ({flag}); without it an "
+                "allow-list config and a tool that never runs the rule are the "
+                "same silence",
+            )
+        self.assertRegex(
+            self.flat(2),
+            r"silent[^.]{0,120}underivable",
+            "and two silent runs are `underivable` — the file never exercised the "
+            "rule — rather than the `inert here` they read as",
+        )
+
+    def test_the_scope_row_covers_the_config_that_never_enables_the_rule(self):
+        """The row said *a rule this repo disables*, and an allow-list config
+        disables nothing: it selects, and everything outside the selection is off
+        without being named anywhere."""
+        row = self._scope_table()[2]  # header, dependency, rule
+        self.assertIn("never enables", row, "the row still covers only the disabling case")
+        self.assertRegex(
+            row,
+            r"--select|--enable",
+            "and its method has to name the rule in the second run",
+        )
+
     COUNTS: ClassVar[dict[str, int]] = {
         "one": 1,
         "two": 2,
@@ -3467,16 +3508,23 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
         )
 
     def test_the_documented_scans_match_the_shapes_they_claim(self):
-        """Runs the three regexes as written, with `grep -E`, over every shape.
+        """Runs the three regexes as written, through `git grep`, over every shape.
 
         0.46.0 called the first scan a superset whose zero is conclusive, but it
         was anchored at column 0, and of five fixtures it matched one. MD065's
         quoted shape and MD026's list-item shape, the two this passage names, were
         both invisible to it. A tree carrying only those scanned to zero, and the
         zero was called conclusive. Round twenty-four found it by needing its own
-        grep for the list-item shape. Python's `re` cannot stand in for `grep`
-        here, because it has no `[[:blank:]]`, which is the point of the POSIX
-        form.
+        grep for the list-item shape. Python's `re` cannot stand in here, because
+        it has no `[[:blank:]]`, which is the point of the POSIX form.
+
+        **`git grep`, not `grep`, because the engine is part of the claim.** This
+        ran `grep -qE` until 0.48.0, and on a machine where `grep` is ugrep 7.8.4
+        the CRLF shape below passes there and fails in `git grep`, which is what
+        the block actually runs. Two of the shapes are 0.48.0 fixes: a single `-`
+        is a setext underline in CommonMark, and a CRLF line ends on a `\\r` that
+        `[[:blank:]]*$` does not match, so `git grep` listed no file at all in a
+        CRLF repository.
         """
         found = re.findall(
             r"git grep -lE '([^']+)' -- '\*\.md';\s*echo \"(\w+) scan exit", self.material(2)
@@ -3491,25 +3539,104 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
             "quote": "> ---",
             "nested": ">> ===",
             "list-quote": "   > ---",
+            "one-dash": "-",
+            "list-one-dash": "  -",
+            "crlf": "---\r",
         }
         expected = {
             "shape": set(shapes),
             "quoted": {"quote", "nested", "list-quote"},
-            "indented": {"list", "tab"},
+            "indented": {"list", "tab", "list-one-dash"},
         }
         with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            for name, line in shapes.items():
+                (root / f"{name}.md").write_bytes(f"Title\n{line}\n".encode())
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
             for label, regex in scans.items():
-                hits = set()
-                for name, line in shapes.items():
-                    path = pathlib.Path(tmp) / f"{name}.md"
-                    path.write_text(f"Title\n{line}\n", encoding="utf-8")
-                    done = subprocess.run(["grep", "-qE", regex, str(path)], check=False)
-                    self.assertIn(done.returncode, (0, 1), f"grep could not run the {label} scan")
-                    if done.returncode == 0:
-                        hits.add(name)
+                done = subprocess.run(
+                    ["git", "grep", "-lE", regex, "--", "*.md"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertIn(done.returncode, (0, 1), f"git grep could not run the {label} scan")
+                hits = {pathlib.Path(name).stem for name in done.stdout.split()}
                 self.assertEqual(
                     hits, expected[label], f"the {label} scan matches the wrong shapes"
                 )
+
+    def test_the_type_scan_can_say_none(self):
+        """`git ls-files '*.rs'` exits 0 on no match, printing nothing.
+
+        So the paragraph telling the reader that `1` is a real zero and `128` is
+        underivable was true of the `git grep` line above it and false of this
+        one: *there are `.rs` files* and *there are none* both arrived as `0`.
+        Round twenty-five caught it by noticing the output was empty (#141).
+        Measured here rather than asserted, in both directions, because the fix
+        is a flag whose whole job is the exit status.
+        """
+        line = next(
+            (
+                text
+                for text in self.reachable(2).splitlines()
+                if "git ls-files" in text and "*.rs" in text
+            ),
+            None,
+        )
+        self.assertIsNotNone(line, "Phase 2 no longer runs a type scan")
+        assert line is not None
+        command = line.split(";")[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "README.md").write_text("# x\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+            none = subprocess.run(
+                ["bash", "-c", command], cwd=root, capture_output=True, text=True, check=False
+            )
+            self.assertEqual(
+                none.returncode,
+                1,
+                "the type scan must exit 1 where the tree has no file of that type, "
+                "which is what --error-unmatch is for",
+            )
+            (root / "lib.rs").write_text("fn main() {}\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+            some = subprocess.run(
+                ["bash", "-c", command], cwd=root, capture_output=True, text=True, check=False
+            )
+            self.assertEqual(some.returncode, 0, "and 0 where it has one")
+            self.assertIn("lib.rs", some.stdout)
+
+    def test_the_top_level_narrowing_reads_the_line_above(self):
+        """`git grep` reads one line at a time, and the line above is the answer.
+
+        An underline at column 0 is a heading under a paragraph line and a break
+        under a blank one. On #437 all 187 lines were that shape, so the quoted
+        and indented narrowings said nothing about any of them, and round
+        twenty-five wrote its own awk (#141). A script can be tested; an awk
+        improvised per run cannot.
+        """
+        phase2 = self.material(2)
+        self.assertIn(
+            "setext.py",
+            phase2,
+            "the narrowing git grep cannot make has to be a command, not advice",
+        )
+        self.assertRegex(
+            self.flat(2),
+            r"top-level scan exit",
+            "and its exit status has to be read like the scans above it",
+        )
+        self.assertRegex(
+            self.flat(2),
+            r"two numbers about the same tree",
+            "the scan's 20 files and this one's zero sit in the same section on the "
+            "same tree; round twenty-six ran both and asked which was which",
+        )
 
     def test_no_shell_grep_puts_a_tab_escape_in_a_bracket(self):
         """POSIX ERE reads `\\t` inside brackets as a backslash and a `t`.
@@ -5581,6 +5708,10 @@ class TestAFlagNamedInProseIsAFlagThePhaseRuns(SkillHarness):
         # Deliberately NOT added, with the measurement that says so — 0.43.0.
         "--no-cache": "measured unnecessary: ruff keys its cache by version and mypy "
         "stamps `version_id`, so run two cannot read run one's",
+        # `--no-sync` and `--frozen` belong here by rights — they are the two flags
+        # four replays added to the gates and 0.48.0 measured unnecessary — but the
+        # loop's own comment names both, and a comment inside a block counts as
+        # reachable, so an entry for either would be spent the day it was written.
     }
 
     def test_every_flag_a_phase_names_is_one_that_phase_runs(self):
@@ -5618,6 +5749,91 @@ class TestAFlagNamedInProseIsAFlagThePhaseRuns(SkillHarness):
             named_nowhere,
             "every phase that names these now runs them too, so the exception is "
             "spent — drop it rather than leaving it to cover a future omission",
+        )
+
+
+class TestTheGatesRunInTheEnvironmentTheRowDescribes(SkillHarness):
+    """#140, and the hazard the measurement for it turned up.
+
+    Three of four #437 replays ran the gates as `uv run --no-sync <gate>` rather
+    than CI's plain `uv run`, to avoid a re-sync the reference never described,
+    and one of them handed back *"the skill doesn't say how to call the gates
+    after the wheels-held sync"*. Measured on uv 0.12.17: there is nothing to
+    avoid. `uv run` syncs inexactly, so it installs what the default groups lack
+    and removes nothing, and all five of #437's gates left the package list, the
+    `.venv`'s files, `uv.lock` and `git status` identical.
+
+    The same measurement turned up something worse than a re-sync. `uv run` puts
+    `.venv/bin` first on `PATH` and falls through to the rest of it, so a gate
+    whose tool the environment lacks runs the machine's own copy and exits 0:
+    with the `dev` group absent, `uv run ruff check .` ran ruff 0.16.8 out of
+    `~/.local/bin` against a lockfile pinning 0.16.7, silently.
+    """
+
+    def test_phase_5_says_to_run_the_form_ci_runs(self):
+        self.assertRegex(
+            self.flat(5),
+            r"run each gate as ci writes it",
+            "three runs deviated here and each said the reference did not tell "
+            "them which form to use; a deviation nobody documented recurs",
+        )
+
+    def test_the_claim_that_nothing_changes_carries_its_measurement(self):
+        """*"Nothing changes"* is the kind of claim that rots silently, so the
+        text names what was compared and what makes it change."""
+        flat = self.flat(5)
+        self.assertRegex(
+            flat,
+            r"inexact",
+            "why it changes nothing is the reason it can be trusted to: an exact "
+            "sync would remove the group the reconcile just added",
+        )
+        self.assertRegex(
+            flat,
+            r"installed[^.]{0,80}building|building[^.]{0,80}installed",
+            "and the lines uv prints when it does change something are what the "
+            "reader keys on, so they have to be named",
+        )
+
+    def test_the_gate_loop_runs_cis_form_and_checks_where_the_tool_came_from(self):
+        """Runs the documented loop, with a stub `uv`, over a `.venv/bin`
+        holding one of its two tools.
+
+        The loop exists because four replays wrote four different ones — three
+        with `--no-sync`, one with `--frozen` — so the guard has to fail if a
+        flag creeps back into it, which reading the prose cannot do. The stub
+        prints the arguments it was handed, and the loop's own `tail` puts them
+        in stdout, so the assertion is on what `uv` was actually called with.
+        """
+        loop = re.search(r"^for g in .*?^done", self.reachable(5), re.M | re.S)
+        self.assertIsNotNone(loop, "Phase 5 no longer supplies the loop that runs the gates")
+        assert loop is not None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".venv" / "bin").mkdir(parents=True)
+            tool = root / ".venv" / "bin" / "present"
+            tool.write_text("#!/bin/sh\n", encoding="utf-8")
+            tool.chmod(0o755)
+            stub = root / "stub"
+            stub.mkdir()
+            fake_uv = stub / "uv"
+            fake_uv.write_text('#!/bin/sh\necho "uv called with: $*"\n', encoding="utf-8")
+            fake_uv.chmod(0o755)
+            script = loop.group(0).replace('"<gate 1>" "<gate 2>"', '"present ." "absent ."')
+            done = subprocess.run(
+                ["bash", "-c", script],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                check=False,
+                env={**os.environ, "PATH": f"{stub}:{os.environ['PATH']}", "SCRATCH": tmp},
+            )
+        self.assertIn("present in the environment: 0", done.stdout)
+        self.assertIn("absent in the environment: 1", done.stdout)
+        self.assertIn(
+            "uv called with: run present .",
+            done.stdout,
+            "the loop must run CI's own form: no --frozen, no --no-sync, no --with",
         )
 
 
