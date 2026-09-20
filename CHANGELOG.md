@@ -11,6 +11,110 @@ patch.
 
 ## [Unreleased]
 
+## [0.52.0] — 2026-09-21
+
+### The one-sided-gate finding gets the command it has been asking for
+
+*"A gate on only one side of the bump is itself a finding […] diff the two lists
+and report the difference rather than picking a side."* Phase 0 has said that
+since 0.12.0 and has never said **how**, which is #127's class: a measurement
+asked for by name, with the spelling left to the run.
+
+Three rounds spelled it three ways. Round twenty-nine diffed the whole workflow
+file; round thirty-one diffed each side through `grep 'run:'` and gave its
+reason — *"a gate can be added or removed inside an unchanged filename"* — which
+is right, and is the argument for supplying the command rather than the noun.
+Those two forms answer different questions: the first reports a comment change as
+a gate change, and the second misses a `run: |` body, which sits on its own line,
+and a `uses:` step, which is not a `run:` at all. Both runs reported "no
+difference". Only one of them had asked a question that could have found one.
+
+Supplied now, in three steps: the workflow **lists** at both refs (a workflow
+added or removed), then each name **both** lists gave (a gate changed inside a
+file whose name did not), then `.pre-commit-config.yaml`. Two readings go with
+it, both measured on git 2.55.0:
+
+- **`diff` exits `1` when the files differ, and here that is the finding rather
+  than a failure.** `0` identical, `1` a difference to read and report, `2` could
+  not run. Reading `1` as an error loses the finding exactly when there is one.
+- **The gate reads do not suppress their stderr.** An unreadable side yields an
+  *empty* stream, so `diff` reports every line as added and exits `1` — identical
+  to "the PR adds this whole workflow". Left visible it prints `fatal: path
+  '.github/workflows/ci.yml' exists on disk, but not in '<ref>'` and names which
+  side failed. It is also why the content diff runs only over the names in both
+  lists: absence is the list diff's answer, and two answers must not arrive by
+  the same route.
+
+### `.pre-commit-config.yaml` is now read at both refs
+
+It was read at `pr-<N>` only. Every other gate input is read once per tree —
+`pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4 — and this one had no base side at
+all, so a hook the PR *adds* had nothing to be compared against and the
+one-sided-gate finding could not reach it even in principle. Demonstrated on this
+repo's own history: across the two refs the new block reports `live.yml` added
+(list diff, exit 1), `ci.yml` identical (exit 0) and the pre-commit config
+changed (exit 1) — that third answer being the one previously unreachable.
+
+### What the replay gate showed
+
+Round thirty-two, `fpga-board-sim` #437, this version as committed: 55 turns,
+$7.65, 54 recorded calls. **Four deviations, all four classed `correct`, and no
+plugin defect.** The new Phase 0 block ran verbatim, all three steps.
+
+Three earlier fixes showed up working in the same run. The **#147** worktree
+probe met its case naturally — an earlier attempt had left `pr-437` checked out
+— and the audit's own words are *"SKILL.md's Phase 0 probes for exactly this
+with `git branch --format='%(worktreepath)'` and authorises reuse behind the pin
+assertion, which passed."* The **#148** control caught the audit's own bad
+input: a handwritten `SIM117` reproducer stayed silent, and rather than reading
+that as `inert here` it re-derived the input from the fix's own fixture, because
+*"a silent control means the instrument, not the tree."* And
+`inert-needs-named-run` turned up something a config read would have missed —
+`RUF077` is on under bare `--preview`, and this repo's `explicit-preview-rules`
+is what holds it off.
+
+**The first attempt at this round died on a session limit** — `429`,
+`terminal_reason: api_error`, 52 turns, $6.13, no report — and is kept as
+evidence rather than counted as a gate result. Its record does show the new
+block running verbatim, which is how the re-run inherited a live worktree to
+probe for.
+
+**One new gap, in older text, so it goes to the next version (#156).**
+`plugin-file-read` fires on a Bash read of a *reference*, whose stated meaning
+is *the skill did not load* — on a run where it demonstrably had. 0.50.0 drew
+that line on the Read side and the Bash side never got it: `SKILL.md` is loaded
+for the audit, a reference is fetched by it. The round-26/27 fixture may encode
+the same false positive as a true one, so the transcript gets checked before
+anything changes.
+
+### Found while building it
+
+- **The suite caught a defect in the supplied command, in its first draft.**
+  `git ls-tree --name-only … | sort` reports the status of `sort`, so a failed
+  read becomes an empty list at exit `0` — and an empty list silently **skips**
+  the content diff rather than failing it. The lists are now captured with their
+  status checked, and the sort runs on the variable. That is the pipeline trap
+  this repo has a guard for, written into the very block whose subject is
+  reading an exit code correctly.
+- **Then a mutation putting that pipe back survived, and chasing it found the
+  guard's own blind spot (#155).** The guard strips quoted spans before
+  matching, so jq's `|` inside `--jq '.[] | "…"'` is not read as a pipeline — and
+  it pairs those quotes across the **whole block**, so a single apostrophe opens
+  a span that swallows every line to the next one. The comment two lines above
+  the mutated line said `sort's`. Measured across every shipped bash block: the
+  per-line pairing finds one pipeline the block-level pairing hides, and it is a
+  real one — `references/actions.md` § Phase 1 assigns
+  `CHANGED=$(git diff … | grep … | grep …)`, which takes the last grep's status,
+  so a `git diff` that could not run reads as *no workflow lines changed*. Both
+  go to the next version; the apostrophe is out of this version's block so the
+  guard can see it.
+- **Three mutations survived against tests that were too loose**, all now
+  sharpened: one assertion was satisfied by the `diff` below it rather than the
+  standalone read it meant, one by a **comment** containing `comm -12` rather
+  than the loop using it, and one by a substring that survived the mutation
+  intact. The third is the recurring shape — assert the property, not a string
+  that happens to be near it.
+
 ## [0.51.0] — 2026-09-20
 
 ### Phase 6 asks the reachability question that fits the diff
@@ -6036,7 +6140,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.51.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.52.0...HEAD
+[0.52.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.48.0...v0.49.0

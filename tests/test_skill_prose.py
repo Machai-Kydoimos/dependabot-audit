@@ -6231,3 +6231,84 @@ class TestPhase6AsksTheReachabilityQuestionThatFitsTheDiff(SkillHarness):
         flat = self.flat(6)
         for case in ("a **workflow file**", "a **dependency manifest**", "**neither**"):
             self.assertIn(case.lower(), flat, f"Phase 6's reachability table is missing {case}")
+
+
+class TestTheOneSidedGateFindingHasACommand(SkillHarness):
+    """#153, handed back by round thirty-one and classed `correct` by it.
+
+    Phase 0 has said *"diff the two lists and report the difference"* since
+    0.12.0 and supplied no command, which is #127's class. Three rounds spelled
+    it three ways: round twenty-nine diffed the whole workflow file, round
+    thirty-one diffed each side through `grep 'run:'`. Those answer different
+    questions — the first calls a comment change a gate change, the second misses
+    a `run: |` body and a `uses:` step entirely — and both reported no
+    difference, so only one had asked a question that could have found one.
+    """
+
+    def test_the_diff_is_supplied_rather_than_named(self) -> None:
+        runs = self.reachable(0)
+        self.assertIn("workflow list diff exit", runs)
+        self.assertIn("gate diff exit", runs)
+
+    def test_the_differing_exit_is_named_as_the_finding(self) -> None:
+        """`diff` exits 1 on a difference. Read as an error, the finding is lost
+        exactly when there is one — the inversion Phase 2's scans warn about,
+        arriving from the other side."""
+        flat = self.flat(0)
+        self.assertIn("here that is the finding rather", flat)
+
+    def test_the_gate_reads_do_not_suppress_their_own_failure(self) -> None:
+        """An unreadable side yields an empty stream, so `diff` reports every
+        line as added at exit 1 — indistinguishable from the PR adding the whole
+        file. Left visible, `git show` names which ref failed."""
+        for line in self.reachable(0).splitlines():
+            # Every process-substituted read, not only the line `diff` sits on:
+            # these are two-line commands and the second side is on the second
+            # line, which is exactly where a suppression would hide.
+            if "<(git show" in line:
+                self.assertNotIn(
+                    "2>/dev/null",
+                    line,
+                    f"a suppressed read reads as 'the PR added all of it': {line.strip()}",
+                )
+
+    def test_the_other_gate_file_is_read_at_both_refs(self) -> None:
+        """Until 0.52.0 `.pre-commit-config.yaml` was read at `pr-<N>` only, so a
+        hook the PR adds had no base to be compared against and this whole
+        finding class could not reach it."""
+        lines = [ln.strip() for ln in self.reachable(0).splitlines()]
+        # Standalone reads, in the derivation block. Asserting the string alone
+        # was satisfied by the `diff <(...)` below, which is a different claim:
+        # Phase 4 measures with the base's gate list and needs it derived, not
+        # only compared.
+        self.assertIn('git show "$BASE_SHA:.pre-commit-config.yaml"', lines)
+        self.assertIn('git show "pr-<N>:.pre-commit-config.yaml"', lines)
+
+    def test_the_content_diff_covers_only_names_in_both_lists(self) -> None:
+        """Absence is the list diff's answer. Letting it arrive a second way,
+        as an empty stream, is what makes a failed read look like a new file."""
+        # The command, not the comment beside it. `reachable()` keeps comments,
+        # so `comm -12` in the sentence explaining the loop satisfied the loose
+        # form — "a rule must not be satisfiable by a comment claiming it".
+        self.assertIn("for w in $(comm -12", self.reachable(0))
+
+    def test_the_lists_are_captured_with_their_status_checked(self) -> None:
+        """Piping `git ls-tree` into `sort` reports *sort's* status, so a failed
+        read becomes an empty list at exit 0 — and an empty list silently skips
+        the content diff rather than failing it. The suite caught this in the
+        first draft of the block."""
+        runs = self.reachable(0)
+        captures = [ln for ln in runs.splitlines() if "_WF=$(git ls-tree" in ln]
+        self.assertEqual(len(captures), 2, f"expected both refs captured: {captures}")
+        for line in captures:
+            self.assertNotIn(
+                "|",
+                line,
+                f"piping the read reports the last stage's status, and an empty "
+                f"list then skips the content diff instead of failing it: {line.strip()}",
+            )
+        self.assertEqual(runs.count("cannot list workflows at"), 2, "both reads need a check")
+
+    def test_the_whole_file_choice_is_justified(self) -> None:
+        flat = self.flat(0)
+        self.assertIn("whole file, not a filter on", flat)

@@ -296,7 +296,12 @@ git ls-tree --name-only "pr-<N>:.github/workflows/";    echo "pr list exit: $?"
 git ls-tree --name-only "$BASE_SHA:.github/workflows/"; echo "base list exit: $?"
 
 git show "pr-<N>:.github/dependabot.yml" 2>/dev/null || git show "pr-<N>:renovate.json"
+
+# The other gate file, at both refs for the same reason the workflows are. Until
+# 0.52.0 this was read at pr-<N> only, so a hook the PR adds had nothing to be
+# compared against and the one-sided-gate finding could not reach it at all.
 git show "pr-<N>:.pre-commit-config.yaml"
+git show "$BASE_SHA:.pre-commit-config.yaml"
 
 # Then every name each list gave, at its own ref. Not one file: `<workflow>`
 # stands for the whole list, and Phase 6 asks for the same list narrowed to what
@@ -327,7 +332,57 @@ procedure that is most careful about that distinction everywhere else.
 both directions. A gate since *removed* runs against a tree that never had it; a
 gate the PR *adds* never runs at all — and the second is the one that matters,
 because an actions or tooling bump can legitimately add its own. Diff the two
-lists and report the difference rather than picking a side.
+lists and report the difference rather than picking a side:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+# Captured first, and the status checked here: piping `git ls-tree` into `sort`
+# would report the status of `sort`, so a failed read becomes an empty list at 0
+# — and an empty list silently skips step 2 rather than failing it.
+BASE_WF=$(git ls-tree --name-only "$BASE_SHA:.github/workflows/") \
+  || { echo "cannot list workflows at $BASE_SHA" >&2; exit 2; }
+PR_WF=$(git ls-tree --name-only "pr-<N>:.github/workflows/") \
+  || { echo "cannot list workflows at pr-<N>" >&2; exit 2; }
+
+# 1. The lists: a workflow the PR adds or removes.
+diff <(printf '%s\n' "$BASE_WF") <(printf '%s\n' "$PR_WF"); echo "workflow list diff exit: $?"
+
+# 2. Inside each name BOTH lists gave, because a gate can be added or removed
+#    without the filename changing. `comm -12` over two sorted lists is that set.
+for w in $(comm -12 <(printf '%s\n' "$BASE_WF" | sort) <(printf '%s\n' "$PR_WF" | sort)); do
+  diff <(git show "$BASE_SHA:.github/workflows/$w") \
+       <(git show "pr-<N>:.github/workflows/$w");     echo "$w gate diff exit: $?"
+done
+
+# 3. The other gate file, both refs.
+diff <(git show "$BASE_SHA:.pre-commit-config.yaml") \
+     <(git show "pr-<N>:.pre-commit-config.yaml");    echo "pre-commit gate diff exit: $?"
+```
+
+**`diff` exits `1` when the files differ, and here that is the finding rather
+than a failure** — `0` identical, `1` a difference to read and report, `2` could
+not run. Reading `1` as an error is the same inversion Phase 2's scans warn
+about, arriving from the other side.
+
+**Do not suppress `git show`'s stderr.** An unreadable side yields an *empty*
+stream, so `diff` reports every line as added and exits `1` — identical to "the
+PR adds this whole workflow". Measured on git 2.55.0: left visible, the read
+prints `fatal: path '.github/workflows/ci.yml' exists on disk, but not in
+'<ref>'` and names which side failed. That is also why step 2 runs only over the
+names in *both* lists: absence is step 1's answer, and the two must not arrive
+by the same route.
+
+**Whole file, not a filter on `run:`.** A `run: |` block puts its commands on
+following lines, and a `uses:` step is not a `run:` at all, so a line-anchored
+filter misses the two commonest shapes of the thing being looked for — the same
+reason Phase 6's install-step scan is deliberately loose. The cost is that a
+comment or formatting change also shows up, and reading three lines of diff is
+cheaper than a gate that never ran. Rounds twenty-nine and thirty-one each
+improvised a different form of this and each reported "no difference"; only one
+of them had asked a question that could have found one (#153).
 
 If `git worktree add` refuses because the path already exists, a previous run
 left it there. **Prove it still points at this PR's head before reusing it** — a
