@@ -335,13 +335,15 @@ after nine commits of growth.
 
 ## Constraints that are load-bearing
 
-- **Every script here imports nothing outside the standard library** — `audit.py`,
-  `discover.py`, `ci_state.py` and `gate_diff.py` alike. All four are invoked as
-  `python3 "$SCRIPT"` from the audited repository, so they run under whatever bare
-  interpreter it has, and `tomllib` puts the floor at 3.11. That is why CI runs
-  3.11 through 3.14 and why the local hooks cannot be the whole story. The rule
-  named two of the four until 0.29.0, which is the kind of list that silently
-  stops covering what it was written for.
+- **Every script in `scripts/` imports nothing outside the standard library.**
+  Each is invoked as `python3 "$SCRIPT"` from the audited repository, so they run
+  under whatever bare interpreter it has, and `tomllib` puts the floor at 3.11.
+  That is why CI runs 3.11 through 3.14 and why the local hooks cannot be the
+  whole story. This rule used to name the scripts it applied to, and the list went
+  stale twice — two of four until 0.29.0, four of seven until 0.48.0 — so the
+  directory is the list now and `tests/test_plugin_layout.py` reads it. A rule
+  stated as a list stops covering what it was written for the moment a file is
+  added, which is the `SKILL.md` counted-sentence trap in another file.
 - **Do not extend a script to an ecosystem you have no repository to test it
   against.** The per-ecosystem references document what is in scope instead,
   deliberately.

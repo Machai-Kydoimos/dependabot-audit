@@ -11,6 +11,131 @@ patch.
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-09-20
+
+**Three hand-backs from rounds twenty-four and twenty-five, each measured again
+before it was built — and two of those measurements turned up something worse
+than the row that prompted them.** #140 asked whether a plain `uv run` re-syncs
+the environment it is qualifying; it does not, and the control that proved the
+measurement could see a change found a gate greening on the machine's own tool
+instead. #141 asked for a narrowing `git grep` cannot make; writing it found two
+more shapes that 0.47.0's "conclusive" zero could not see.
+
+**Minor, not patch.** Phase 2's scans match lines they could not match before,
+its type scan can say *none*, and it carries a narrowing that reads the line
+above; Phase 5 names the form to run the gates in and checks where each gate's
+tool comes from before quoting its result.
+
+### Fixed — "run it both ways" cannot test a rule an allow-list config never enables (#139)
+
+- **Dropping the config only falls back to the tool's own defaults, and those are
+  not every rule.** Where the config `select`s rules rather than disabling them,
+  the rule in question is off in both runs, both are silent, and `inert here`
+  gets written off two runs that tested nothing. Measured on ruff 0.16.7 and
+  0.16.8 against a `select` list carrying no `N`, on a file whose only fault is
+  an `N802`: `ruff check --isolated t.py` passes, and
+  `ruff check --isolated --select N802 t.py` reports it.
+- **The second run now names the rule** — `ruff --select <RULE>`,
+  `rumdl --enable <RULE>`, the slot #136 added to Phase 4's reproducer — and the
+  scope row covers *a rule this repo disables, **or never enables***.
+- **The named run has to fire before the difference means anything.** Silent in
+  both, the file never exercised the rule: `underivable`, not `inert here`.
+- Two ruff traps found while measuring it, both quiet and both on 0.16.7: a
+  **preview** rule needs `--preview` as well (without it,
+  `--isolated --select PLW1514` exits 0 with `warning: Selection PLW1514 has no
+  effect because preview is not enabled`, which reads like a clean run), and
+  under `preview = true` ruff's default output **names** a rule instead of coding
+  it, so grepping the config run for `PLW1514` finds nothing where the rule did
+  fire. `--statistics` prints both.
+
+### Fixed — the gates' form was never stated, and a missing tool greens silently (#140)
+
+- **Three of four #437 replays ran the gates as `uv run --no-sync <gate>`** to
+  avoid a re-sync the reference never described. There is nothing to avoid.
+  Measured on uv 0.12.17 after the wheels-held sync with `--group dev`: all five
+  of that repo's CI gates, run as CI writes them, printed nothing on stderr and
+  left the package list, the `.venv`'s files, `uv.lock` and `git status`
+  identical. `uv run` syncs *inexactly* — it installs what the default groups
+  lack and removes nothing — which is why it cannot undo the reconcile.
+- **It is not a no-op by construction, so the text says what to read.** Changing
+  one thing at a time: a package removed from the environment comes back
+  (`Installed 1 package`), and touching `pyproject.toml` rebuilds the project
+  (`Building fpga-simulator @ file:///…`). Both announce themselves on stderr.
+- **And the control turned up a false green.** `uv run` puts `.venv/bin` first on
+  `PATH` and then falls through to the rest of it, so with the `dev` group absent
+  `uv run ruff check .` ran `~/.local/bin/ruff` **0.16.8** — against a lockfile
+  pinning 0.16.7 — and exited 0 with an empty stderr. On this machine two of
+  #437's four gate tools resolve that way, and they are the two the PR bumps.
+- **The prose fix did not reach behaviour, so the loop is supplied.** Round
+  twenty-six read the new paragraph and still wrote its own gate loop, this time
+  with `--frozen`, and skipped the standalone executable check — the fourth
+  replay in a row to improvise the one command this section never carried. Phase
+  5 now gives the loop: `test -x ".venv/bin/${g%% *}"` for each gate, then
+  `uv run $g` in CI's own form with uv's stderr kept separate, and a comment
+  naming the two flags not to add. Round twenty-seven copied it, ran all five
+  gates plus pytest that way, and reported `in the environment: 0` with no `uv:`
+  line for every one.
+
+### Fixed — a type scan that could not say "none", and no narrowing for the top-level shape (#141)
+
+- **`git ls-files '*.rs'` exits 0 when nothing matches**, printing nothing, so
+  *there are `.rs` files* and *there are none* reached the reader identically —
+  while the paragraph above it said `1` is a real zero and `128` is
+  `underivable`, which was true only of the `git grep` line. `--error-unmatch`
+  gives it `git grep`'s codes exactly. Measured on git 2.55.0, including the case
+  the issue did not cover: with two pathspecs, a miss on either exits `1` while
+  the other still prints its files, so the scan takes one pathspec per line.
+- **The top-level shape had no narrowing, because `git grep` reads one line at a
+  time.** An underline at column 0 is a heading under a paragraph line and a
+  thematic break under a blank one; on #437 all 187 lines were that shape, and
+  round twenty-five wrote its own `awk`. `scripts/setext.py` supplies it: it
+  skips fenced code and front matter, counts any other non-blank line above, and
+  exits `0` found, `1` a real zero, `128` underivable. Cross-checked against
+  markdown-it-py 4.2.0 over the CommonMark 0.31.2 spec's 655 examples, #437's 41
+  Markdown files and rumdl's 144 at `013621e`: **23 in-scope headings, 23 found,
+  none missed**, 14 over-counted — every over-count a list item, quote, indented
+  code, lazy continuation or link definition above the line.
+- **And the section now says what its two numbers each measure.** Round
+  twenty-six ran both and asked: the scan's 20 files and 187 lines on #437 count
+  the *shape*, thematic breaks and all, while `setext.py` returns
+  `0 … in 0 of 41 file(s)` on the same tree, because none of those 187 lines has
+  a paragraph line above it.
+
+### Fixed — 0.47.0's scans could not see two more real underlines
+
+- **A single `-` is a setext underline.** `Foo` over `-` renders as `<h2>`,
+  measured with markdown-it-py, and all three scans asked for `-{2,}`.
+- **`[[:blank:]]` is space and tab, and a CRLF line ends on `\r`.** Measured on
+  git 2.55.0: a repository whose Markdown carries CRLF endings scanned to **zero
+  files** under `[[:blank:]]*$`, and the sentence above called that zero
+  conclusive. Both scans now end on `[[:space:]]*$`.
+- Both are the same defect 0.47.0 fixed, in the sentence 0.47.0 wrote. On #437
+  the corrected regexes still list the same 20 files and 187 lines, so the
+  published numbers stand.
+- **The guard for those scans was running the wrong engine.** It ran `grep -qE`
+  as a stand-in for `git grep`, and on a machine where `grep` is ugrep 7.8.4 the
+  CRLF case passes there while failing in `git grep`. It now runs `git grep` in a
+  throwaway repository, over ten shapes.
+
+### Changed — the stdlib-only rule names the directory, not the scripts
+
+- CONTRIBUTING has carried *"every script here imports nothing outside the
+  standard library"* since 0.2.0 as a **list**, and the list went stale twice: it
+  named two of four until 0.29.0 and four of seven until this release.
+  `tests/test_plugin_layout.py` now reads `scripts/` and checks every file's
+  imports against `sys.stdlib_module_names`, and the prose names the directory.
+
+### Verification
+
+| | |
+|---|---|
+| offline suite | 660 tests (632 at 0.47.0), including 20 for `setext.py` |
+| gates | ruff, ruff-format, mypy, unittest |
+| mutation checks | 22. Each was confirmed to have landed and to be caught by the test written for it: the type scan's flag; each of the three scan regexes; the top-level narrowing and the sentence telling its zero from the scan's count; both halves of the scope row; the both-silent reading (from **both** files — either alone leaves the phase saying it); the gates' form, the reason it changes nothing and the lines that say it did; the gate loop, once per flag it must not carry, once for the tool check and once for going back to prose; four in `setext.py`; and a non-stdlib import |
+| cross-check | `setext.py` against markdown-it-py over 655 spec examples and 201 real Markdown files |
+| replay | **rounds twenty-six and twenty-seven**, #437 against this branch via `--plugin-dir` ($5.89 and $5.59, 0 permission denials each). Twenty-six ran the new type scan (`--error-unmatch`, exit 1), `setext.py` (`0 … in 0 of 41 file(s)`, exit 1) and both corrected narrowings as written — and then ran the gates as `uv run --frozen`, in a loop of its own, skipping the executable check: #140's fix had not reached behaviour. The loop was supplied and the release replayed again. Twenty-seven copied it, ran all five gates and pytest in CI's form (`in the environment: 0`, no `uv:` line), and ran #139's differential with `--isolated --select` plus `--preview`/`--statistics`. It found no defect in these changes; its older finding is #144, and #143 is from twenty-six's transcript |
+| triage list | 32 hits, 31 of them 0.47.0's; the new one is this release's own *"Read the named run first"*, which sits under the commands that produce it |
+
 ## [0.47.0] — 2026-09-19
 
 **Round twenty-three's two hand-backs, each measured again before it was built,
@@ -5488,7 +5613,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.47.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.48.0...HEAD
+[0.48.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.44.0...v0.45.0
