@@ -358,6 +358,16 @@ after nine commits of growth.
   anything crossing Phase 0's handoff. They are written in two different files —
   `hooks/hooks.json` and `scripts/verify_run.py` — and
   `tests/test_verify_run.py` is what stops them drifting apart.
+- **A `verify_run.py` rule is about the shape of a call, never about its
+  answer.** A `PreToolUse` hook fires *before* the call runs, so the record holds
+  what was issued and nothing it printed. Two 0.50.0 candidates were written
+  against that boundary and dropped — one asking whether a named lint run had its
+  default-state probe, one asking whether it had a file count — because each
+  fired on a recorded round that had established the same thing by a different
+  legitimate route. **Run a candidate rule over every recorded round before
+  adding it**: a rule that fires on a round which was right is a false positive,
+  whatever it says about the round it was designed on. The rounds are the only
+  data with a real noise floor in them.
 - **A `verify_run.py` rule carries the sentence it was derived from.** Each
   `Rule` names a file and an exact string, and the suite asserts that string is
   still there. A check that outlives its rationale keeps passing while asserting

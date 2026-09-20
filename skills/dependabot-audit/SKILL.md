@@ -164,7 +164,18 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
 git worktree prune          # a previous run's registrations, if $SCRATCH is gone
-git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
+git fetch origin "$DEFAULT" # on its own line, and the paragraph below says why
+
+# A registration that survives prune is a *live* worktree, and git refuses to
+# fetch into the branch one holds. Ask the registration rather than reading the
+# refusal: the message is the same either way. Skipping the fetch is safe because
+# the pin assertion below is what decides whether this branch is still the PR.
+HELD=$(git branch --list "pr-<N>" --format='%(worktreepath)')
+if [ -n "$HELD" ]; then
+  echo "pr-<N> is checked out at $HELD — not fetching into it" >&2
+else
+  git fetch origin "pull/<N>/head:pr-<N>"
+fi
 
 # The fetch is the first thing that can disagree with the pin, so assert it here
 # rather than trusting it. Exit 1: the block ran and found something, and what it
@@ -172,6 +183,7 @@ git fetch origin "pull/<N>/head:pr-<N>" "$DEFAULT"
 FETCHED=$(git rev-parse "pr-<N>") || { echo "pr-<N> did not resolve after the fetch" >&2; exit 2; }
 [ "$FETCHED" = "$HEAD_SHA" ] || {
   echo "the head moved: discover.py pinned $HEAD_SHA, the fetch resolved $FETCHED" >&2
+  [ -n "$HELD" ] && echo "and pr-<N> was reused from $HELD, not fetched — re-running Phase 0 refuses again until cleanup.py removes it" >&2
   echo "re-run Phase 0 from the start — the pin, the base and the scope move together" >&2
   exit 1; }
 
@@ -213,6 +225,29 @@ That is this, not a permissions or ref problem, and the stale-worktree paragraph
 below does not reach it: that paragraph is keyed to `git worktree add` refusing,
 and Phase 0 never gets that far. `prune` is a no-op when state is clean, needs no
 path argument, and clears `pr-<N>` and `base-<N>` together.
+
+**The same refusal has a second cause `prune` cannot clear, and the message does
+not tell them apart.** A worktree from an earlier audit of the *same* PR that is
+still on disk is live, not stale: `prune` correctly leaves it, and the fetch then
+refuses with the identical line, naming a path that *does* exist. Round
+twenty-nine met it on `fpga-board-sim` #437 and had to work the recovery out for
+itself. **The refspecs are therefore on separate lines**, because a fetch aborts
+whole: reproduced on git 2.55.0 with a live worktree on `pr-437`, the combined
+`git fetch origin "pull/437/head:pr-437" "$DEFAULT"` exits **128** and leaves
+`origin/$DEFAULT` on its old commit — so a refusal about the PR silently costs
+Phase 6 the merge simulation it needs. Split, `$DEFAULT` fetches at exit `0`
+while the PR refspec still refuses.
+
+**Ask `git branch`, not the error text**, which is why the block probes first
+rather than reacting. `git branch --list "pr-<N>" --format='%(worktreepath)'`
+prints the worktree's path when one holds the branch and an empty line when none
+does — measured both ways on git 2.55.0, including after `prune`, where the
+stale case goes empty and the fetch then succeeds. It has to run **after**
+`prune` for that to be true. Reusing the branch unfetched is safe here only
+because the pin assertion is the next thing that runs: a `pr-<N>` left over from
+a *superseded* head fails it, and then `cleanup.py` has to remove the worktree
+before any re-run can fetch — which is what that second message says, because
+"re-run Phase 0" on its own is advice that refuses again.
 
 **Create the worktrees only where Phase 4 or Phase 5 will run.** They are the two
 phases that need a tree; every other read here reaches the PR through
@@ -806,7 +841,7 @@ confident `inert here` that was never established:
 | The entry names | Why the config cannot answer it | What does |
 |---|---|---|
 | a **dependency** rather than a rule or a flag | it is not in this repo's config, and for a compiled wheel it is not even in this repo's *ecosystem* — a Rust crate inside a Python package, where the advisory lives on crates.io and every PyPI-side scanner is correctly clean | `references/uv-lock.md` § Phase 2 — read the shipped set out of the wheel's own SBOM. `references/actions.md` § Phase 2 for the tag-line question |
-| a rule this repo **disables**, or never enables | the claim is then about the config *file*, and the verdict is about the *tool*. Config is interpreted: another file can win, a key can be spelled for a different version, a section can go unread | run the gate twice: once with the config, and once without it **with that rule selected by name** — `ruff --isolated --select <RULE>`, `rumdl --no-config --enable <RULE>` — and read the difference |
+| a rule this repo **disables**, or never enables | the claim is then about the config *file*, and the verdict is about the *tool*. Config is interpreted: another file can win, a key can be spelled for a different version, a section can go unread | run the gate three ways, not twice: with the config; without it **with that rule selected by name** — `ruff --isolated --select <RULE>`, `rumdl --no-config --enable <RULE>` — and once more with no rule named. `references/uv-lock.md` § Phase 2 has the table, and why the named run needs the fix's own input as a control before its silence means anything |
 | a **file type** or a **document shape** rather than a setting | there is no config key to grep for. `stop rewriting Rust source when formatting doc comments` is about `.rs` files, and `stop reading a lazy continuation as a setext underline` is about a blockquote followed by a setext underline — neither is a line any config could carry, and "no config line matches" reads as `inert here` | grep the **content** of the tree instead, below |
 
 **The third row is the one with no command in the table**, because its commands
@@ -921,6 +956,18 @@ on by hand (#139). **The named run has to fire before the difference means
 anything**: silent in both, the file never exercised the rule, which is
 `underivable` and not `inert here` — take the input from the fix's own test, as
 Phase 4's reproducer does.
+
+**And run that input as a control, because a silent named run and a broken one
+are the same output.** rumdl 0.2.74 takes a rule name it does not know, warns on
+stderr and reports `Success: No issues found` at exit `0`; ruff 0.16.8 refuses
+the same mistake at exit `2`. So the named run has to be shown firing on an input
+that carries the violation before its silence on this tree is evidence of
+anything — one more run of the command already written, against the fix's own
+test rather than the repo. **Then run it once more naming no rule**, which asks
+whether the rule is on by default: a newly added rule can be opt-in under a
+disable-list config, neither disabled nor live, and that is a third state the
+config cannot be read for. Both were improvised by round twenty-nine, which is
+how they got here (#148, #149).
 
 ## Phase 3 — Known vulnerabilities
 
@@ -1476,12 +1523,17 @@ compliance its transcript contradicts: on `fpga-board-sim` #363 the table read
 identically either way, and that audit had reached it without this file ever
 loading.
 
-**The record holds Bash calls and nothing else**, because that is what the hook
-matches. A deviation carried out through another tool — a file read, a background
-watcher — never reaches it, so `RESULT: no finding` is silent about those by
-construction rather than by measurement. Round twenty-nine is the worked example:
-it returned no finding over 42 recorded calls while the audit had five real
-deviations to hand back, one of them a plugin defect.
+**The record holds Bash and Read calls and nothing else**, because that is what
+the hook matches. A deviation carried out through any other tool — a background
+watcher, a subagent — never reaches it, so `RESULT: no finding` is silent about
+those by construction rather than by measurement. Round twenty-nine is the worked
+example: it returned no finding over 42 recorded calls while the audit had five
+real deviations to hand back, one of them a plugin defect.
+
+**And it holds what was issued, never what it printed**, because a `PreToolUse`
+hook fires before the call runs. Every rule is therefore about the shape of a
+command. A lint run that named its rule is in the record; whether that run
+*fired* is not, and Phase 2's control is what settles it.
 
 **Four rules is not every command, and a clean exit is not "no improvisation".**
 Line-by-line attribution against the procedure was prototyped and dropped — on
