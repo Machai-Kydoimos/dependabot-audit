@@ -347,6 +347,22 @@ after nine commits of growth.
 - **Do not extend a script to an ecosystem you have no repository to test it
   against.** The per-ecosystem references document what is in scope instead,
   deliberately.
+- **The `PreToolUse` hook writes only to `$TMPDIR`, never to the audited
+  repository.** Read-only is this plugin's whole contract, and a log file is a
+  write. Measured on Claude Code 2.1.278: the hook's environment carries
+  `CLAUDE_PROJECT_DIR`, which is the *subject's* checkout — keying the record on
+  it would drop a file into the repo under audit, on every run, including the
+  ones that report a clean `git status`. The record is keyed on
+  `CLAUDE_CODE_SESSION_ID`, which is the one variable visible both to the hook
+  and to the audit's own Bash, so the two halves agree on the path without
+  anything crossing Phase 0's handoff. They are written in two different files —
+  `hooks/hooks.json` and `scripts/verify_run.py` — and
+  `tests/test_verify_run.py` is what stops them drifting apart.
+- **A `verify_run.py` rule carries the sentence it was derived from.** Each
+  `Rule` names a file and an exact string, and the suite asserts that string is
+  still there. A check that outlives its rationale keeps passing while asserting
+  something this plugin no longer says, which is the four-places drift in its
+  quietest form. Deleting the prose must fail the suite, not the rule.
 - **The plugin ships no `commands/` directory.** A command basename and a skill
   directory name resolve to the same `<plugin>:<name>` address, and the command
   wins — so `commands/dependabot-audit.md` made `SKILL.md` unloadable, and with

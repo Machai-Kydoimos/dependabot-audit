@@ -1448,14 +1448,53 @@ command is enough to write *a* report and not enough to write *that* one. Lead
 with evidence; the recommendation is a conclusion drawn from it, not a headline it
 decorates.
 
-**If this audit had to improvise, the report says so.** One line, wherever it ran
-a command this procedure did not specify or read a plugin file by hand instead of
-invoking it — the evidence rows were then produced by a procedure working around
-its own tooling, and nothing else in the report can tell the reader that. Do not
-wait on Phase 8's classification: that hand-back is written for this plugin's
-maintainer and comes *after* this phase, while what the reader here needs is one
-sentence and the PR. On `fpga-board-sim` #363 the table read identically either
-way.
+**If this audit had to improvise, the report says so** — and the record says what
+it did, rather than you recalling it. A `PreToolUse` hook appends every Bash call
+this session issued to `${TMPDIR:-/tmp}/dbaudit-run-$CLAUDE_CODE_SESSION_ID.jsonl`,
+outside the audited repository because this plugin is read-only and a log file is
+a write. Read it back:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/verify_run.py"
+echo "verify exit: $?"
+```
+
+`0` nothing fired, `1` findings to report in this section, `128` **no record** —
+the hook did not run, so what this audit issued was never written down. 128 is
+not a clean result and does not become one by being quiet.
+
+**Read its output rather than your memory of the run.** On 2026-09-19 a replay
+wrote *"No improvisation. Every command in this audit came from `SKILL.md` or
+`references/uv-lock.md` as written"* into this very section, while its own
+transcript showed `uv run --frozen $g` — a flag Phase 5 names as one not to add.
+The claim was sincere and false. It is the second time a report has asserted
+compliance its transcript contradicts: on `fpga-board-sim` #363 the table read
+identically either way, and that audit had reached it without this file ever
+loading.
+
+**The record holds Bash calls and nothing else**, because that is what the hook
+matches. A deviation carried out through another tool — a file read, a background
+watcher — never reaches it, so `RESULT: no finding` is silent about those by
+construction rather than by measurement. Round twenty-nine is the worked example:
+it returned no finding over 42 recorded calls while the audit had five real
+deviations to hand back, one of them a plugin defect.
+
+**Four rules is not every command, and a clean exit is not "no improvisation".**
+Line-by-line attribution against the procedure was prototyped and dropped — on
+round twenty-six it called 191 of 323 lines unattributed, nearly all `echo`
+separators, `head -30` and variable preamble, and a check with that noise floor
+gets tuned to silence. So `RESULT: no finding` retires the two failure modes that
+have actually shipped; the sentence about anything else is still yours to write.
+A `NOTE` is not a defect — it is a limit on what this report may claim, and the
+one that fires most says an `inert here` verdict has no named run behind it.
+
+Do not wait on Phase 8's classification: that hand-back is written for this
+plugin's maintainer and comes *after* this phase, while what the reader here
+needs is one sentence and the PR.
 
 **Mark each row's provenance**, and reuse only where it is legitimate. What
 invalidates a row is not how old it is but what it depends on:
