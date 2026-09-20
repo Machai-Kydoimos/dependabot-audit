@@ -255,22 +255,23 @@ def check(cmds: list[str], opened: list[str] | None = None) -> list[Finding]:
             Finding(
                 "hidden-sync",
                 f"{count(HIDDEN, hidden)} gate invocation(s), across {len(hidden)} "
-                "command(s), ran in the project environment with --frozen or --no-sync. "
+                "command(s), ran under a project-form `uv run` with --frozen or --no-sync. "
                 "Phase 5 names both as flags not to add: each hides the line that would "
                 "have said the environment moved.",
                 lines_matching(HIDDEN, hidden),
             )
         )
 
-    # Only meaningful once gates actually ran in the project environment.
+    # Only meaningful once gates actually ran under a project-form `uv run`.
     gated = [c for c in cmds if UV_RUN.search(c) and not NO_PROJECT.search(c)]
     if gated and not any(TOOL_CHECK.search(c) for c in cmds):
         findings.append(
             Finding(
                 "gate-tool-unchecked",
-                f"{count(UV_RUN, gated)} gate(s) ran in the project environment and nothing "
+                f"{count(UV_RUN, gated)} gate(s) ran under `uv run` and nothing "
                 "checked `.venv/bin/` first. "
-                "`uv` puts .venv/bin first on PATH and falls through to the rest of it, so a gate "
+                "`uv run` puts .venv/bin first on PATH and falls through to the rest "
+                "of it, so a gate "
                 "whose tool the environment lacks runs the machine's copy and exits 0.",
                 lines_matching(UV_RUN, gated),
             )

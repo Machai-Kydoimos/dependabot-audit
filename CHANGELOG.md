@@ -11,6 +11,117 @@ patch.
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-09-20
+
+### Phase 6 asks the reachability question that fits the diff
+
+Phase 6 checks that the green you are trusting *exercised the change*, and asked
+one question to do it: **does a `pull_request` trigger the workflow the diff
+touched?** That is the right question for an actions bump, and it was written
+from one — a PR changing only `release.yml`, which triggers on `push: tags:` and
+carried three green checks from an unrelated workflow.
+
+A `uv.lock` or `.pre-commit-config.yaml` bump touches **no workflow file**. So
+the set is empty every time, the intersection with it is empty every time, and
+the phase's own instruction — *"say so plainly: CI is green and it is green for
+reasons unrelated to this diff"* — manufactures that finding on **every
+dependency bump this plugin exists to audit**. On `fpga-board-sim` #437 every CI
+job runs `uv sync --group dev` and then the bumped tools, which is as reachable
+as a change gets. Round twenty-seven met this, declined to write the false
+finding, and handed the gap back instead (#144) — a recovery not to rely on
+twice.
+
+Reachability is now three cases, and the trigger read is the same command in all
+of them; only the list it runs over changes:
+
+| The diff changed | The question | The list |
+|---|---|---|
+| a **workflow file** | does a `pull_request` trigger *the workflow that changed*? | `$CHANGED` |
+| a **dependency manifest** | do the workflows a `pull_request` *does* trigger install from it? | what the install-step scan named |
+| **neither** | nothing is reachable by this route | — the green is unattributed |
+
+The manifest row has its own supplied command, `git grep` over the workflows at
+`pr-<N>` for `uv sync`/`uv run`/`pre-commit`/`setup-uv`. It is deliberately
+loose: a `run: |` block puts the command on its own line, so anchoring the scan
+to the `run:` key would miss the commonest shape of the thing being looked for.
+Comment lines come back too and are read off rather than filtered. Exit codes as
+in Phase 2 — `0` found, `1` a real zero, `128` could not run.
+
+And the list that drives all of it is now **captured rather than read off an exit
+code**. `git diff --name-only` exits `0` printing nothing both when no workflow
+changed and when it could not run, which is the `exit 0 is not a zero` trap
+0.48.0 fixed one phase over (#141) — except that here the empty result is the
+*normal* case, so the trap fires on the runs that matter most.
+
+### A script's prose is no longer read as its code
+
+`reachable(n)` is a phase's shell plus the source of every script it names, and
+that source included string literals. So a script that **explains** a command in
+its output read as a script that **runs** it. Adding `verify_run.py` to Phase 7
+in 0.49.0 made the `--no-execute` guard report that Phase 7 builds and installs
+the audited tree — off a sentence describing the trap the script detects.
+`verify_run.py` imports no `subprocess` and executes nothing at all.
+
+0.49.0 shipped green by rewording the sentence, which is bending prose around a
+blind spot. This fixes the reading, and the reworded sentences are restored —
+`uv run` is back in the two findings that are about `uv run`, which is also what
+makes the fix tested rather than asserted. There is a test pinning that those
+words are still in the file, because taking them out again would leave the guard
+passing on nothing.
+
+Stripping every literal would have **weakened** the guard, since
+`subprocess.run(["uv", "sync"])` carries its command in a literal too. So
+capability decides: a module that cannot execute cannot carry a command,
+whatever its strings spell. Measured across the nine scripts — seven call
+`subprocess.run` and keep every literal they hold; `audit.py` and
+`verify_run.py` are the two that cannot execute anything. Imports count as well
+as calls, because `from subprocess import run` leaves the call spelled `run(...)`
+with nothing dotted to match, and `os` is deliberately *not* capability —
+`verify_run.py` imports it for `os.environ`.
+
+### What the replay gate showed
+
+Round thirty-one, `fpga-board-sim` #437, this version as committed: 51 turns,
+$7.24, 50 recorded calls, four deviations — **all four classed `correct`, and no
+plugin defect**.
+
+Phase 6's new block ran verbatim, and the reading came out the other way round
+from the one the old rule would have produced:
+
+> The diff touches no workflow, so the reachability question is **the manifest
+> one**: `ci.yml` triggers on every `pull_request`, and all six jobs run `uv sync
+> --group dev` and then the bumped tools directly. That is as reachable as a
+> lockfile bump gets — and all 30 jobs ran, none skipped.
+
+Where the old rule said *"green for reasons unrelated to this diff"*, the run now
+says the green is attributable and why. It also piped the install-step scan
+through `head -20` and read its status from `${PIPESTATUS[0]}`, which keeps the
+exit-code convention across a pipe — the adaptation the phase wants, made
+unprompted.
+
+`verify_run.py` fired `inert-needs-named-run` mid-run on 11 ruff invocations with
+no `--select`, and the audit's own words for it: *"a **correct** catch: I was
+about to write `inert here` for ruff off an allow-list config read. Running the
+SIM117 protocol cleared it. That note did real work."*
+
+**One new gap, in older text, so it goes to the next version (#153).** Phase 0
+says *"diff the two lists and report the difference"* and supplies no command.
+Round twenty-nine diffed the whole workflow file; round thirty-one diffed each
+side through `grep 'run:'` — and those answer different questions, since the
+first reports a comment change as a gate change and the second misses a gate
+added as a `uses:` step. Both reported no difference; only one had asked a
+question that could have found one.
+
+### Found while building it
+
+- **A guard fired on a correct command, because its pattern knew three forms and
+  not the fourth.** Phase 6's new scan reads at a ref — `git grep <pattern>
+  "pr-<N>"` — but `AT_A_REF` only recognised `git show`/`git ls-tree`'s
+  `<ref>:<path>` and `git diff <ref>...<ref>`, so it called a pinned read a
+  working-tree one. Widened, with tests pinning that an unpinned `git grep` and
+  a read at `"main"` both still fail: a widened pattern that accepts everything
+  retires the guard it belongs to.
+
 ## [0.50.0] — 2026-09-20
 
 ### What a silent lint run does not prove
@@ -5925,7 +6036,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.50.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.51.0...HEAD
+[0.51.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.47.0...v0.48.0
