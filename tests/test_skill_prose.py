@@ -5839,3 +5839,54 @@ class TestTheGatesRunInTheEnvironmentTheRowDescribes(SkillHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPhase7ReadsTheRecordRatherThanRecalling(SkillHarness):
+    """#124's class, mechanised.
+
+    Phase 7 has asked for a deviation list since 0.23.0 and has been answered
+    wrongly twice: `fpga-board-sim` #363 produced a complete report while SKILL.md
+    had never loaded, and round twenty-six wrote "No improvisation" over a
+    transcript holding three. Both times the question was addressed to the model's
+    memory of its own run, which is the one source that cannot be checked.
+    """
+
+    def test_the_phase_runs_the_verifier_rather_than_naming_it(self) -> None:
+        """Named in prose is the #127 class; this asserts it is in a block."""
+        self.assertIn(
+            "verify_run.py",
+            self.reachable(7),
+            "Phase 7 asks what this audit improvised and supplies no command to "
+            "answer it — the class #124/#125/#127 exist for",
+        )
+
+    def test_the_underivable_exit_is_not_readable_as_clean(self) -> None:
+        flat = self.flat(7)
+        self.assertIn("128", flat)
+        self.assertTrue(
+            "not a clean result" in flat,
+            "Phase 7 must say what 128 means. A missing record is the hook not "
+            "having run, which is the same silence as a clean one and the exact "
+            "shape of `exit 0 is not a zero`",
+        )
+
+    def test_the_boundary_of_the_check_is_stated(self) -> None:
+        """A clean exit covers four rules, not every command. Saying otherwise
+        rebuilds the false assurance this phase just replaced."""
+        flat = self.flat(7)
+        self.assertIn("four rules", flat)
+        self.assertIn("191 of 323", flat)
+
+    def test_the_record_is_written_outside_the_audited_repository(self) -> None:
+        self.assertIn("read-only", self.flat(7))
+        self.assertIn("tmpdir", self.flat(7))
+
+    def test_the_record_covers_bash_only_and_says_so(self) -> None:
+        """`no finding` over a record that never saw the deviation is the same
+        over-reassurance this phase exists to remove, one tool across."""
+        flat = self.flat(7)
+        self.assertIn("bash calls and nothing else", flat)
+        self.assertIn("by construction rather than by measurement", flat)
+
+    def test_a_note_is_distinguished_from_a_finding(self) -> None:
+        self.assertIn("a `note` is not a defect", self.flat(7))

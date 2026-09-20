@@ -11,6 +11,142 @@ patch.
 
 ## [Unreleased]
 
+## [0.49.0] — 2026-09-20
+
+### The record of what ran
+
+Every other phase measures the subject. This one measures the audit.
+
+Phase 7 has asked *"did this audit improvise?"* since 0.23.0, and the question has
+been answered wrongly twice — both times sincerely, because it was addressed to
+the model's memory of its own run, which is the one source that cannot be checked.
+On `fpga-board-sim` #363 a complete, well-formed report was produced while
+`SKILL.md` had never loaded. On 2026-09-19 round twenty-six wrote *"No
+improvisation. Every command in this audit came from `SKILL.md` or
+`references/uv-lock.md` as written"* while its own transcript held three
+`uv run --frozen` calls — a flag Phase 5 names as one not to add.
+
+A `PreToolUse` hook (`hooks/hooks.json`) now appends every Bash call to
+`${TMPDIR:-/tmp}/dbaudit-run-$CLAUDE_CODE_SESSION_ID.jsonl`, and
+`scripts/verify_run.py` reads it back. Measured on Claude Code 2.1.278:
+`CLAUDE_CODE_SESSION_ID` is visible both to the hook and to the audit's own Bash,
+so the two halves agree on the path with nothing carried through Phase 0's
+handoff. The record lives in `$TMPDIR` and never in the audited repository —
+this plugin is read-only by contract and a log file is a write. (Also measured,
+and consistent with #52: `CLAUDE_PLUGIN_ROOT` is set for the hook and absent from
+the audit's Bash.)
+
+Four rules, each derived from a sentence already in the procedure, with
+`tests/test_verify_run.py` asserting that sentence still exists — a check that
+outlives its rationale is how prose and code split:
+
+| rule | catches |
+|---|---|
+| `hidden-sync` | a project-environment gate run carrying `--frozen`/`--no-sync` (#140) |
+| `gate-tool-unchecked` | gates run with no `test -x ".venv/bin/…"` before them (#140) |
+| `inert-needs-named-run` | `inert here` with no `--select`/`--enable` run behind it, per tool (#143) |
+| `plugin-file-read` | the procedure read by hand rather than invoked (the 0.22.1 class) |
+
+**What it does not do, stated because the boundary matters more than the count.**
+Line-by-line attribution against the procedure was prototyped first and dropped:
+on round twenty-six it called 191 of 323 lines unattributed — 59%, nearly all
+`echo` separators, `head -30` and variable preamble. A check with that noise floor
+gets tuned to silence, which is what happened to #127's general rule at ~40 hits
+and ~35 false positives. So `RESULT: no finding` retires the two failure modes
+that have actually shipped, and the sentence about anything else is still the
+report's to write. A `NOTE` is not a defect — it is a limit on what the report may
+claim, kept separate so the exit code does not go permanently red.
+
+`128` is a missing record: the hook did not run, so what the audit issued was
+never written down. It is not a clean result and Phase 7 says so, which is
+`exit 0 is not a zero` (#141) one level up.
+
+**Validated against the two rounds it was built from, not against fixtures.**
+Round twenty-six's record produces `hidden-sync` (3 commands, quoted exactly),
+`gate-tool-unchecked`, and the ruff `inert-needs-named-run` note. Round
+twenty-seven's produces neither gate finding — it copied the supplied loop — and
+its one finding is a true positive nobody had noticed: `wc -l references/uv-lock.md`,
+the run measuring a plugin document by hand. The fixtures in the test file are
+verbatim strings from both transcripts, recorded before these rules existed,
+which is the only way they are evidence rather than an echo.
+
+### What the replay gate showed
+
+Replayed against `fpga-board-sim` #437 before committing, per CONTRIBUTING, and
+twice — plus one attempt that never started, which is the finding worth keeping.
+
+**`hooks/hooks.json` was written one directory too deep**, under
+`skills/dependabot-audit/` by analogy with `scripts/` and `references/`, which do
+live there. Claude Code loads a plugin's hooks from `<plugin root>/hooks/hooks.json`,
+next to `.claude-plugin/`, so the file was inert: the audit issued five Bash calls
+and the record was never created. The suite was green throughout. Every test
+asserted the file's *contents* — valid JSON, a `Bash` matcher, `$TMPDIR` rather
+than `CLAUDE_PROJECT_DIR`, `|| true` — and none asserted it sat anywhere that
+would read it. That is this release's own subject one level up, and it was the
+replay rather than the suite that caught it. `test_it_sits_at_the_plugin_root`
+pins both halves now, including that no `hooks.json` remains under the skill.
+
+**Round twenty-eight** ($7.03, 53 turns, 0 denials) ran with the record live. The
+hook wrote 46 commands, Phase 7 ran `verify_run.py` as written, and it fired on
+`uv run --frozen ruff check .`. The report carried it — *"This audit improvised
+once … a flag Phase 5 explicitly names as one not to add … `verify_run.py`
+flagged the same command independently"* — and Phase 8 classified it. Round
+twenty-six wrote *"No improvisation"* over three of these. Same deviation class,
+now caught inside the run by the run.
+
+It also found a defect in this fix, folded in here rather than filed:
+`verify_run.py` counted Bash **calls**, and all five of #437's gates carried
+`--frozen` inside one call, so the finding read *"1 command(s)"* over a single
+quoted line — true about the record, an understatement of the run by a factor of
+five, and the same mistake as quoting a block's first line instead of the line
+that matched. It counts and shows every offending invocation now — *"5 gate
+invocation(s), across 1 command(s)"* — capped at eight with the remainder named.
+Round twenty-eight's own command is a test fixture.
+
+**Round twenty-nine** ($7.85, 59 turns) replayed the corrected script and
+returned `RESULT: no finding` — and its report is the reason this release states
+its boundary twice:
+
+> `verify_run.py` returned `RESULT: no finding` over 42 recorded Bash calls. That
+> is its four named rules passing, not a clean sheet — deviations #1–#5 are real
+> and none of them is in its scope.
+
+Five deviations, tabulated with evidence, one of them a `plugin defect` carrying
+its exit code. All in older text, so by the stop rule they are filed rather than
+folded in: **#147** (Phase 0's combined fetch exits 128 on a live `pr-<N>`
+worktree and takes `$DEFAULT` with it), **#148** (a silent named run proves
+nothing without a control known to be loud — the twin of the failure #139 fixed),
+**#149** (a newly added rule can be opt-in under a disable-list, which the
+two-state framing reads as live). Round twenty-nine also reached for a tool the
+record cannot see, which is filed as **#150** and stated in Phase 7: the hook
+matches `Bash`, so a deviation through another tool is outside the record by
+construction rather than by measurement.
+
+An earlier attempt at round twenty-nine stopped at 36 turns on a session limit
+(`api_error_status: 429`). It reached Phase 4 and is kept as evidence of the
+counting fix running live, not as a gate result.
+
+### Found while building it
+
+Three rule bugs, each caught by the prototype before it shipped:
+`inert-needs-named-run` first asked whether *any* run named *any* rule, which
+reads round twenty-six as clean — it ran `rumdl --enable MD065` and no `ruff
+--select` at all, while the claim in its report was about ruff. It is per tool
+now. It then counted `echo "... ruff or rumdl ..."` and `changelog.py --package
+rumdl` as invocations, so it requires a subcommand. And the evidence line was the
+block's first line, which is the same `REPO=$(gh repo view …)` preamble in every
+one of them — it is the matching line now, windowed so a long one-liner does not
+truncate the match out of view.
+
+`reachable()` reads a named script's **string literals** as executable code:
+adding `verify_run.py` to Phase 7 made `TestNoExecutePhaseBuildsTheAuditedProject`
+report that Phase 7 builds the audited tree, because the script's findings explain
+the `uv run` trap they detect. Whole-line comments are stripped; literals are not,
+and backticks do not help because `\buv run\b` matches inside `` `uv run` ``.
+Worked around by rewording two output strings, and filed rather than fixed here:
+stripping all literals would weaken the guard, since `subprocess.run(["uv",
+"sync"])` carries its command in a literal too.
+
 ## [0.48.0] — 2026-09-20
 
 **Three hand-backs from rounds twenty-four and twenty-five, each measured again
@@ -5613,7 +5749,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.48.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.49.0...HEAD
+[0.49.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.45.0...v0.46.0
