@@ -136,11 +136,20 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 #    git's away, which is how a failed read becomes a clean bill.
 USES=$(git grep -nE '^[[:space:]]*-?[[:space:]]*uses:' pr-<N> -- '.github/workflows/'); RC=$?
 [ "$RC" -le 1 ] || { echo "the uses: grep failed ($RC) — underivable, not clean" >&2; exit 2; }
-printf '%s\n' "$USES" | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'
+#    `printf '%s'`, no `\n`: on an *empty* capture `%s\n` prints a blank line,
+#    which no filter below excludes, so it reaches stdout and flips the exit to
+#    `0` — this check's *found something* answer, on a tree with nothing in it.
+printf '%s' "$USES" | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'
 echo "unpinned exit: $?"
 
 # 2. What each workflow grants, and which one grants nothing and so inherits.
-for f in $(git ls-tree --name-only "pr-<N>:.github/workflows/"); do
+#    The list is captured and checked before it is iterated: `for f in $(git
+#    ls-tree …)` throws the status away, and a read that failed then iterates
+#    zero times and prints nothing — which is what a repo whose workflows were
+#    all read and all fine looks like from here.
+WF=$(git ls-tree --name-only "pr-<N>:.github/workflows/") \
+  || { echo "cannot list workflows at pr-<N> — underivable, not clean" >&2; exit 2; }
+for f in $WF; do
   printf '%-30s ' "$f"
   git grep -cE '^[[:space:]]*permissions:' pr-<N> -- ".github/workflows/$f" \
     || echo "none — inherits the repo default, read below"
@@ -151,9 +160,13 @@ gh api "repos/$OWNER/$NAME/actions/permissions/workflow" \
 echo "repo default exit: $?"
 
 # 3. Nothing but pins and comments changed — Phase 0's scope-gate invariant,
-#    reported rather than used to stop.
-CHANGED=$(git diff "$BASE_SHA...pr-<N>" -- '.github/workflows/' | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)')
-printf '%s\n' "$CHANGED" | grep -vE '^[+-][[:space:]]*-?[[:space:]]*uses:' | grep -vE '^[+-][[:space:]]*#'
+#    reported rather than used to stop. Captured and checked for check 1's
+#    reason, which this line was the one place in the block not to follow:
+#    `git diff | grep` reports the grep's status and throws git's away.
+DIFF=$(git diff "$BASE_SHA...pr-<N>" -- '.github/workflows/') \
+  || { echo "the workflow diff failed — underivable, not clean" >&2; exit 2; }
+CHANGED=$(printf '%s' "$DIFF" | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)')
+printf '%s' "$CHANGED" | grep -vE '^[+-][[:space:]]*-?[[:space:]]*uses:' | grep -vE '^[+-][[:space:]]*#'
 echo "residue exit: $?"
 ```
 
@@ -164,6 +177,28 @@ who chains `&&` onto either one silently drops the finding. Measured on
 `fpga-board-sim` #436 (setup-uv 10.0.1 → 10.1.0): 27 `uses:` lines, all pinned,
 unpinned exit `1`; 18 changed lines, residue exit `1`. Planting an added
 `- run: curl … | sh` step and a bare `@v1` pin fires each of them at exit `0`.
+
+**An empty capture is not an empty answer, and `printf '%s\n'` made it one.**
+`$(…)` strips trailing newlines, so an empty capture printed through `%s\n` is a
+single blank line — and a blank line matches neither `grep -v`, so it survives
+both filters, reaches stdout and carries the exit to `0`: the *found something*
+answer, from a tree with nothing in it. Measured on git 2.55.0 and GNU grep 3.12
+— a `git grep` matching no `uses:` at all exits `1`, which the line above
+deliberately allows as an answer, and the check then reported `unpinned exit: 0`.
+Dropping the `\n` prints nothing for an empty capture and the same lines for a
+non-empty one, so only the empty case moves.
+
+**And check 3 discarded `git diff`'s status** — the rule check 1's own comment
+states, broken two checks later in the same block. Measured on git 2.55.0 against
+a `$BASE_SHA` that does not resolve: `git diff` exits **128** and says so on
+stderr, the pipeline exits `1` on its last `grep`, `$CHANGED` comes back empty,
+and the blank line above then carried it to `residue exit: 0`. A read that never
+happened, reported as residue found — and reported by the check whose own subject
+is whether anything beyond the pins moved. Captured and checked, the same input
+stops at exit 2 and names the failure (#155). The list in check 2 is captured
+for the same reason and a different symptom: `for f in $(git ls-tree …)` iterating zero
+times prints nothing, and nothing is also what a repo with every workflow read
+and every one fine looks like.
 
 **A workflow with no `permissions:` block is not a workflow with minimal
 permissions.** It inherits the repository default, which is a different question

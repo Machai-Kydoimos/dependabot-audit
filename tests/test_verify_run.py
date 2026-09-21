@@ -18,7 +18,18 @@ What the two rounds are known to contain, from their transcripts:
 | project-form run with `--frozen` | 3 | 0 |
 | `test -x ".venv/bin/` | absent | present |
 | `ruff check --select` | 0 | 3 |
-| plugin document read by hand | 0 | 1 (`wc -l references/uv-lock.md`) |
+| `SKILL.md` read by hand | 0 | 0 |
+| reference sized with `wc -l`, then read with `Read` | 0 | 1 |
+
+**That last row used to read `plugin document read by hand | 0 | 1`, and it was
+wrong.** It was written from the rule rather than from the transcript, which is
+the one thing this file's opening paragraph says a fixture must never be. Round
+twenty-seven's transcript settles it: `wc -l` on `references/uv-lock.md` at index
+75, and a `Read` of that same file at index 79 — sizing a 1,266-line file before
+paging it, and then reading the content the way the procedure intends. Round
+thirty-two did the identical thing and classed its own command **correct**, which
+is what reopened it (#156). The command is in `R27` below so the negative is
+asserted against the real record rather than against a synthetic one.
 
 Round twenty-six's report asserted *"No improvisation. Every command in this
 audit came from SKILL.md or references/uv-lock.md as written"* and *"inert here
@@ -47,8 +58,8 @@ sys.path.insert(0, str(SCRIPTS))
 
 from verify_run import (  # noqa: E402  # noqa: E402
     HIDDEN,
-    PLUGIN_DOC,
     RULES,
+    SKILL_DOC,
     check,
     cli,
     commands,
@@ -85,6 +96,13 @@ R27 = [
     "done",
     "uv run -q --no-project --with ruff==0.16.8 ruff check --isolated --select UP040 --statistics .",
     "uv run -q --no-project --with rumdl==0.2.67 rumdl check --fix .",
+    # Index 75 of round twenty-seven's transcript, verbatim, session path and
+    # all. Index 79 is `Read` of that same file: this is sizing before paging,
+    # not a substitute for consulting it, and 0.53.0 is where the rule stopped
+    # calling it a deviation (#156).
+    "cd /tmp/claude-1000/-home-rick-Projects-dependabot-audit/"
+    "470e2e50-aa62-4c38-b32d-5af9993eb422/scratchpad/wt-048/skills/dependabot-audit"
+    " && ls references/ scripts/ && wc -l references/uv-lock.md",
 ]
 
 
@@ -162,6 +180,16 @@ class TestTheTwoRoundsBehindTheRules(unittest.TestCase):
         rules = fired(R27)
         self.assertNotIn("hidden-sync", rules)
         self.assertNotIn("gate-tool-unchecked", rules)
+
+    def test_round_twenty_seven_is_not_told_it_read_the_procedure_by_hand(self) -> None:
+        """The false positive that had been encoded as a true one since 0.49.0.
+
+        `wc -l references/uv-lock.md` is index 75 of that transcript and a `Read`
+        of the same file is index 79, so the run sized the file and then read it
+        as written. The rule that fired on it names its own meaning — *the skill
+        did not load* — about a run where it demonstrably had (#156).
+        """
+        self.assertNotIn("plugin-file-read", fired(R27))
 
     def test_the_report_claim_round_twenty_six_made_is_the_one_contradicted(self) -> None:
         """`No improvisation` was written against a record holding three of them."""
@@ -272,8 +300,15 @@ class TestPluginFileRead(unittest.TestCase):
     def test_reading_the_procedure_by_hand_is_a_finding(self) -> None:
         self.assertIn("plugin-file-read", fired(["cat skills/dependabot-audit/SKILL.md"]))
 
-    def test_measuring_a_reference_counts(self) -> None:
-        self.assertIn("plugin-file-read", fired(["wc -l references/uv-lock.md"]))
+    def test_measuring_a_reference_does_not_count(self) -> None:
+        """Inverted in 0.53.0, with the round-27 row it was written from.
+
+        A reference is fetched *by* the audit, so a command that touches one is
+        not evidence the procedure failed to load — which is the reasoning 0.50.0
+        already applied to the `Read` half and left the Bash half without.
+        """
+        self.assertNotIn("plugin-file-read", fired(["wc -l references/uv-lock.md"]))
+        self.assertNotIn("plugin-file-read", fired(["cat references/actions.md"]))
 
     def test_an_unrelated_markdown_read_does_not(self) -> None:
         self.assertNotIn("plugin-file-read", fired(["cat CHANGELOG.md", "head -5 docs/guide.md"]))
@@ -303,21 +338,40 @@ class TestTheReadToolIsWatchedToo(unittest.TestCase):
         run. The first version of this did exactly that: round thirty read
         `references/uv-lock.md` twice, correctly, and was told it had deviated.
 
-        The Bash half still matches a reference, and that is not the same claim:
-        `wc -l references/uv-lock.md` measures the file rather than consulting it,
-        which is what round twenty-seven was caught doing.
+        The Bash half went on matching a reference for three more releases, on
+        the reading that `wc -l` *measures* a file rather than consulting it.
+        Round twenty-seven's transcript is what that reading rested on, and it
+        does not support it: the `wc -l` there is followed four records later by
+        a `Read` of the same file. Both halves are one rule again in 0.53.0.
         """
         self.assertEqual(check([], [str(SKILL / "references/uv-lock.md")]), [])
-        self.assertIn("plugin-file-read", fired(["wc -l references/uv-lock.md"]))
+        self.assertNotIn("plugin-file-read", fired(["wc -l references/uv-lock.md"]))
 
     def test_the_audited_repos_own_references_are_not_this_plugins(self) -> None:
-        """The false positive that location matching exists to prevent: the
-        Bash-side pattern matches any `references/<name>.md` anywhere."""
+        """A repo of its own under audit, by either route.
+
+        Location matching is what answers this on the Read side; on the Bash side
+        it is now answered one step earlier, because no reference matches at all.
+        """
         subject = str(
             pathlib.Path(tempfile.gettempdir()) / "dbaudit-o-r-437/pr-437/docs/references/api.md"
         )
-        self.assertTrue(PLUGIN_DOC.search(subject), "the name alone does match — that is the trap")
+        self.assertIsNone(SKILL_DOC.search(subject), "a reference is not this rule's subject")
         self.assertEqual(check([], [subject]), [])
+        self.assertEqual(check([f"cat {subject}"]), [])
+
+    def test_the_bash_half_cannot_resolve_a_path_and_says_so(self) -> None:
+        """The boundary that stays, stated rather than shipped in silence.
+
+        A `Read` record carries a path, so `under()` settles whose `SKILL.md` it
+        was. A Bash record carries only the command's text, and an audited repo
+        that happens to carry a `SKILL.md` of its own would fire. No transcript
+        has shown that case, so nothing is tuned for it here — but a guard's
+        known false positive belongs in a test, not in a reader's surprise.
+        """
+        subject = str(pathlib.Path(tempfile.gettempdir()) / "dbaudit-o-r-437/pr-437/SKILL.md")
+        self.assertEqual(check([], [subject]), [], "Read resolves it and declines")
+        self.assertIn("plugin-file-read", fired([f"cat {subject}"]), "Bash cannot, and fires")
 
     def test_a_script_read_is_not_a_document_read(self) -> None:
         self.assertEqual(check([], [str(SCRIPTS / "verify_run.py")]), [])
@@ -389,9 +443,15 @@ class TestEvidenceNamesTheCommandThatMatched(unittest.TestCase):
         self.assertEqual(len(evidence(R28_GATES, HIDDEN)), 5)
 
     def test_a_long_one_liner_keeps_the_match_in_view(self) -> None:
-        line = "cd " + "x" * 200 + " && wc -l references/uv-lock.md"
-        shown = window(line, PLUGIN_DOC)
-        self.assertIn("references/uv-lock.md", shown)
+        """Windowed on what the rule flagged, which since 0.53.0 is `SKILL.md`.
+
+        Until then this measured the window against `references/uv-lock.md` — a
+        string the rule no longer matches, so the assertion would have held on a
+        pattern that never fires and told nobody.
+        """
+        line = "cd " + "x" * 200 + " && cat skills/dependabot-audit/SKILL.md"
+        shown = window(line, SKILL_DOC)
+        self.assertIn("SKILL.md", shown)
         self.assertTrue(shown.startswith("…"))
 
     def test_a_short_line_is_not_windowed(self) -> None:

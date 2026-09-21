@@ -3044,6 +3044,11 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
     PIPED = re.compile(r"^(?!\s*#)[^\n]*\b(?:git|gh)\s[^\n]*(?<!\|)\|(?!\|)", re.MULTILINE)
     # Quoted spans come out first. `--jq '.[] | "\(.x)"'` is jq's pipe inside a
     # single-quoted argument, not a shell pipeline, and four blocks use it.
+    # Four more depend on the same stripping for a different reason: a regex
+    # alternation lives in quotes too, and `git grep -nE 'uv (sync|run|pip)|…'`
+    # is not a pipeline either. Eight blocks in total, 11 spans — measured, and
+    # worth stating because the stripping is what makes this guard usable and
+    # also what made it blind (#155).
     QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 
     def _gate_block(self) -> str:
@@ -3059,6 +3064,43 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
         self.assertEqual(len(found), 1, f"expected one gate block, found {len(found)}")
         return found[0]
 
+    @classmethod
+    def _pipelines(cls, code: str) -> list[str]:
+        """Every git/gh pipeline in one block, quoted spans taken out first.
+
+        Two passes, and each exists because the guard once went green without it.
+
+        **Line continuations are joined.** `actions.md` writes the fetch as
+        `gh api … \\` / `  | base64 -d > file` — two physical lines, one
+        statement — and a per-line regex misses it, which is how the guard went
+        green against the very instance it was widened for.
+
+        **Quotes are then paired per line, not across the block.** A shell string
+        does not span a newline anywhere in these files, and the join above has
+        already merged the statements that legitimately continue. Paired across
+        the whole block, an *unbalanced* apostrophe — the one in a comment's
+        `Phase 0's` — opens a span that runs to the next quote anywhere below,
+        and everything between is replaced before the matcher sees it. The guard
+        then reports clean on text it never read.
+
+        It takes both halves, which is why the shape survived review: an odd
+        apostrophe above, and a quoted argument on the code line for the span to
+        close on. Measured on the 0.52.0 text — the span opened at check 3's own
+        `Phase 0's scope-gate invariant` and closed on the opening quote of
+        `-- '.github/workflows/'` one line down, taking `CHANGED=$(git diff
+        "$BASE_SHA...pr-<N>"` with it. What reached the matcher had no `git` in
+        it at all. A comment with *two* apostrophes pairs on its own line and
+        hides nothing, and a code line with no quote leaves the span unclosed and
+        hides nothing either.
+
+        The line it hid is a real instance of what this guard is for, in the file
+        that documents the distinction. Mutation-check found it; no test did
+        (#155).
+        """
+        joined = re.sub(r"\\\n\s*", " ", code)
+        stripped = "\n".join(cls.QUOTED.sub("''", line) for line in joined.split("\n"))
+        return cls.PIPED.findall(stripped)
+
     def test_no_block_reads_git_or_gh_output_through_a_pipe(self):
         """Class-wide, because the gate was one of three.
 
@@ -3072,18 +3114,64 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
         worth a guard rather than three fixes.
         """
         for file, number, code in _every_block():
-            # Line continuations joined first. `actions.md` wrote the fetch as
-            # `gh api … \` / `  | base64 -d > file` — two physical lines, one
-            # statement — and a per-line regex misses it, which is how the guard
-            # went green against the very instance it was widened for.
-            joined = re.sub(r"\\\n\s*", " ", code)
-            stripped = self.QUOTED.sub("''", joined)
-            for hit in self.PIPED.findall(stripped):
+            for hit in self._pipelines(code):
                 self.fail(
                     f"{file} Phase {number} pipes git/gh output onward, so the "
                     f"pipeline reports the LAST stage's status and a failure "
                     f"yields empty output at exit 0: {hit.strip()[:70]}"
                 )
+
+    def test_the_guard_still_tells_a_quoted_pipe_from_a_shell_one(self):
+        """Both directions, because widening a guard is how a guard stops
+        discriminating — and because the scan above is silent by design.
+
+        It passes when the corpus is clean, so it passes just as quietly when the
+        matcher has been broken open. Nothing in this class asserted that the
+        matcher can *fire* until 0.53.0; the block-level quote pairing it
+        replaced was found by mutation rather than by a test, which is the same
+        gap one level up.
+        """
+        for code, want, why in [
+            (
+                'git ls-tree --name-only "pr-1:.github/workflows/" | sort',
+                1,
+                "the plain shape: git piped onward, status discarded",
+            ),
+            (
+                "gh api repos/o/r --jq '.[] | \"\\(.name)\"'",
+                0,
+                "jq's pipe inside a quoted argument is not a shell pipeline, "
+                "and four shipped blocks depend on that",
+            ),
+            (
+                "git grep -nE 'uv (sync|run|pip)|pre-commit' pr-1 -- '.github/'",
+                0,
+                "nor is a regex alternation, which four more blocks depend on "
+                "and which no case here covered until 0.53.0",
+            ),
+            (
+                "# reported rather than used to stop, per Phase 0's scope gate\n"
+                'git ls-tree --name-only "pr-1:.github/workflows/" -- '
+                "'.github/workflows/' | sort",
+                1,
+                "#155, the shipped shape verbatim: an unbalanced apostrophe in "
+                "the comment above, a quoted argument on the code line for the "
+                "span to close on, and the `git` token vanishes between them",
+            ),
+            (
+                'gh api "repos/o/r/contents/action.yml" --jq .content \\\n  | base64 -d > out',
+                1,
+                "the join has to survive: one statement written as two lines",
+            ),
+            (
+                'git rev-parse "pr-1" || { echo no >&2; exit 2; }',
+                0,
+                "`||` is how the fixed form checks the status, so a guard that "
+                "counts it as a pipe fires on the fix",
+            ),
+        ]:
+            with self.subTest(why=why):
+                self.assertEqual(len(self._pipelines(code)), want, why)
 
     # `NAME=$(… git …)` and whatever follows the closing paren.
     CAPTURE = re.compile(r"([A-Z_]+)=\$\((?P<body>(?:[^()]|\([^()]*\))*)\)(?P<after>[^\n]*)")
@@ -3115,6 +3203,164 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
         # shell. The human half still is, and is still the shape that discards
         # git's status when written as a pipeline.
         self.assertGreaterEqual(seen, 1, "the reported half of the split is still captured")
+
+    RUNS = re.compile(r"(?<![\w-])(?:git|gh)\s")
+    # `for f in $(git …)` — the same discarded status with no variable to name
+    # it by, and `CAPTURE` cannot see it because there is no `NAME=` in front.
+    FOR_SUB = re.compile(r"^(?!\s*#)\s*for\s+\w+\s+in\s+\$\((?P<body>[^)]*)\)", re.MULTILINE)
+
+    def _acted_on(self, name: str, tail: str) -> str | None:
+        """How this capture's status is acted on, or None if nothing does.
+
+        Two forms, both already in the shipped blocks, and neither an allow-list
+        entry: each has to attach to *this* capture — positionally for the first,
+        by naming the variable for the second — for the reason the gate test
+        above states. A guard a different line can satisfy is a guard a comment
+        can satisfy.
+
+        A third was written and dropped for never firing. `actions.md` captures
+        `git grep` as `); RC=$?` because exit 1 there means *found nothing*,
+        which is an answer rather than a failure — but the test that then reads
+        `$RC` ends in `|| { … exit 2; }`, so the first form below already accepts
+        both of its instances. A clause no input reaches is the vacuity this
+        file's own anti-vacuity guards exist for.
+        """
+        # `|| { … exit N }`, with the line continuation allowed on either side of
+        # the `||`. Phase 6's `MERGED=` writes it as `) \` / `  || { … exit 1; }`,
+        # and a pattern allowing the break only *after* the `||` reads that as
+        # unchecked — a defect in the guard rather than in the line.
+        if re.search(r"(?:\\\s*)?\|\|\s*(?:\\\s*)?\{[^}]*exit\s+\d", tail):
+            return "`|| { … exit N }`"
+        # An explicit branch on whether the capture came back empty. Phase 0's
+        # `HELD=` is this one, and its own comment says why: the pin assertion
+        # further down is what decides, so empty here is an answer, not a failure.
+        if re.search(r"\[\s*-[nz]\s+\"\$\{?" + re.escape(name) + r"\b", tail):
+            return f"a `[ -n ]` / `[ -z ]` branch on `${name}`"
+        return None
+
+    def _unread_captures(self, code: str) -> list[str]:
+        """Every command substitution running git or gh whose status nothing reads.
+
+        Two shapes, because the defect has two homes and only one of them has a
+        variable to name it by. `NAME=$(git …)` is the shape the gate test above
+        has always looked at; `for f in $(git …)` is the same discarded status
+        with nowhere to put a check, and it iterates **zero times** on a read
+        that failed — which is also what a tree with nothing to report looks like
+        from outside the loop.
+        """
+        # The same continuation join the pipeline guard uses, with a marker left
+        # behind: the break is meaningful here, because `) \` / `  || {` is a
+        # form this has to read as checked.
+        joined = re.sub(r"\\\n\s*", " \\ ", code)
+        found = []
+        for hit in self.FOR_SUB.finditer(joined):
+            if self.RUNS.search(hit.group("body")):
+                found.append(hit.group(0).strip())
+        for hit in self.CAPTURE.finditer(joined):
+            if not self.RUNS.search(hit.group("body")):
+                continue
+            name = hit.group(1)
+            tail = hit.group("after") + joined[hit.end() : hit.end() + 200]
+            if self._acted_on(name, tail) is None:
+                found.append(f"{name}=$({hit.group('body').strip()[:60]})")
+        return found
+
+    def test_no_capture_of_git_output_goes_unread_anywhere(self):
+        """The gate test above, asked of every block — and it found two things.
+
+        `test_every_capture_of_git_output_is_checked` has been scoped to the one
+        block since 0.29.0, and the class this file is about does not stop at
+        that block's edge. Widening a check re-opens its noise floor, so this was
+        prototyped over every bash block in the shipped files before it was
+        written:
+
+            captures running git or gh   48 assignments + 1 `for … in`
+            not acted on                  3
+            false positives               0
+
+        The three were Phase 0's `REPO=$(gh repo view …)` — the derivation every
+        later call rebuilds `$SCRATCH` from, and the only one with nothing
+        downstream to catch it, because what catches the other forty-seven is the
+        handoff this block has not written yet — and, both in `actions.md`
+        § Phase 1, `for f in $(git ls-tree …)`, whose failure prints nothing at
+        all, and `CHANGED=$(git diff … | grep … | grep …)`, which the pipeline
+        guard above reaches from the other side.
+
+        Two near-misses set the shape of `_acted_on`, and both are real forms
+        rather than exemptions: Phase 6's `MERGED=` breaks the line *before* the
+        `||`, and Phase 0's `HELD=` branches on emptiness on purpose — its own
+        comment says why.
+        """
+        for file, number, code in _every_block():
+            for hit in self._unread_captures(code):
+                self.fail(
+                    f"{file} Phase {number}: `{hit}` runs git or gh in a command "
+                    f"substitution and nothing acts on the status. A substitution "
+                    f"keeps the output and throws the status away, so a call that "
+                    f"could not run comes back empty — and empty is what success "
+                    f"looks like from here"
+                )
+
+    def test_the_capture_guard_fires_on_both_shapes_and_on_neither_fix(self):
+        """Anti-vacuity, and the reason it is a separate test.
+
+        The scan above passes when the corpus is clean, so it passes just as
+        quietly when the matcher has stopped matching. Both lines below are
+        verbatim from 0.52.0, where they shipped; both fixes below are verbatim
+        from what replaced them.
+        """
+        for code, want, why in [
+            (
+                "REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)\n"
+                'SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO}-<N>}"',
+                1,
+                "0.52.0's Phase 0 bootstrap: nothing reads the status, and an "
+                "empty $REPO moves the whole run's scratch directory",
+            ),
+            (
+                "REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) \\\n"
+                '  || { echo "gh could not name this repo" >&2; exit 2; }',
+                0,
+                "and its fix",
+            ),
+            (
+                'for f in $(git ls-tree --name-only "pr-1:.github/workflows/"); do\n'
+                '  printf "%s" "$f"\ndone',
+                1,
+                "0.52.0's actions.md check 2: a failed list iterates zero times "
+                "and prints nothing, which is also what clean looks like",
+            ),
+            (
+                'WF=$(git ls-tree --name-only "pr-1:.github/workflows/") \\\n'
+                '  || { echo "cannot list workflows" >&2; exit 2; }\n'
+                'for f in $WF; do\n  printf "%s" "$f"\ndone',
+                0,
+                "and its fix — the list is captured, checked, then iterated",
+            ),
+            (
+                'MERGED=$(git merge-tree --write-tree "origin/main" "pr-1") \\\n'
+                '  || { echo "the merged tree conflicts" >&2; exit 1; }',
+                0,
+                "Phase 6 breaks the line before the `||`, and a pattern allowing "
+                "the break only after it would read this as unchecked",
+            ),
+            (
+                "HELD=$(git branch --list \"pr-1\" --format='%(worktreepath)')\n"
+                'if [ -n "$HELD" ]; then echo held >&2; fi',
+                0,
+                "Phase 0 branches on emptiness on purpose: there, empty is the "
+                "answer rather than the failure",
+            ),
+            (
+                'HUMANS=$(for c in $HUMAN_COMMITS; do git show "$c"; done) \\\n'
+                '  || { echo "cannot read a commit" >&2; exit 2; }',
+                0,
+                "a `for` inside a capture is the capture's shape, not the "
+                "loop's — the guard must not count it twice",
+            ),
+        ]:
+            with self.subTest(why=why):
+                self.assertEqual(len(self._unread_captures(code)), want, why)
 
 
 class TestThePluginRootResolvesWhereItIsUsed(SkillHarness):
