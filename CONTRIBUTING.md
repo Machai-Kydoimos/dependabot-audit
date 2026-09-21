@@ -191,6 +191,33 @@ The third is the one that generalises: **verify the mutation landed before you
 read the result.** A mutation that does not mutate is indistinguishable from a
 guard that discriminates, and it fails in the reassuring direction.
 
+### When it runs, and what its output obligates
+
+Both of these changed at 0.54.0, and the reason is in that entry: the product
+converged before the process did. Rounds thirty-one through thirty-four each
+returned **no plugin defect in the verdict path** while each still produced
+issues, because a fresh context pointed at 265 KB of procedure will always notice
+something. A gate that can never pass is not a gate, it is a generator.
+
+**Run it when the procedure changes** — a phase's method, a supplied command, the
+report's shape — not to see what turns up. A round that exercises nothing new
+costs $3 to $8 and tells you about the text rather than about the plugin.
+
+**A round's finding is sprint-worthy when it would change a verdict, or change
+the evidence a verdict rests on.** Everything else is real, worth recording, and
+not worth a version: file it, label it, batch it. Round thirty-four is the worked
+example — nine deviations, seven `correct`, one a defect in the run's own
+execution that it caught and classed itself, and **one** that cleared the bar
+(#162, a row whose *no hit* is not evidence for the kind of change it met). Two
+further observations were declined outright, one of them a suggested line for
+`actions.md` that the CHANGELOG already carried twice — which under the corpus
+freeze is exactly the line that does not go in.
+
+Note what this does *not* relax. The gate itself is unchanged: a method change is
+still replayed before it is committed, still run as written, still read by its
+exit status. What changed is the trigger and the obligation, neither of which was
+ever stated — and an unstated stopping rule defaults to *never stop*.
+
 **This is a checklist item, and checklists are visibly skippable.** The box lives
 in `.github/PULL_REQUEST_TEMPLATE.md`, and it asks for what the replay showed
 rather than for a tick — a tick is an assertion, the pasted output is evidence,
