@@ -11,6 +11,190 @@ patch.
 
 ## [Unreleased]
 
+## [0.53.0] — 2026-09-21
+
+### The pipeline guard pairs quotes per line, and the line it was hiding fails the other way
+
+0.52.0 found, by mutation, that the guard against `git … | …` strips quoted
+spans across the **whole block** — so an unbalanced apostrophe opens a span that
+runs to the next quote anywhere below and the matcher never sees what is between.
+It takes two halves, which is why it survived review: an odd apostrophe above,
+and a quoted argument on the code line for the span to close on. Measured on the
+0.52.0 text, the span opened at check 3's own `Phase 0's scope-gate invariant`
+and closed on the opening quote of `-- '.github/workflows/'` one line down,
+taking `CHANGED=$(git diff "$BASE_SHA...pr-<N>"` with it. What reached the
+matcher had no `git` in it at all. A comment with *two* apostrophes pairs on its
+own line and hides nothing; a code line with no quote leaves the span unclosed
+and hides nothing either.
+
+Paired per line — after the continuation join, which stays, because
+`actions.md` writes `gh api … \` / `  | base64 -d` as one statement over two
+lines — the guard finds that one pipeline and no others. Measured over every
+bash block in the shipped files: one hit gained, zero false positives, and the
+eight blocks that depend on the quote stripping still pass — four for jq's
+`--jq '.[] | "…"'`, four for a regex alternation like
+`git grep -nE 'uv (sync|run|pip)|pre-commit'`, which is a dependency no test
+covered until now.
+
+**And the guard now has a test that it can fire.** The scan is silent by design,
+so it passes just as quietly when the matcher has been broken open — which is
+why a mutation rather than a test found this. Both directions are asserted now:
+a plain `git … | sort`, the shipped apostrophe shape verbatim, the
+line-continuation form, jq's quoted pipe, and `||`.
+
+### What the hidden line actually did, which is not what #155 predicted
+
+The issue read the failure as *could not run* reported as *ran and found
+nothing*. Measured on git 2.55.0 and GNU grep 3.12, it is the opposite. A
+`$BASE_SHA` that does not resolve makes `git diff` exit **128**; the pipeline
+exits `1` on its last `grep`; `$CHANGED` comes back empty — and then
+`printf '%s\n' "$CHANGED"` prints a **blank line**, which neither `grep -v`
+excludes, so it survives both filters and carries the exit to `0`. This
+document's own rule is *"on checks 1 and 3, exit `1` is the clean answer"*. The
+block therefore reported **residue found** on a read that never happened: a
+false finding, not a false clean.
+
+That second defect is not confined to the line the guard hid. Check 1 has it
+too: a `git grep` matching no `uses:` at all exits `1`, which that check
+deliberately allows as an answer, and the blank line then reported
+`unpinned exit: 0` — unpinned pins found, on a tree with no pins. Both are fixed
+by dropping the `\n`: `printf '%s'` prints nothing for an empty capture and the
+same lines for a non-empty one, so only the empty case moves.
+
+Prototyped across every `printf '%s\n' "$VAR"` in the shipped blocks before
+changing any of them — eight instances, and only these two flip an answer. The
+shape that matters is a **negative** filter, where a blank line survives; the
+other six feed `diff`, `sort -u`, `sed` or a positive `grep -E`, none of which a
+blank line changes.
+
+### An empty capture is not an answer
+
+The three checks in `actions.md` § Phase 1 now all read the status of what they
+captured, and so does Phase 0's bootstrap:
+
+- **check 3** captures `git diff` and checks it before filtering, which is the
+  rule check 1's own comment states and the one line in the block that did not
+  follow it;
+- **check 2** captures the workflow list instead of `for f in $(git ls-tree …)`,
+  where a failed read iterates zero times and prints nothing — and nothing is
+  also what a repo with every workflow read and every one fine looks like;
+- **Phase 0's `REPO=$(gh repo view …)`** is checked. Every later block re-derives
+  `$SCRATCH` from `$REPO` and then sources the handoff, so a `gh` that could not
+  answer is caught there by `no handoff in $SCRATCH` — but *here* there is no
+  handoff yet, and an empty `$REPO` silently moves the whole run's scratch
+  directory to `${TMPDIR:-/tmp}/dbaudit--<N>`. Measured on gh 2.87.3: no remote,
+  not a checkout, and a repository that does not exist all exit `1` with an empty
+  capture, so one `||` covers the three.
+
+**`test_every_capture_of_git_output_is_checked` has asked this of one block since
+0.29.0, and it now asks it of every block.** Widening a check re-opens its noise
+floor, so it was prototyped first: on the 0.52.0 text, 48 assignments and one
+`for … in` run git or gh, three of them were unacted-on, and there were no false
+positives. It reads two shapes, because the defect has two homes and only one of
+them has a variable to name it by. Three near-misses set what counts as *acted
+on*, and each is a real
+form rather than an exemption: Phase 6's `MERGED=` breaks the line **before** the
+`||`, `actions.md` reads `git grep`'s exit 1 as an answer through `RC=$?`, and
+Phase 0's `HELD=` branches on emptiness on purpose.
+
+### `plugin-file-read` stops firing on a reference, by either route
+
+0.50.0 drew this line for the `Read` half and left the Bash half without it, so
+`wc -l`, `cat` or `head` on a `references/*.md` fired a finding whose stated
+meaning is *the skill did not load* — on runs where it demonstrably had. The two
+halves are one rule again: `SKILL.md` by either route, a reference by neither.
+`SKILL.md` is loaded **for** the audit, so reading it by hand is the signature.
+A reference is read **by** the audit, because reading it is how a reference loads
+at all. Phase 8's hand-back instruction now says the same thing, so the prose
+stops inviting the hand-back the script stops making.
+
+**The evidence it was written from was wrong, and that is the part worth
+reading.** `tests/test_verify_run.py` recorded `plugin document read by hand | 0
+| 1 (wc -l references/uv-lock.md)` for rounds twenty-six and twenty-seven, and
+`test_measuring_a_reference_counts` pinned it — on the reading that `wc -l`
+*measures* a file rather than consulting it. Round twenty-seven's transcript does
+not support that: index 75 is `wc -l` on `references/uv-lock.md`, index **79** is
+a `Read` of the same file. It was sizing a 1,266-line file before paging it, then
+reading the content as written — exactly what round thirty-two did and classed
+`correct`. The row was written from the rule rather than from the record, which
+is the one thing that file's opening paragraph says a fixture must never be. The
+row is corrected, the test inverted, and round twenty-seven's command is now in
+`R27` verbatim so the negative is asserted against the real record.
+
+**One boundary stays, stated rather than shipped in silence.** A `Read` record
+carries a path, so `under()` settles whose `SKILL.md` it was; a Bash record
+carries only the command's text and cannot. An audited repo carrying a `SKILL.md`
+of its own would fire. No transcript has shown that case, so nothing is tuned for
+it — but the known false positive is in a test rather than left for a reader to
+discover.
+
+### What the replay gate showed
+
+Round thirty-three, `fpga-board-sim` **#436**, this version as committed: 21
+turns, $2.83, 20 recorded calls. **Merge as-is, high confidence, no plugin
+defect.** Chosen because it is a *known-answer* replay — `actions.md` § Phase 1
+cites this exact PR as its own measurement — so the fix could be checked against
+a number recorded before it was written:
+
+| `actions.md` records | round thirty-three measured |
+|---|---|
+| 27 `uses:` lines, all pinned, `unpinned exit: 1` | `uses: lines: 27`, `unpinned exit: 1` |
+| 18 changed lines, `residue exit: 1` | `changed lines: 18`, `residue exit: 1` |
+
+Both reproduce through the changed `printf '%s'` and both new capture checks,
+which is the evidence that the empty-capture fix leaves the non-empty answers
+alone. Every executable line of the block ran verbatim; the diff against the
+shipped text is three `echo` separators and four added commands.
+
+**Two new findings, both in older text, so they go to the next version.**
+[#159] — three measurements this Phase 1 names and supplies a command for none,
+two of them the counts above, and the file says so itself one sentence later
+(*"The remaining three checks are structural, and each one has a command"*). All
+three are phrased as descriptions rather than imperatives, so
+`triage_unsupplied.py` reaches none of them — the blind spot its own docstring
+names. [#160] — the report wrote *"No improvisation […] every command above came
+from `SKILL.md` or `references/actions.md` as written"* and listed what it had
+added two sentences later. Third occurrence of that sentence, and the first
+where `verify_run.py` had printed *"That is not the same as 'no improvisation'"*
+in the output the run was quoting from.
+
+[#159]: https://github.com/Machai-Kydoimos/dependabot-audit/issues/159
+[#160]: https://github.com/Machai-Kydoimos/dependabot-audit/issues/160
+
+### Found while building it
+
+- **A clause of the new guard never fired, and was dropped rather than shipped.**
+  `actions.md` captures `git grep` as `); RC=$?` because exit 1 there means
+  *found nothing*, so a third accepted form was written for it — but the test
+  that reads `$RC` ends in `|| { … exit 2; }`, which the first form already
+  accepts. A clause no input reaches is the vacuity this suite's own anti-vacuity
+  guards exist for.
+- **`window()`'s docstring and its test both illustrated with a command the rule
+  no longer flags.** The test asserted the window against
+  `wc -l references/uv-lock.md`; after the narrowing it would have held on a
+  pattern that never fires and told nobody. Both now use a `SKILL.md` read.
+- **The reconstruction of the surviving mutation was wrong on the first try**, in
+  the direction that would have shipped a false claim: a comment reading `sort's`
+  has one apostrophe *and the pipeline line had no quote to close on*, so both
+  the old pairing and the new one catch it. The docstring and the test case were
+  rewritten against the shipped text rather than against the recollection of it.
+
+### What goes to the next version
+
+**Phase 0 writes the handoff without reading the exit status of what wrote it,
+and the obvious fix is wrong ([#158]).** `python3 "$D" … --shell > "$SCRATCH/phase0.env"`
+is unchecked, and `discover.py` exits `2` on an unreadable repo having written
+**0 bytes** — measured — so the block then sources an empty file. A bare `||
+exit 2` would be worse than the gap: `main()` returns `1` when the report has
+findings, in `--shell` mode too, and `cli()`'s own docstring says so — *"Exit 1
+here means Phase 0 found something that changes the shape of the audit"* — so
+that form would abort every audit of a PR with anything to report. It needs the
+`-le 1` reading `actions.md` already uses twice. The downstream gates do fail
+safe on an empty handoff, by design and documented, which is why this is a
+diagnosis-quality gap rather than a correctness one.
+
+[#158]: https://github.com/Machai-Kydoimos/dependabot-audit/issues/158
+
 ## [0.52.0] — 2026-09-21
 
 ### The one-sided-gate finding gets the command it has been asking for
@@ -6140,7 +6324,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.52.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.53.0...HEAD
+[0.53.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.49.0...v0.50.0

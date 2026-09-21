@@ -116,7 +116,10 @@ HIDDEN = re.compile(r"(?<![\w-])--(?:frozen|no-sync)(?![\w-])")
 NO_PROJECT = re.compile(r"(?<![\w-])--no-project(?![\w-])")
 TOOL_CHECK = re.compile(r"test\s+-x\s+[\"']?\.venv/bin/")
 READ_CMD = re.compile(r"(?<![\w-])(?:cat|less|more|head|tail|sed|awk|wc|bat)\b")
-PLUGIN_DOC = re.compile(r"[\w/.-]*(?:SKILL\.md|references/[\w-]+\.md)")
+# `SKILL.md` only, never a reference — see the rule below for why the two are
+# not the same question. The leading `[\w/.-]*` keeps whatever path the command
+# named, so the evidence line shows what was read rather than a bare filename.
+SKILL_DOC = re.compile(r"[\w/.-]*SKILL\.md")
 
 # Per tool, because the answer is per tool. Round twenty-six ran
 # `rumdl --enable MD065` and no `ruff --select` at all, then wrote "inert here by
@@ -151,7 +154,7 @@ WIDTH = 120
 
 
 def window(line: str, pattern: re.Pattern[str]) -> str:
-    """Keep the match in view. A one-line `cd … && … && wc -l references/x.md`
+    """Keep the match in view. A one-line `cd … && … && cat plugin/SKILL.md`
     truncated from the left shows the `cd` and hides the thing it was flagged
     for, which reads as a false positive on a true one."""
     if len(line) <= WIDTH:
@@ -301,32 +304,43 @@ def check(cmds: list[str], opened: list[str] | None = None) -> list[Finding]:
                 )
             )
 
-    read = [c for c in cmds if READ_CMD.search(c) and PLUGIN_DOC.search(c)]
-    # Two narrowings, and round thirty measured the need for both.
+    read = [c for c in cmds if READ_CMD.search(c) and SKILL_DOC.search(c)]
+    # `SKILL.md` by either route, a reference by neither — and until 0.53.0 that
+    # was true of the Read half only.
     #
-    # By location, not by filename: anything under this plugin's own skill
-    # directory is this plugin's, and an audited repo carrying its own
-    # `references/*.md` cannot be mistaken for it.
+    # The asymmetry is the whole rule. `SKILL.md` is loaded *for* the audit, so
+    # reading it by hand is the signature of it not having loaded (#52). A
+    # reference is fetched *by* the audit — reading it is how a reference loads
+    # at all — so matching one fires on runs that did exactly as told. 0.50.0
+    # settled that for `Read` after round thirty read `references/uv-lock.md`
+    # twice, correctly, and was called a deviation for it; the Bash half went on
+    # matching `references/<name>.md` through 0.51.0 and 0.52.0 (#156).
     #
-    # And `SKILL.md` only, never a reference. SKILL.md is loaded *for* the audit,
-    # so reading it by hand is the signature of it not having loaded (#52). A
-    # reference is fetched *by* the audit — that is how a reference loads at all —
-    # so matching one fires on every `uv.lock` audit ever run. Round thirty read
-    # `references/uv-lock.md` twice through Read, correctly, and the first version
-    # of this rule called it a finding.
+    # What it cost is in this script's own evidence. `wc -l` on a reference is
+    # sizing a file before paging it, and the run then reads the content with
+    # `Read` as the procedure intends. Rounds twenty-seven and thirty-two both
+    # did exactly that. Round thirty-two was told by this rule that it had read
+    # the procedure by hand; round twenty-seven predates the rule, and its `wc
+    # -l` was written into the test suite as a true positive instead — from the
+    # rule rather than from the transcript, which nobody had opened.
+    #
+    # And by location for the Read half, which can resolve a path: an audited
+    # repo carrying its own `SKILL.md` is not this plugin's. The Bash half has
+    # only the command's text and cannot tell the two apart — stated here rather
+    # than guessed at, because no transcript has yet shown that case.
     read_tool = [p for p in opened if pathlib.Path(p).name == "SKILL.md" and under(SKILL, p)]
     if read or read_tool:
-        shown = [*lines_matching(PLUGIN_DOC, read), *(f"Read({p})" for p in read_tool)]
+        shown = [*lines_matching(SKILL_DOC, read), *(f"Read({p})" for p in read_tool)]
         if len(shown) > MAX_SHOWN:
             shown = [*shown[:MAX_SHOWN], f"... and {len(shown) - MAX_SHOWN} more"]
         findings.append(
             Finding(
                 "plugin-file-read",
-                f"{count(PLUGIN_DOC, read) + len(read_tool)} direct read(s) of a plugin document "
+                f"{count(SKILL_DOC, read) + len(read_tool)} direct read(s) of SKILL.md "
                 f"— {len(read_tool)} of them through the Read tool — rather than invoking the "
-                "procedure. That is the signature of the skill not having loaded — it is how the "
-                "0.22.1 command shadowing survived to 0.23.0 — and is a Phase 8 hand-back "
-                "even when "
+                "procedure. SKILL.md is loaded *for* the audit, so reading it by hand is the "
+                "signature of it not having loaded — it is how the 0.22.1 command shadowing "
+                "survived to 0.23.0 — and is a Phase 8 hand-back even when "
                 "the report it produced is correct.",
                 shown,
             )

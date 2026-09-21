@@ -110,7 +110,9 @@ contract is "reports, never merges" should keep them.
 
 ```bash
 D="${CLAUDE_PLUGIN_ROOT}/skills/dependabot-audit/scripts/discover.py"
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+# Checked here, because $REPO is what every later call rebuilds $SCRATCH from.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) \
+  || { echo "gh could not name this repo — no remote, no checkout, or no auth" >&2; exit 2; }
 # OUTSIDE the repo, and the SAME directory on every later call — derived, not remembered
 SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"; mkdir -p "$SCRATCH"
 
@@ -118,6 +120,14 @@ python3 "$D" --repo "$REPO" --number <N>                              # the repo
 python3 "$D" --repo "$REPO" --number <N> --shell > "$SCRATCH/phase0.env"
 . "$SCRATCH/phase0.env"
 ```
+
+**An empty `$REPO` is the one derivation with no downstream check.** Every later
+block re-derives `$SCRATCH` from it and then sources the handoff, so a `gh` that
+could not answer is caught there by `no handoff in $SCRATCH` — but *here* there
+is no handoff yet, and an empty `$REPO` silently moves the whole run's scratch
+directory to `${TMPDIR:-/tmp}/dbaudit--<N>`. Measured on gh 2.87.3: no remote,
+not a checkout, and a repository that does not exist all exit **1** with an empty
+capture, so one `||` covers the three.
 
 Source the outputs rather than transcribing them. Four of them are
 40-character SHAs, and a wrong one is not detectable downstream: a truncated
@@ -1906,6 +1916,13 @@ So, separately from what the audit found about the PR, hand back:
 - **every shell command run that this file did not specify** — quoted, with the
   gap it filled;
 - **every plugin file read directly rather than invoked as written.**
+
+`SKILL.md` is the one that carries a signature. It is loaded **for** the audit,
+so reading it by hand means it did not load — that is what #52 looked like. A
+reference is read **by** the audit, because reading it is how a reference loads
+at all, and sizing one with `wc -l` before paging it is reading it. Two rounds
+handed that back as a deviation and one of the two classed it correct in the
+same breath; neither was wrong to notice, and neither had anything to report.
 
 Classify each as **plugin defect**, **prose gap**, **unproven**, or **correct**.
 All four are real answers and `correct` is the common one: no procedure enumerates every repo
