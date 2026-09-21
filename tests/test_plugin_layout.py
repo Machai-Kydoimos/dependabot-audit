@@ -35,6 +35,7 @@ import unittest
 from typing import ClassVar
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+SKILLS = ROOT / "skills/dependabot-audit"
 MANIFEST = ROOT / ".claude-plugin/plugin.json"
 
 
@@ -263,3 +264,84 @@ class TestTheShippedDescriptionMatchesTheSkill(unittest.TestCase):
                         f"{where} states this plugin's scope and does not name "
                         f"`{ecosystem}`, which every phase has a method for",
                     )
+
+
+class TestTheCorpusIsFrozen(unittest.TestCase):
+    """The procedure does not grow. Measured, 2026-09-21, and then stopped.
+
+    Six weeks of sprints took the shipped documents from 57 KB to 125 KB of
+    `SKILL.md` and 32 KB to 139 KB of references — **2.7x** — across the same
+    nine phases and one added ecosystem. The text grew; the product did not.
+
+    That growth is not incidental to the defect rate, it is the mechanism. Each
+    fix wrote a paragraph explaining what it had measured; that paragraph is new
+    unaudited surface carrying new falsifiable claims, and the next replay round
+    audits it. Two of 0.53.0's five findings traced by `git log -S` to `883441e`
+    — shipped **one day** earlier. Meanwhile the documents are ~30% of every
+    run's tokens, so the growth is also a per-audit cost paid forever.
+
+    The budget below is `v0.53.0`'s size. Nothing here says the numbers are
+    right; they say the size is now a **decision** rather than a side effect.
+    Raising one is a one-line diff in this file, visible in review, in the same
+    commit as the growth it permits — which is all this guard is for.
+
+    The rule it enforces, from CONTRIBUTING: **a measurement's reasoning belongs
+    in the CHANGELOG entry and the commit body; the procedure carries the
+    command and one line of why.** 0.54.0 was written under it — three
+    measurements supplied and four unchecked statuses fixed, paid for by moving
+    0.53.0's rationale out of `actions.md` and `SKILL.md` into the entries that
+    already carried it.
+    """
+
+    # v0.54.0, 2026-09-21 — and already lower than the v0.53.0 sizes the ceiling
+    # was first set at, because 0.54.0 added three commands and four status
+    # checks and paid for them by moving its predecessor's rationale into the
+    # CHANGELOG. Lower these when prose comes out; raise one only deliberately,
+    # and say in the same commit what was bought with it.
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 125_573, "references": 139_309}
+
+    def test_the_skill_does_not_grow(self) -> None:
+        size = (SKILLS / "SKILL.md").stat().st_size
+        self.assertLessEqual(
+            size,
+            self.BUDGET["SKILL.md"],
+            f"SKILL.md is {size} bytes against a budget of {self.BUDGET['SKILL.md']}. "
+            f"It is loaded on every audit of every ecosystem, so every byte is paid "
+            f"for on every run. Put the reasoning in the CHANGELOG entry and keep the "
+            f"command; if the procedure genuinely needs the line, take one out or "
+            f"raise the number here and say what it bought",
+        )
+
+    def test_the_references_do_not_grow(self) -> None:
+        sizes = {p.name: p.stat().st_size for p in sorted((SKILLS / "references").glob("*.md"))}
+        total = sum(sizes.values())
+        self.assertLessEqual(
+            total,
+            self.BUDGET["references"],
+            f"the references total {total} bytes against a budget of "
+            f"{self.BUDGET['references']} — {sizes}. Budgeted together rather than "
+            f"per file, because moving a paragraph between them is not growth and "
+            f"an ecosystem's method may legitimately need a line the others do not",
+        )
+
+    def test_the_budget_is_not_slack(self) -> None:
+        """A budget far above the corpus is a guard that cannot fire.
+
+        This is the anti-vacuity half: the numbers were set *at* the measured
+        size, and a later edit that shrinks the corpus should lower them rather
+        than bank the difference as room to grow back into.
+        """
+        skill = (SKILLS / "SKILL.md").stat().st_size
+        refs = sum(p.stat().st_size for p in (SKILLS / "references").glob("*.md"))
+        for name, actual, budget in (
+            ("SKILL.md", skill, self.BUDGET["SKILL.md"]),
+            ("references", refs, self.BUDGET["references"]),
+        ):
+            with self.subTest(name=name):
+                self.assertGreater(
+                    actual,
+                    budget * 0.97,
+                    f"{name} is {budget - actual} bytes under its budget of {budget}. "
+                    f"Headroom is how a ratchet stops ratcheting — lower the number in "
+                    f"BUDGET to what the corpus now measures",
+                )

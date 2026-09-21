@@ -327,6 +327,32 @@ gaps** — treating the suite's green as coverage of either is the mistake:
   script** above, including why the tool you are about to reach for is the
   unverified verifier this repo exists to argue against.
 
+### The corpus is frozen, as of 0.53.0
+
+**A measurement's reasoning belongs in the CHANGELOG entry and the commit body.
+The procedure carries the command and one line of why.** `tests/test_plugin_layout.py`
+holds the budget — `SKILL.md` and the references each have a byte ceiling, set at
+what they measured on 2026-09-21 — and `pre-commit` fails the commit that exceeds
+one.
+
+It is there because growth turned out to be the defect supply, not a side effect
+of fixing things. Six weeks took `SKILL.md` from 57 KB to 125 KB and the
+references from 32 KB to 139 KB — **2.7x** — across the same nine phases and one
+added ecosystem. Each fix wrote a paragraph explaining what it had measured; the
+paragraph was new unaudited surface making new falsifiable claims, and the next
+replay round audited it. Two of 0.53.0's five findings traced by `git log -S` to
+a commit **one day** older. The documents are also about 30% of a run's tokens,
+so every byte is paid again on every audit.
+
+So a version that needs a new line in the procedure takes one out, and the test
+says so when it doesn't. Raising a ceiling is a one-line diff in the same commit
+as the growth it permits — deliberate and visible, which is the whole mechanism.
+A second test refuses *headroom*: a budget sitting far above the corpus is a
+ratchet that has stopped ratcheting, so shrinking the prose lowers the number
+rather than banking the difference.
+
+None of this says the current size is right. It says the size is now a decision.
+
 **A new inline trap is a signal that something wants mechanising.** Prose is the
 weakest of the three levers — a trap a script refuses cannot be skipped, one on a
 checklist is visibly skipped, one in prose is silently skipped. A trap only earns
