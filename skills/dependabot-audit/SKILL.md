@@ -117,17 +117,17 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) \
 SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"; mkdir -p "$SCRATCH"
 
 python3 "$D" --repo "$REPO" --number <N>                              # the report
-python3 "$D" --repo "$REPO" --number <N> --shell > "$SCRATCH/phase0.env"
+# `-le 1`, not `||`: exit 1 means Phase 0 found something, the common case. Only
+# 2 is "could not run", and it writes an empty file the `.` below would source.
+python3 "$D" --repo "$REPO" --number <N> --shell > "$SCRATCH/phase0.env"; RC=$?
+[ "$RC" -le 1 ] || { echo "discover.py could not run ($RC) — no handoff written" >&2; exit 2; }
 . "$SCRATCH/phase0.env"
 ```
 
-**An empty `$REPO` is the one derivation with no downstream check.** Every later
-block re-derives `$SCRATCH` from it and then sources the handoff, so a `gh` that
-could not answer is caught there by `no handoff in $SCRATCH` — but *here* there
-is no handoff yet, and an empty `$REPO` silently moves the whole run's scratch
-directory to `${TMPDIR:-/tmp}/dbaudit--<N>`. Measured on gh 2.87.3: no remote,
-not a checkout, and a repository that does not exist all exit **1** with an empty
-capture, so one `||` covers the three.
+**Both derivations above are checked because nothing downstream can catch them.**
+Every later block re-derives `$SCRATCH` from `$REPO` and then sources the
+handoff, so a failure there says `no handoff in $SCRATCH` — but here there is no
+handoff yet. 0.53.0's and 0.54.0's CHANGELOG entries carry the measurements.
 
 Source the outputs rather than transcribing them. Four of them are
 40-character SHAs, and a wrong one is not detectable downstream: a truncated
@@ -307,9 +307,8 @@ git ls-tree --name-only "$BASE_SHA:.github/workflows/"; echo "base list exit: $?
 
 git show "pr-<N>:.github/dependabot.yml" 2>/dev/null || git show "pr-<N>:renovate.json"
 
-# The other gate file, at both refs for the same reason the workflows are. Until
-# 0.52.0 this was read at pr-<N> only, so a hook the PR adds had nothing to be
-# compared against and the one-sided-gate finding could not reach it at all.
+# The other gate file, at both refs for the same reason the workflows are: read
+# at pr-<N> alone, a hook the PR *adds* has nothing to be compared against.
 git show "pr-<N>:.pre-commit-config.yaml"
 git show "$BASE_SHA:.pre-commit-config.yaml"
 
@@ -1612,14 +1611,17 @@ echo "verify exit: $?"
 the hook did not run, so what this audit issued was never written down. 128 is
 not a clean result and does not become one by being quiet.
 
-**Read its output rather than your memory of the run.** On 2026-09-19 a replay
-wrote *"No improvisation. Every command in this audit came from `SKILL.md` or
-`references/uv-lock.md` as written"* into this very section, while its own
-transcript showed `uv run --frozen $g` — a flag Phase 5 names as one not to add.
-The claim was sincere and false. It is the second time a report has asserted
-compliance its transcript contradicts: on `fpga-board-sim` #363 the table read
-identically either way, and that audit had reached it without this file ever
-loading.
+**Copy its output; do not summarise it, and do not write a compliance sentence.**
+`references/report-template.md` supplies the two lines that go here: the exit
+code with the script's own `RESULT` line, and a **count** of the commands this
+procedure does not spell. The count is falsifiable and Phase 8 below carries
+that many rows; a sentence is neither.
+
+Three reports have now written *"No improvisation"* or *"every command came from
+`SKILL.md` as written"* against transcripts that contradict it — 2026-08-19,
+2026-09-19, and 2026-09-21, the last one listing what it had added two sentences
+later and against the script's own printed disclaimer. The claim is sincere every
+time. That is the reason it is not yours to compose.
 
 **The record holds Bash and Read calls and nothing else**, because that is what
 the hook matches. A deviation carried out through any other tool — a background
@@ -1917,12 +1919,10 @@ So, separately from what the audit found about the PR, hand back:
   gap it filled;
 - **every plugin file read directly rather than invoked as written.**
 
-`SKILL.md` is the one that carries a signature. It is loaded **for** the audit,
-so reading it by hand means it did not load — that is what #52 looked like. A
-reference is read **by** the audit, because reading it is how a reference loads
-at all, and sizing one with `wc -l` before paging it is reading it. Two rounds
-handed that back as a deviation and one of the two classed it correct in the
-same breath; neither was wrong to notice, and neither had anything to report.
+`SKILL.md` is the one that carries a signature: it is loaded **for** the audit,
+so reading it by hand means it did not load (#52). A reference is read **by** the
+audit — reading it is how a reference loads at all, and sizing one with `wc -l`
+before paging it is reading it — so a reference read is not a deviation.
 
 Classify each as **plugin defect**, **prose gap**, **unproven**, or **correct**.
 All four are real answers and `correct` is the common one: no procedure enumerates every repo

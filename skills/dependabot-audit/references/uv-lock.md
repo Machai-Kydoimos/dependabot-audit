@@ -33,8 +33,10 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 
 S="${SCRIPTS:?not in the handoff — re-run Phase 0}/audit.py"
 
-git show "pr-<N>:uv.lock"    > "$SCRATCH/pr.uv.lock"
-git show "$BASE_SHA:uv.lock" > "$SCRATCH/base.uv.lock"
+# Checked: a redirect keeps the output and drops the status, so a ref that does
+# not resolve leaves an empty file and names the wrong thing two lines down.
+git show "pr-<N>:uv.lock"    > "$SCRATCH/pr.uv.lock"    || { echo "cannot read uv.lock at pr-<N>" >&2; exit 2; }
+git show "$BASE_SHA:uv.lock" > "$SCRATCH/base.uv.lock" || { echo "cannot read uv.lock at $BASE_SHA" >&2; exit 2; }
 
 python3 "$S" "$SCRATCH/pr.uv.lock" --changed-vs "$SCRATCH/base.uv.lock"
 ```

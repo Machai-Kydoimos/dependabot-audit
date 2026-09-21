@@ -3204,10 +3204,23 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
         # git's status when written as a pipeline.
         self.assertGreaterEqual(seen, 1, "the reported half of the split is still captured")
 
+    # `python3` is here for the redirect shape only: Phase 0 writes its handoff
+    # with `python3 "$D" … --shell > phase0.env`, and that script exits 2 when it
+    # could not run. A capture never runs a plugin script, so nothing else moves.
     RUNS = re.compile(r"(?<![\w-])(?:git|gh)\s")
+    RUNS_REDIRECTED = re.compile(r"(?<![\w-])(?:git|gh|python3)\s")
     # `for f in $(git …)` — the same discarded status with no variable to name
     # it by, and `CAPTURE` cannot see it because there is no `NAME=` in front.
     FOR_SUB = re.compile(r"^(?!\s*#)\s*for\s+\w+\s+in\s+\$\((?P<body>[^)]*)\)", re.MULTILINE)
+    # The third crossing. `NAME=$(git …)` and `for f in $(git …)` keep the output
+    # in the shell; a redirect parks it in a file that a later line reads. All
+    # three drop the status, and the class is the crossing rather than the
+    # spelling — which is why 0.54.0 keys on it: #158 arrived as a redirect
+    # precisely because the 0.53.0 guard read substitutions only.
+    REDIRECT = re.compile(
+        r"^(?!\s*#)(?P<stmt>[^\n]*?)\s>(?!>)\s*\"?(?P<dest>[^\s\">|;&]+)\"?(?P<after>[^\n]*)",
+        re.MULTILINE,
+    )
 
     def _acted_on(self, name: str, tail: str) -> str | None:
         """How this capture's status is acted on, or None if nothing does.
@@ -3238,6 +3251,28 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
             return f"a `[ -n ]` / `[ -z ]` branch on `${name}`"
         return None
 
+    def _redirect_checked(self, after: str, window: str) -> str | None:
+        """A redirect's status has to be read on the redirect's **own** statement.
+
+        `after` is the rest of that statement; `window` is what follows it. The
+        distinction matters here and does not for a capture: two redirects in a
+        row are two commands, so a search spanning both is satisfied by the
+        second's `||` while the first goes unchecked. That is the "satisfied by
+        a different line" failure the gate test above names, and the first draft
+        of this guard had it — caught by mutating `uv-lock.md`'s pair, where
+        reverting only the first line left the guard green (0.54.0).
+        """
+        if re.search(r"(?:\\\s*)?\|\|\s*(?:\\\s*)?\{[^}]*exit\s+\d", after):
+            return "`|| { … exit N }` on the redirect's own statement"
+        # `; RC=$?` and then a test on it. Dropped from `_acted_on` in 0.53.0 for
+        # never firing — a capture's test on `$RC` ends in a `||` the first form
+        # already accepts — and reinstated here, where it is the only form
+        # available: Phase 0 writes its handoff with a script whose exit 1 means
+        # *found something*, so a bare `||` would abort every audit with findings.
+        if re.match(r"\s*;\s*RC=\$\?", after) and re.search(r'\[\s*"\$RC"', window):
+            return "`; RC=$?` and a test on `$RC`"
+        return None
+
     def _unread_captures(self, code: str) -> list[str]:
         """Every command substitution running git or gh whose status nothing reads.
 
@@ -3253,6 +3288,12 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
         # form this has to read as checked.
         joined = re.sub(r"\\\n\s*", " \\ ", code)
         found = []
+        for hit in self.REDIRECT.finditer(joined):
+            if not self.RUNS_REDIRECTED.search(hit.group("stmt")):
+                continue
+            window = joined[hit.end() : hit.end() + 220]
+            if self._redirect_checked(hit.group("after"), window) is None:
+                found.append(f"{hit.group('stmt').strip()[:52]} > {hit.group('dest')}")
         for hit in self.FOR_SUB.finditer(joined):
             if self.RUNS.search(hit.group("body")):
                 found.append(hit.group(0).strip())
@@ -3357,6 +3398,34 @@ class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
                 0,
                 "a `for` inside a capture is the capture's shape, not the "
                 "loop's — the guard must not count it twice",
+            ),
+            (
+                'git show "pr-1:uv.lock" > "$SCRATCH/pr.uv.lock"',
+                1,
+                "the third crossing (#158): a redirect parks the output in a "
+                "file and drops the status, and 0.53.0's guard read only "
+                "substitutions",
+            ),
+            (
+                'git show "pr-1:uv.lock" > "$S/a.lock"\n'
+                'git show "b:uv.lock"    > "$S/b.lock" || { echo no >&2; exit 2; }',
+                1,
+                "and the check has to be on the redirect's OWN statement: this "
+                "pair left the guard green in its first draft, because the "
+                "second line's `||` answered for the first",
+            ),
+            (
+                'python3 "$D" --shell > "$S/phase0.env"; RC=$?\n'
+                '[ "$RC" -le 1 ] || { echo no >&2; exit 2; }',
+                0,
+                "`; RC=$?` is the only form available where exit 1 means found "
+                "something — dead for captures, live here",
+            ),
+            (
+                'git log --oneline >> "$S/audit.log"',
+                0,
+                "`>>` appends and is not this shape; the first draft parsed it "
+                "as a redirect whose destination was `>`",
             ),
         ]:
             with self.subTest(why=why):
@@ -5827,6 +5896,22 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
     `TestAFlagNamedInProseIsAFlagThePhaseRuns` below, which *is* mechanical and
     says plainly what it cannot reach; this half is the list, and its value is
     that the eight cannot silently go back.
+
+    **Two more patterns were prototyped for 0.54.0 and rejected on the same
+    ground**, after round thirty-three found three instances in one block that
+    `tools/triage_unsupplied.py` cannot see — all three phrased as *results*
+    rather than imperatives, which is the blind spot that tool's own docstring
+    names. Measured over the shipped documents:
+
+        a literal the prose says to match on, absent from every command   12 hits, 1 real
+        a number qualifying a noun — a count quoted as evidence           28 hits, 1 real
+
+    The second also missed one of its own two targets: *"18 changed lines"* puts
+    a word between the number and the noun. Both score worse than the rule
+    rejected above, so the class stays closed by **registry** — the three are in
+    the list below — and by reading `triage_unsupplied.py`'s output once a
+    sprint. Recorded because *cannot be a gate* and *cannot be useful* are
+    different findings, and conflating them is what #130 cost.
     """
 
     # (phase, what the phase asks for, where to look, what must be there)
@@ -5913,6 +5998,24 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
             "whether the notes it is quoting were rewritten after the tag (#131)",
             "runs",
             r"updated_at",
+        ),
+        (
+            1,
+            "the `uses:` count it quotes as its own measurement (#159)",
+            "runs",
+            r"uses: lines:",
+        ),
+        (
+            1,
+            "the changed-line count it quotes as its own measurement (#159)",
+            "runs",
+            r"changed lines:",
+        ),
+        (
+            1,
+            "a generated workflow, whose bot edit the next regeneration undoes (#159)",
+            "runs",
+            r"DO NOT EDIT",
         ),
         (
             7,

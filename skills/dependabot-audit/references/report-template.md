@@ -125,9 +125,18 @@ stopped at Phase 1's gate has exactly the same litter as one that ran to the end
 Phase 7 removes them. If they were kept deliberately, name them here with their
 cleanup commands; never leave one registered in the user's repo unannounced.
 
-**Say if the audit had to improvise.** One line where this run worked around the
-plugin itself — a command the procedure does not specify, or a plugin file read
-by hand rather than invoked. The full deviation list belongs to Phase 8 and is
-written for this plugin's maintainer; what belongs *here* is the single fact that
-the evidence above came from a procedure that had to deviate, which no other row
-in this shape discloses.
+**What this run issued.** Two lines, copied rather than composed:
+
+    verify_run.py exit <code> — <its RESULT line, verbatim>
+    Commands this procedure did not specify: <N>
+
+`<N>` counts every command issued that no block here spells — an added filter, a
+count, a probe, a workaround — whether or not `verify_run.py`'s four rules see
+it; `0` is a real answer and the common one. Phase 8 carries **that many**
+classified rows, so the two halves check each other.
+
+**Do not write a compliance sentence in its place.** *"No improvisation"*, *"every
+command came from `SKILL.md` as written"* — the script's own output disclaims
+that claim in the line above it, and three reports have made it anyway, the last
+with the contradicting list in its next sentence. A count can be wrong and be
+seen to be wrong. A sentence cannot.

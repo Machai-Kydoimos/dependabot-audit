@@ -11,6 +11,174 @@ patch.
 
 ## [Unreleased]
 
+## [0.54.0] — 2026-09-21
+
+The last sprint of this kind, and it closes three **classes** rather than the
+three instances that were open. The corpus is frozen from here.
+
+### The status-discarded class gets its third crossing — and it had two more instances
+
+0.53.0's guard read the two ways a command's output reaches a reader inside the
+shell: `NAME=$(git …)` and `for f in $(git …)`. #158 arrived as neither. A
+redirect parks the output in a file that a later line reads, and drops the status
+just the same — which is why keying the guard on the **crossing** rather than on
+the spelling was the whole point.
+
+Widened, it found **three** unchecked redirects where one was reported:
+
+| | |
+|---|---|
+| `SKILL.md` Phase 0 → `phase0.env` | #158, known |
+| `uv-lock.md` Phase 1 → `$SCRATCH/pr.uv.lock` | **new** |
+| `uv-lock.md` Phase 1 → `$SCRATCH/base.uv.lock` | **new** |
+
+All three fixed. Severity stated honestly: every consumer refuses an empty input,
+so none could have produced a wrong verdict. Measured — `audit.py` on two empty
+lockfiles, and on a real one against an empty baseline, answers `error: cannot
+read … no [[package]] entries` and exits 2 in both directions. The cost is a
+failure reported two steps from its cause, naming the wrong file.
+
+**Phase 0's is the one where the obvious fix is wrong.** `discover.py --shell`
+exits `1` when Phase 0 found something — the common case, and `cli()`'s docstring
+says so — so `|| { exit 2; }` would abort every audit of a PR with anything to
+report. It takes `; RC=$?` and `[ "$RC" -le 1 ]`, which also reinstates the
+`_acted_on` clause 0.53.0 dropped for never firing: dead for a capture, because
+the test on `$RC` ends in a `||` the first form already accepts, and the only
+form available for a redirect.
+
+### Three measurements supplied, and two patterns rejected
+
+Round thirty-three improvised four commands into a block that otherwise ran
+verbatim. Three were measurements `actions.md` § Phase 1 **names and does not
+supply** — the `uses:` count and the changed-line count it quotes as its own
+evidence, and the generated-workflow `grep` whose match strings it names. All
+three are now in the block, the structural checks read *four*, and all three are
+in the `#127` registry with a mutation each.
+
+The general detector was prototyped twice more and rejected twice, which is the
+finding worth keeping:
+
+| pattern | hits | real |
+|---|---|---|
+| a literal the prose says to match on, absent from every command | 12 | 1 |
+| a number qualifying a noun — a count quoted as evidence | 28 | 1 |
+
+The second also misses one of its own two targets, because *"18 changed lines"*
+puts a word between the number and the noun. Both score worse than the rule
+already rejected in that registry's docstring, so the class stays closed by
+registry plus `triage_unsupplied.py` read once a sprint — and the rejections are
+recorded, because *cannot be a gate* and *cannot be useful* are different
+findings.
+
+### The report's compliance sentence is supplied, so it is not composed
+
+Three reports have now written *"No improvisation"* or *"every command came from
+`SKILL.md` as written"* against transcripts that contradict it — 2026-08-19,
+2026-09-19, and round thirty-three, which listed what it had added two sentences
+later and did so against `verify_run.py`'s own printed disclaimer. Quoting the
+false sentence as a warning had been tried; printing the disclaimer in the
+script's output had been tried.
+
+`report-template.md` now supplies the two lines instead:
+
+    verify_run.py exit <code> — <its RESULT line, verbatim>
+    Commands this procedure did not specify: <N>
+
+`<N>` counts every command no block spells, whether or not the script's four
+rules see it, and Phase 8 carries **that many** classified rows — so the two
+halves check each other, and round thirty-three's *"Deviations: none to
+classify"* under a paragraph naming two would have been visible as it was
+written. A count can be wrong and be seen to be wrong; a sentence cannot.
+
+### The corpus is frozen
+
+`SKILL.md` went 57 KB → 125 KB and the references 32 KB → 139 KB in six weeks —
+**2.7x** — across the same nine phases and one added ecosystem. That growth is
+not a side effect of fixing things, it is the defect supply: each fix wrote a
+paragraph explaining what it had measured, the paragraph was new unaudited
+surface making new falsifiable claims, and the next replay round audited it. Two
+of 0.53.0's five findings trace by `git log -S` to a commit one day older. The
+documents are also ~30% of a run's tokens, so every byte is paid again on every
+audit.
+
+`tests/test_plugin_layout.py` now holds a byte ceiling for `SKILL.md` and for the
+references together, and `CONTRIBUTING.md` states the rule it enforces: **a
+measurement's reasoning belongs in the CHANGELOG entry and the commit body; the
+procedure carries the command and one line of why.**
+
+This release was written under it. Three commands and four status checks went in;
+0.53.0's rationale paragraphs came out of `actions.md` and `SKILL.md` to pay for
+them, into the entries that already carried the measurements. Net: `SKILL.md`
+**−2 bytes**, references **−103**. The ceiling is set at those sizes rather than
+at 0.53.0's, because banking the difference on the first commit under the rule is
+how a ratchet stops ratcheting — a second test refuses headroom for the same
+reason.
+
+None of this says the current size is right. It says the size is now a decision.
+
+### What the replay gate showed
+
+Round thirty-four, `fpga-board-sim` **#436**, this version as committed: 26
+turns, $3.28, 25 recorded calls. **Merge as-is, high confidence, no plugin defect
+in the verdict path.** The same PR as round thirty-three, so the two reports are
+directly comparable — and the comparison is the evidence that the report fix
+works:
+
+| | round 33 (0.53.0) | round 34 (0.54.0) |
+|---|---|---|
+| commands the procedure did not spell | 4 | 9 |
+| what the report said about them | *"No improvisation … every command came from `SKILL.md` or `references/actions.md` as written"* | `Commands this procedure did not specify: 9` |
+| Phase 8 | *"Deviations: none to classify"* | *"Nine rows, matching the count above"*, all nine classified |
+
+Round thirty-three's four additions included the two counts and the
+generated-workflow grep this release supplies; round thirty-four did not need
+them and spent its improvisations elsewhere. The new check 4 ran — *"Not a
+generated workflow (exit `1`)"* — and `actions.md`'s own recorded numbers
+reproduced a second time.
+
+**One row classed `plugin defect — mine, not the plugin's`, and it is the best
+thing in the round.** The run appended `| sort -u -t: -k4` to a `runs-on` grep
+the procedure spells plainly, and the filter **suppressed 7 of 13 lines** — six
+looked like a complete runner inventory. Re-run unfiltered the conclusion held,
+but the shape is the one this procedure warns about throughout, arriving in the
+run's own added filter. It caught itself only by checking whether its deviation
+had cost anything before writing the report, and said so.
+
+**One finding clears 0.54.0's bar, and it is older text, so it goes to the next
+version ([#162]).** Phase 4's row 2 greps for `<the input the notes named>`,
+anchored to a YAML key and scoped to `.github/workflows/` — and the note it was
+run against named `NO_PROXY`, an *environment variable*, which can live in a
+`run:` line, a config file outside that path, or the runner itself. Run as
+spelled, no hit is not evidence, and the row reads it as `inert here`. Latent
+rather than realized: this run widened the grep on its own and established the
+answer another way.
+
+**Two observations were declined, which is the new rule working.** The round
+suggested noting in `actions.md` that #436's measurement is reproducible on
+demand. It is true and it is a line in the procedure that no run needs — the
+CHANGELOG already carries it, twice. Under the freeze that is exactly the line
+that does not go in.
+
+[#162]: https://github.com/Machai-Kydoimos/dependabot-audit/issues/162
+
+### Found while building it
+
+- **The redirect guard's first draft had the defect its own class warns about.**
+  A redirect's `||` sat within the 220-character window of the *previous*
+  redirect, so `uv-lock.md`'s pair passed with only the second line checked —
+  "satisfied by a different line than the one it is about", which is the failure
+  the gate test above names in its docstring. A redirect's status is now read on
+  its own statement, and the mutation that exposed it is a case in the
+  anti-vacuity test.
+- **`>>` parsed as a redirect whose destination was `>`.** No instance ships, so
+  nothing was wrong — but a latent false positive in a guard is a guard that will
+  be disbelieved once. Excluded, with a case.
+- **A registry mutation was a no-op and read as a pass.** Deleting the first
+  `DO NOT EDIT` line took a *prose* mention on line 39, not the `grep` on line
+  174. Re-run against the command, the entry fires; re-run against the prose
+  alone, it does not — which is the discrimination the registry claims and had
+  not been shown.
+
 ## [0.53.0] — 2026-09-21
 
 ### The pipeline guard pairs quotes per line, and the line it was hiding fails the other way
@@ -6324,7 +6492,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.53.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.50.0...v0.51.0
