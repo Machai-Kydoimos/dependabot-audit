@@ -159,8 +159,7 @@ and against this script's own first cut:
 
 The first two point this phase's entire changelog read at a repository the
 package author controls: tidy release notes, no unreconciled fixes, a clean
-currency row. Reported by CodeQL as `py/incomplete-url-substring-sanitization`
-on the PR that mechanised it, which is the only reason the prose copy was found.
+currency row.
 
 **Constructing the tag is the quiet failure.** Projects disagree about the `v`
 prefix and change their minds mid-life. The script matches against the published
@@ -417,12 +416,21 @@ resolution. Phase 2 runs under `--no-execute`, so the tool comes from PyPI at th
 locked version instead.
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+cd "$SCRATCH/pr-<N>" || exit 2   # its files and config; only where Phase 4 or 5 runs, else underivable, never inert
+
 # <no-config> is spelled per tool: rumdl --no-config, ruff --isolated.
 # <only-the-fixed-rule> is Phase 4's slot, here for a second reason: a config
 # that never enables the rule, and a tool that would not run it anyway, are the
 # same silence. rumdl --enable <RULE>, ruff --select <RULE>.
 uv run --no-project --with <tool>==<locked> <tool> check <a representative file>
 uv run --no-project --with <tool>==<locked> <tool> check <no-config> <only-the-fixed-rule> <the same file>
+# ruff only, where the rule is in preview or the config sets `preview = true` —
+# the two traps below.
+uv run --no-project --with ruff==<locked> ruff check --isolated --preview --select <RULE> <the same file>
+uv run --no-project --with ruff==<locked> ruff check --statistics <the same file>
 ```
 
 Measured on uv 0.12.8 against a project whose `setup.py` writes a file when it
@@ -466,8 +474,7 @@ t.py:1:5: N802 Function name `BadName` should be lowercase          # exit 1
 
 **Read the named run first: silent there, the file never exercised the rule**,
 and the answer is `underivable` rather than `inert here` — take the input from
-the fix's own test. Round twenty-four hit this on #437, whose `select` carries no
-`SIM`, and forced the rules on by hand (#139).
+the fix's own test.
 
 #### Three runs, because silence has three causes
 
@@ -477,12 +484,19 @@ that must not be taken on trust. Same command, same flags, three inputs and one
 omission:
 
 ```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+cd "$SCRATCH/pr-<N>" || exit 2   # run 2 reads it; only where Phase 4 or 5 runs, else underivable, never inert
+
 # 1. control — the fix's own input, where the rule MUST fire
-uv run --no-project --with <tool>==<locked> <tool> check <no-config> <only-the-fixed-rule> <the fix's own input>
-# 2. exposure — the identical command, this repo's tree
+uv run --no-project --with <tool>==<locked> <tool> check <no-config> <only-the-fixed-rule> "$SCRATCH/<the fix's own input>"
+# 2. exposure — the identical command, over the PR's tree. For ruff, the file
+#    count rumdl prints for itself, with run 2's own flags — see below.
 uv run --no-project --with <tool>==<locked> <tool> check <no-config> <only-the-fixed-rule> .
+uv run --no-project --with ruff==<locked> ruff check --isolated --select <RULE> --show-files . | wc -l
 # 3. default state — the control's input again, with no rule named
-uv run --no-project --with <tool>==<locked> <tool> check <no-config> <the fix's own input>
+uv run --no-project --with <tool>==<locked> <tool> check <no-config> "$SCRATCH/<the fix's own input>"
 ```
 
 | 1 control | 2 exposure | Reading |
@@ -506,11 +520,10 @@ t.md:1:1: [MD041] First line in file should be a level 1 heading          # exit
 ```
 
 Loud both times, and `MD090` is in neither the second run's output nor its
-defaults. Round twenty-eight read that rule as live-but-silent under #437's
-disable-list; round twenty-nine ran this and found it **off by default**, which
-is a different finding. **The family prefix does not answer it**: on ruff 0.16.8
-`N802` is off by default while `SIM117` is on, so the same `--isolated` run that
-proves one omitted proves the other included. Ask per rule and per version.
+defaults — **off by default**, a different finding from live-but-silent. **The
+family prefix does not answer it**: on ruff 0.16.8 `N802` is off by default while
+`SIM117` is on, so the same `--isolated` run that proves one omitted proves the
+other included. Ask per rule and per version.
 
 **Silence at exit `0` is a documented output of both tools, so read stderr and a
 file count before reading it as clean.** rumdl takes a rule name it does not
@@ -553,17 +566,6 @@ Two ruff traps sit behind that, both measured on 0.16.7 and both quiet:
   coding it** — `unspecified-encoding`, not `PLW1514` — so grepping the config
   run for the code finds nothing where the rule did fire. `--statistics` prints
   both, `1  PLW1514  unspecified-encoding`, and so does `--output-format json`.
-
-```bash
-# ruff only, and only where the rule the entry names is in preview or the
-# repo's config sets `preview = true`.
-uv run --no-project --with ruff==<locked> ruff check --isolated --preview --select <RULE> <the same file>
-uv run --no-project --with ruff==<locked> ruff check --statistics <the same file>
-
-# ruff only, and only for run 2 above: the file count rumdl prints for itself.
-# Same flags as the run whose silence is being read, or it describes another one.
-uv run --no-project --with ruff==<locked> ruff check --isolated --select <RULE> --show-files . | wc -l
-```
 
 ## Phase 3 — Known vulnerabilities
 
@@ -896,8 +898,7 @@ says how much it looked at. Measured on this repository's own gates:
 unchanged`. **`ruff check --fix` ends `All checks passed!` at exit 0 whether it
 checked 214 files or an empty directory** — so for that gate the line cannot rule
 the fourth cause out, and `ruff check --show-files . | grep -c '\.py'` can (214
-against 0). Round twenty-one of the replay gate re-ran every tool by hand to get
-this, because the output was captured and never shown.
+against 0).
 
 ### A fix *above* the proposal: was the bug already in the current pin?
 
@@ -953,16 +954,14 @@ acts, and then all three versions agree. Measured on rumdl's MD026 reproducer, a
 setext heading inside a list item (`- item` / `  Title.` / `  ======`):
 `--no-config --fix` gives `## Title` at both 0.2.72 and 0.2.74, because MD003
 turns the heading into ATX first. With `--enable MD026`, 0.2.72 moves `Title` out
-of the list item and 0.2.74 keeps it in place: the bug reproduces. Round
-twenty-two saw the first result, took it for agreement, and quietly relied on a
-different input (#136). The same trap on ruff: `--isolated --fix` applies F401
-and F541 together, and `--select F541` applies only F541 (ruff 0.16.7).
+of the list item and 0.2.74 keeps it in place: the bug reproduces. The same
+trap on ruff: `--isolated --fix` applies F401 and F541 together, and
+`--select F541` applies only F541 (ruff 0.16.7).
 
 **The gate is the reason this lives here and not in Phase 7.** The runs execute
 the proposed version, which is the code under audit, and `--no-execute` defines a
 run as Phases 0–3 and 6–7 without ever reaching `$MAY_EXECUTE` — so a block in
-Phase 7 would run under the flag that forbids it. Round twenty-one wrote this
-loop by hand, correctly, and without the gate, because nothing supplied one.
+Phase 7 would run under the flag that forbids it.
 
 ## Phase 5 — Independent reproduction
 
@@ -1029,9 +1028,7 @@ pair above, or the wheels-held line below if that is what ran. A plain
 M to wheels* would then describe a sync that did not produce the environment.
 Where Phase 1 already named the group, adding `--group <name>` up front runs the
 same command once. The reconcile still runs, because it is what proves the group
-was installed. Three replays of #437 re-derived this design, one of them wrongly
-(#137); it is written here so the next one reads it instead. Say in the report
-which groups the row covers.
+was installed. Say in the report which groups the row covers.
 
 Step 1 is the one with the security value: if it succeeds, every dependency in
 the lockfile resolved to a **wheel** and no third-party build code ran at all. If

@@ -293,12 +293,11 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     already carried it.
     """
 
-    # v0.54.0, 2026-09-21 — and already lower than the v0.53.0 sizes the ceiling
-    # was first set at, because 0.54.0 added three commands and four status
-    # checks and paid for them by moving its predecessor's rationale into the
-    # CHANGELOG. Lower these when prose comes out; raise one only deliberately,
-    # and say in the same commit what was bought with it.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 125_573, "references": 139_309}
+    # v0.55.0, 2026-09-23 — lower again. 0.55.0 added a frontmatter hook, three
+    # commands and two preambles, and paid for them by moving version history into
+    # the CHANGELOG. Lower these when prose comes out; raise one only
+    # deliberately, and say in the same commit what was bought with it.
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 124_416, "references": 139_137}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

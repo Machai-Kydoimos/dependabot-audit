@@ -2,6 +2,12 @@
 name: dependabot-audit
 description: Audit an automated dependency-bump PR and produce an evidence-backed merge recommendation — verify lockfile artifact hashes against the registry, cross-check the true latest version, read changelogs for security and behavior changes, reproduce the repo's own checks in an isolated worktree, and report. Verifies uv.lock, GitHub Actions and pre-commit hooks end to end; any other ecosystem gets the ecosystem-independent phases and a stated boundary rather than an improvised recipe. Use when the user asks to review, audit, check, or decide on a Dependabot or Renovate PR, a dependency bump, a lockfile PR, or asks "is this safe to merge".
 disallowed-tools: Edit, Write, NotebookEdit
+hooks:
+  PreToolUse:
+    - matcher: "Bash|Read"
+      hooks:
+        - type: command
+          command: "umask 077; cat >> \"${TMPDIR:-/tmp}/dbaudit-run-${CLAUDE_CODE_SESSION_ID:-unknown}.jsonl\" 2>/dev/null || true"
 ---
 
 # Dependabot Audit
@@ -892,11 +898,12 @@ adopted. Look for two things, in this order:
 **Then ask whether this repo is in the change's scope**, for either kind. Phase 7
 takes the verdict from that answer, so it is a finding and not a footnote: read
 the advisory or the bug for the setting, flag or mode it lives in, and grep this
-repo's config for it. A `Security` entry whose leak path the repo never
-configures is a follow-up on the merits; a destructive fix in a write mode the
-repo runs on every commit is not. Same shape of evidence, two urgencies — it is
-the same question Phase 4 asks of an actions bump, where `references/actions.md`
-calls the answer "inert here", a result and not silence.
+repo's config for it in the PR's tree — `git grep -n '<setting>' pr-<N> --`. A
+`Security` entry whose leak path the repo never configures is a follow-up on the
+merits; a destructive fix in a write mode the repo runs on every commit is not.
+Same shape of evidence, two urgencies — it is the same question Phase 4 asks of
+an actions bump, where `references/actions.md` calls the answer "inert here", a
+result and not silence.
 
 **The grep answers it only when the change is in the tool's own surface**, and
 three cases fall outside that. All three are ordinary, and all three return a
@@ -914,8 +921,8 @@ correctly and reaches *this* reader, who reads the raw file, as a backslash that
 breaks the regex:
 
 ```bash
-git grep -lE '^[[:blank:]>]*(=+|-+)[[:space:]]*$' -- '*.md'; echo "shape scan exit: $?"
-git ls-files --error-unmatch '*.rs';                         echo "type scan exit: $?"
+git grep -lE '^[[:blank:]>]*(=+|-+)[[:space:]]*$' pr-<N> -- '*.md'; echo "shape scan exit: $?"
+git grep -l '' pr-<N> -- '*.rs';                                    echo "type scan exit: $?"
 ```
 
 **Read the exit code, and do not pipe these into `wc`.** `git grep` exits `1` on
@@ -924,15 +931,9 @@ no match and `128` when it could not run, and both print nothing — so
 into `inert here`, which is the failure this whole row exists to prevent. `1` is
 a real zero; `128` is `underivable`.
 
-**`git ls-files` says "none" only with `--error-unmatch`.** Without it a miss
-exits `0` printing nothing, so *there are `.rs` files* and *there are none* reach
-the reader identically — the second line above shipped that way from 0.36.0, and
-round twenty-five caught it by noticing the output was empty at exit `0` (#141).
-With the flag a miss prints `error: pathspec '*.rs' did not match any file(s)
-known to git` and exits `1`: that line **is** the real zero, not a failure to
-report. Measured on git 2.55.0, where both forms exit `128` outside a repository.
-Give it one pathspec per line — with two, a miss on either exits `1` while the
-other still prints its files, and the count then belongs to neither.
+**Both read `pr-<N>`, the PR's tree — never the checkout you are in** (Phase 0).
+The type scan is `git grep` too, so it exits the same way; it skips an empty
+file, which carries nothing a rewrite could corrupt.
 
 **The shape scan is a superset: its zero is conclusive, and its count is not.**
 It matches an underline-shaped line at any indentation and any blockquote depth.
@@ -945,8 +946,8 @@ The first command below finds a quoted underline; the second finds one inside a
 list item:
 
 ```bash
-git grep -lE '^[[:blank:]]*>[[:blank:]>]*(=+|-+)[[:space:]]*$' -- '*.md';  echo "quoted scan exit: $?"
-git grep -lE '^[[:blank:]]+(=+|-+)[[:space:]]*$' -- '*.md';                echo "indented scan exit: $?"
+git grep -lE '^[[:blank:]]*>[[:blank:]>]*(=+|-+)[[:space:]]*$' pr-<N> -- '*.md';  echo "quoted scan exit: $?"
+git grep -lE '^[[:blank:]]+(=+|-+)[[:space:]]*$' pr-<N> -- '*.md';                echo "indented scan exit: $?"
 ```
 
 **The third shape needs the line above, and `git grep` reads one line at a
@@ -959,7 +960,7 @@ neither narrowing above touches them. `scripts/setext.py` reads the line above:
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
-python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/setext.py"; echo "top-level scan exit: $?"
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/setext.py" --ref pr-<N>; echo "top-level scan exit: $?"
 ```
 
 It exits as the scans above do — `0` found, `1` a real zero, `128` underivable —
@@ -974,19 +975,7 @@ CommonMark 0.31.2 spec's 655 examples, #437's 41 Markdown files and rumdl's 144:
 files and 187 lines on #437; this returns `0 setext underline(s) under a
 paragraph line, in 0 of 41 file(s)` there. One counts the *shape*, thematic
 breaks and all; the other counts the shape with a paragraph line above it, and
-on that tree none of the 187 has one. Round twenty-six ran both and asked for
-this sentence.
-
-Until 0.47.0 the first scan was anchored at column 0 (`^(=+|-{2,})…`). That meant
-it could not see the quoted or list-item shapes this paragraph names, and its
-"conclusive" zero was a false clean for exactly those. Measured on five fixtures
-(top-level, list item, quote, nested quote, quote in a list item), it matched one.
-Round twenty-four found it by needing its own grep for MD026's list-item shape.
-Until 0.48.0 all three asked for **two** dashes and ended on `[[:blank:]]*$`, and
-each of those excluded a real underline: CommonMark takes a single `-` (`Foo`
-over `-` is an `<h2>`, measured with markdown-it-py), and `[[:blank:]]` does not
-match the `\r` a CRLF line ends on, so `git grep` listed no file at all in a CRLF
-repository. Two more false cleans under the same sentence.
+on that tree none of the 187 has one.
 
 Write `[[:blank:]]`, not `[ \t]`: inside a POSIX bracket expression `\t` is a
 backslash and a `t`, so `[ \t]*` misses a trailing tab and matches `---t` —
@@ -995,10 +984,7 @@ measured on git 2.55.0, and shipped in this block until 0.46.0. End on
 
 Exposure is how many files carry the shape, and **zero is a finding like any
 other** — the same `inert here` the first two rows earn by running something,
-rather than by finding nothing to grep. Both commands come from a run that
-improvised them unaided, because the phase said "grep this repo's config" and no
-config line could answer — the two in the first block above, that is; the
-narrowings came later, from the rounds that had to improvise them in turn.
+rather than by finding nothing to grep.
 
 That second row is Phase 6's rule one phase over. A red check does not carry a
 verdict until it is attributed; a config line does not carry `inert` until the
@@ -1593,10 +1579,12 @@ with evidence; the recommendation is a conclusion drawn from it, not a headline 
 decorates.
 
 **If this audit had to improvise, the report says so** — and the record says what
-it did, rather than you recalling it. A `PreToolUse` hook appends every Bash call
-this session issued to `${TMPDIR:-/tmp}/dbaudit-run-$CLAUDE_CODE_SESSION_ID.jsonl`,
-outside the audited repository because this plugin is read-only and a log file is
-a write. Read it back:
+it did, rather than you recalling it. A `PreToolUse` hook in this file's
+frontmatter appends every Bash and Read call from the moment the skill loads to
+`${TMPDIR:-/tmp}/dbaudit-run-$CLAUDE_CODE_SESSION_ID.jsonl`, owner-only, outside
+the audited repository because this plugin is read-only and a log file is a
+write. A session resumed mid-audit records nothing until the skill is invoked
+again. Read it back:
 
 ```bash
 # Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.

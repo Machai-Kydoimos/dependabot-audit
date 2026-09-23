@@ -2605,6 +2605,79 @@ class TestPhase4ReadsTheActionsInterfaceNotOnlyItsNotes(SkillHarness):
             "the clean result it looks like — which is how the fourth condition hid",
         )
 
+    def test_an_environment_variable_is_not_answered_by_the_input_grep(self):
+        """#162, from round thirty-four's `fpga-board-sim` #436: setup-uv v10.1.0,
+        *"`no_proxy`/`NO_PROXY` now respected (previously ignored)"*.
+
+        Row 2 greps for a workflow **input** — a YAML key at line start, in
+        workflow files only. An environment variable is exported inside a `run:`
+        block or set in some other file. Both forms run as written over a fixture
+        carrying the variable in exactly those two places: the input grep reports
+        nothing, which the row then read as the repo taking the new default.
+        """
+        lines = "\n".join(bash_blocks(self._phase4())).splitlines()
+        as_input = next((ln for ln in lines if "<the input the notes named>" in ln), None)
+        as_env = next((ln for ln in lines if "<the variable the notes named>" in ln), None)
+        self.assertIsNotNone(as_input, "row 2's input grep is gone")
+        self.assertIsNotNone(as_env, "an environment variable has no command of its own")
+        assert as_input is not None and as_env is not None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/ci.yml").write_text(
+                "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n"
+                "      - run: |\n          export NO_PROXY=internal.example\n"
+                "          make test\n",
+                encoding="utf-8",
+            )
+            (root / "ci").mkdir()
+            (root / "ci/env.sh").write_text("no_proxy=internal.example\n", encoding="utf-8")
+            _commit_as_pr(root, 7)
+
+            def run(line: str) -> subprocess.CompletedProcess[str]:
+                for placeholder in (
+                    "<the input the notes named>",
+                    "<the variable the notes named>",
+                ):
+                    line = line.replace(placeholder, "NO_PROXY")
+                return subprocess.run(
+                    ["bash", "-c", line.replace("<N>", "7")],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            self.assertEqual(run(as_input).returncode, 1, "the fixture must defeat the input grep")
+            found = run(as_env)
+            self.assertEqual(found.returncode, 0, found.stderr)
+            self.assertIn("ci.yml", found.stdout)
+            self.assertIn("env.sh", found.stdout)
+
+    def test_an_environment_variables_silence_waits_on_the_runners(self):
+        """The same issue's second half. A runner's own environment and the repo's
+        settings are where no grep reaches, so no hit is `inert here` only beside
+        row 3's `runs-on` inventory showing every runner GitHub-hosted, and
+        `underivable` otherwise. The sentence after the block read every empty
+        result as inert, which this one is not."""
+        row = next(
+            (
+                line
+                for line in self._phase4().splitlines()
+                if line.startswith("|") and "environment variable" in line
+            ),
+            "",
+        )
+        self.assertTrue(row, "the grep table has no row for an environment variable")
+        self.assertIn("underivable", row, "its no-hit answer is not `inert here` by itself")
+        self.assertIn("runs-on", row, "and it is read together with the runner row")
+        flat = re.sub(r"\s+", " ", self._phase4()).lower()
+        self.assertRegex(
+            flat,
+            r"read an empty result as \*inert here\*[^.]*except[^.]*environment variable",
+            "the blanket reading of an empty result has to carve this row out",
+        )
+
     def test_the_tag_push_shape_is_named_rather_than_the_event_list(self):
         """`push:` + `tags:` — grepping the three event names cannot find it."""
         self.assertIn(
@@ -2614,6 +2687,31 @@ class TestPhase4ReadsTheActionsInterfaceNotOnlyItsNotes(SkillHarness):
             "`push` plus a refs/tags ref, so the three-name grep returns nothing and "
             "reports inert on a repo that publishes tags",
         )
+
+
+def _git(root: pathlib.Path, *args: str) -> None:
+    """Commit-capable git in a fixture, whatever the user's own config signs with."""
+    subprocess.run(
+        [
+            "git",
+            "-c", "user.email=fixture@example.com",
+            "-c", "user.name=fixture",
+            "-c", "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )  # fmt: skip
+
+
+def _commit_as_pr(root: pathlib.Path, number: int) -> None:
+    """Commit the fixture's files and point `pr-<number>` at the result."""
+    if not (root / ".git").exists():
+        _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "the PR's tree")
+    _git(root, "branch", "-f", f"pr-{number}")
 
 
 def _every_block() -> list[tuple[str, int, str]]:
@@ -2629,6 +2727,67 @@ def _every_block() -> list[tuple[str, int, str]]:
         for number, body in phases(path.read_text(encoding="utf-8")):
             found.extend((path.name, number, code) for code in bash_blocks(body))
     return found
+
+
+class TestNoBlockReadsTheCheckoutYouAreIn(SkillHarness):
+    """*Never audit the working tree* — Phase 0's rule, and six blocks broke it.
+
+    Until 0.55.0, Phase 2's three scan blocks and the three tool-run blocks in
+    `uv-lock.md` § Phase 2 read whatever directory the shell was in, which in a
+    Claude Code session is the user's checkout: `git grep` and `git ls-files`
+    with no tree named, `setext.py`, and a linter handed `.` or a file by a path
+    the checkout resolved. The `fpga-board-sim` #438 audit moved into
+    `$SCRATCH/pr-438` unprompted before both kinds of read and handed back only
+    the `SKILL.md` half.
+
+    Keyed on the crossing — a read of the repository's content through the
+    current directory — rather than on the lines, so the next one is caught too.
+    The first form of this guard was not: a tool run on `<a representative
+    file>` reads that file and the tool's config through the current directory
+    as surely as one pointed at `.`, and the #438 replay under 0.55.0's branch
+    met two such blocks it did not list. Thirteen lines on the pre-0.55.0 corpus.
+
+    **Where the tree must be on disk, the block runs in `$SCRATCH/pr-<N>`, and
+    that worktree exists only where Phase 4 or 5 will run.** A read that can
+    name a ref therefore names it — the same replay found `setext.py` moved into
+    the worktree and left `underivable` under `--no-execute` — and a tool run,
+    which cannot, exits 2 there, which is `underivable` and never `inert here`.
+    """
+
+    # Reads the audited repository's content — or, for a tool, its files and its
+    # config — through the current directory.
+    READS_CWD = re.compile(
+        r"\bgit grep\b|\bgit ls-files\b|setext\.py|\bfind \.(?:\s|$)|\s\.(?:\s*$|\s*[|;&])"
+        r"|\buv run --no-project --with\b"
+    )
+    # Names the tree it reads, so the directory it runs from does not matter.
+    TREE_NAMED = re.compile(r"pr-<N>|base-<N>|\$BASE_SHA")
+    # Moves into a tree the audit owns before it reads — and stops if it cannot.
+    # A bare `cd` that fails leaves the block in the checkout, reading it anyway.
+    PINNED = re.compile(
+        r'\bcd "\$(?:SCRATCH/(?:pr|base)-<N>|F)"\s*\|\|\s*exit|--tree "\$SCRATCH|-C "\$SCRATCH'
+    )
+
+    def test_no_block_reads_the_checkout_you_are_in(self):
+        offenders = []
+        for path in [SKILL, *sorted((PLUGIN / "references").glob("*.md"))]:
+            for lang, body in FENCE.findall(path.read_text(encoding="utf-8")):
+                if lang not in {"bash", "sh", "shell"}:
+                    continue
+                pinned = False
+                for line in body.splitlines():
+                    code = "" if line.lstrip().startswith("#") else line.split("  #")[0]
+                    pinned = pinned or bool(self.PINNED.search(code))
+                    if pinned or not self.READS_CWD.search(code):
+                        continue
+                    if not self.TREE_NAMED.search(code):
+                        offenders.append(f"{path.name}: {code.strip()[:100]}")
+        self.assertEqual(
+            offenders,
+            [],
+            "these read the directory the shell is in — the user's checkout — and not "
+            'the PR: name the tree (`git grep … pr-<N> --`) or cd into "$SCRATCH/pr-<N>"',
+        )
 
 
 class TestEveryConsumerReloadsTheHandoff(SkillHarness):
@@ -3846,7 +4005,7 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
         phase2 = self.material(2)
         self.assertRegex(
             phase2,
-            r"git grep -lE .*\*\.md.*\n.*git ls-files",
+            r"git grep -lE .*\*\.md.*\n.*git grep .*\*\.rs",
             "Phase 2 must give the content greps, not only say to grep content",
         )
         self.assertRegex(
@@ -3908,7 +4067,7 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
         CRLF repository.
         """
         found = re.findall(
-            r"git grep -lE '([^']+)' -- '\*\.md';\s*echo \"(\w+) scan exit", self.material(2)
+            r"git grep -lE '([^']+)' pr-<N> -- '\*\.md';\s*echo \"(\w+) scan exit", self.material(2)
         )
         scans = {label: regex for regex, label in found}
         self.assertEqual(set(scans), {"shape", "quoted", "indented"}, "the scans Phase 2 documents")
@@ -3950,47 +4109,97 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
                 )
 
     def test_the_type_scan_can_say_none(self):
-        """`git ls-files '*.rs'` exits 0 on no match, printing nothing.
+        """A type scan that prints nothing at exit 0 cannot say *none*.
 
-        So the paragraph telling the reader that `1` is a real zero and `128` is
-        underivable was true of the `git grep` line above it and false of this
-        one: *there are `.rs` files* and *there are none* both arrived as `0`.
-        Round twenty-five caught it by noticing the output was empty (#141).
-        Measured here rather than asserted, in both directions, because the fix
-        is a flag whose whole job is the exit status.
+        `git ls-files '*.rs'` exits 0 on no match, so *there are `.rs` files* and
+        *there are none* both arrived as `0` until round twenty-five noticed the
+        empty output (#141). 0.55.0 moved the scan to `git grep` at `pr-<N>`, so
+        it reads the PR's tree rather than the checkout, and exits like the scans
+        beside it. Measured here in both directions, because the whole job of the
+        form is its exit status.
         """
         line = next(
-            (
-                text
-                for text in self.reachable(2).splitlines()
-                if "git ls-files" in text and "*.rs" in text
-            ),
+            (text for text in self.reachable(2).splitlines() if 'echo "type scan exit' in text),
             None,
         )
         self.assertIsNotNone(line, "Phase 2 no longer runs a type scan")
         assert line is not None
-        command = line.split(";")[0]
+        command = line.split(";")[0].replace("<N>", "7")
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             (root / "README.md").write_text("# x\n", encoding="utf-8")
-            subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+            _commit_as_pr(root, 7)
             none = subprocess.run(
                 ["bash", "-c", command], cwd=root, capture_output=True, text=True, check=False
             )
             self.assertEqual(
                 none.returncode,
                 1,
-                "the type scan must exit 1 where the tree has no file of that type, "
-                "which is what --error-unmatch is for",
+                "the type scan must exit 1 where the PR's tree has no file of that type",
             )
             (root / "lib.rs").write_text("fn main() {}\n", encoding="utf-8")
-            subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+            _commit_as_pr(root, 7)
             some = subprocess.run(
                 ["bash", "-c", command], cwd=root, capture_output=True, text=True, check=False
             )
             self.assertEqual(some.returncode, 0, "and 0 where it has one")
             self.assertIn("lib.rs", some.stdout)
+
+    def test_the_scans_read_the_pr_rather_than_the_checkout(self):
+        """Run as written, from a checkout that is not the PR.
+
+        Phase 0: *"Whatever branch the user happens to have checked out is not
+        the PR."* Until 0.55.0 these five scans read it anyway. Measured on git
+        2.55.0 with the checkout on a branch lacking the shapes the PR's tree
+        carries: all of them exited `1` — the real zero this section calls
+        conclusive — so an audit started from a feature branch reported
+        `inert here` about a tree it never read.
+        """
+        lines = [
+            line
+            for block in bash_blocks(dict(self.phases)[2])
+            for line in block.splitlines()
+            if re.search(r'echo "(shape|type|quoted|indented|top-level) scan exit', line)
+        ]
+        self.assertEqual(len(lines), 5, "Phase 2's four git scans and setext.py, as documented")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs/top.md").write_text("Title\n---\n", encoding="utf-8")
+            (root / "docs/quote.md").write_text("> Title\n> ---\n", encoding="utf-8")
+            (root / "docs/list.md").write_text("- item\n\n  Title\n  ---\n", encoding="utf-8")
+            (root / "lib.rs").write_text("fn main() {}\n", encoding="utf-8")
+            _commit_as_pr(root, 7)
+            _git(root, "checkout", "-qb", "feature")
+            _git(root, "rm", "-rq", "docs", "lib.rs")
+            _git(root, "commit", "-qm", "the checkout, which is not the PR")
+            env = {**os.environ, "SCRIPTS": str(PLUGIN / "scripts")}
+            for line in lines:
+                label = re.search(r'echo "([\w-]+) scan exit', line)
+                assert label is not None
+                done = subprocess.run(
+                    ["bash", "-c", line.replace("<N>", "7")],
+                    cwd=root,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertIn(
+                    f"{label.group(1)} scan exit: 0",
+                    done.stdout,
+                    f"the {label.group(1)} scan read the checkout, not pr-7",
+                )
+
+    def test_the_config_grep_is_a_command_and_reads_the_pr(self):
+        """*"Grep this repo's config for it"* named no command, and the one to
+        hand reads the checkout — which Phase 0 says is not the PR, config
+        included. Handed back by the `fpga-board-sim` #438 run as its own row."""
+        self.assertRegex(
+            self.flat(2),
+            r"grep this repo's config for it[^`]{0,40}`git grep [^`]*pr-<n> --",
+            "the config grep has to be a command, and one that reads the PR's tree",
+        )
 
     def test_the_top_level_narrowing_reads_the_line_above(self):
         """`git grep` reads one line at a time, and the line above is the answer.
@@ -6380,9 +6589,13 @@ class TestPhase2ProvesTheInstrumentBeforeReadingItsSilence(SkillHarness):
 
     def test_the_default_state_run_names_no_rule(self) -> None:
         """Run 3 differs from run 2 by an omission, so it is easy to write as a
-        duplicate of it and answer nothing."""
+        duplicate of it and answer nothing.
+
+        The input is under `$SCRATCH` since 0.55.0, when the block moved into the
+        PR's worktree: a relative control file would land in the tree run 2 scans,
+        and its own violation would read as exposure."""
         runs = self.reachable(2)
-        self.assertIn("<tool> check <no-config> <the fix's own input>", runs)
+        self.assertRegex(runs, r"<tool> check <no-config> \"\$SCRATCH/<the fix's own input>\"")
 
     def _uv_lock_phase_2(self) -> str:
         """The reference's own § Phase 2, which is where the decision table is.

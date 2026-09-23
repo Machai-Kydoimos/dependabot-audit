@@ -44,7 +44,11 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import pathlib
+import re
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -531,64 +535,105 @@ class TestTheExitCodesMatchTheScans(unittest.TestCase):
 
 
 class TestTheHookThatWritesTheRecord(unittest.TestCase):
-    # The plugin root, next to `.claude-plugin/` — NOT under the skill directory
-    # where `scripts/` and `references/` live. Round twenty-eight was launched with
-    # it one level too deep: the audit issued five Bash calls and the record was
-    # never created, which is the failure this path assertion now prevents.
-    HOOKS = ROOT / "hooks/hooks.json"
+    """Declared in `SKILL.md`'s frontmatter, so it registers when the audit starts.
 
-    def test_it_sits_at_the_plugin_root(self) -> None:
-        """Claude Code reads a plugin's hooks from `<plugin root>/hooks/hooks.json`.
-        Anywhere else and it is inert — silently, since a hook that never runs and
-        a hook with nothing to say look identical from inside the audit."""
-        self.assertTrue(self.HOOKS.is_file(), f"no hooks.json at {self.HOOKS}")
-        self.assertTrue((ROOT / ".claude-plugin/plugin.json").is_file())
-        self.assertFalse(
-            (SKILL / "hooks/hooks.json").exists(),
-            "hooks.json under the skill directory is never loaded",
+    0.49.0 put it in `<plugin root>/hooks/hooks.json`, and Claude Code runs a
+    plugin's hooks in **every session where the plugin is enabled** — audit or
+    not. On 2026-09-23 four records sat in `/tmp` and one was an audit: the others
+    were a plugin development session, a 170-call `fpga-board-sim` session that
+    never touched the plugin, and the session that found them. Each held every
+    Bash command and Read path of its session, at mode 0644.
+
+    A hook in a skill's frontmatter registers when the skill is invoked. Measured
+    with a throwaway plugin on Claude Code 2.1.280 before relying on it: silent in
+    a session that never invokes the skill; records the next call in the turn that
+    does, with `CLAUDE_CODE_SESSION_ID` resolved; one registration when the skill
+    is invoked twice; gone after `--resume` until the skill is invoked again.
+    """
+
+    def _frontmatter(self) -> str:
+        return (SKILL / "SKILL.md").read_text(encoding="utf-8").split("---", 2)[1]
+
+    def _command(self) -> str:
+        found = re.search(r'^ +command: "((?:\\.|[^"\\])*)"$', self._frontmatter(), re.MULTILINE)
+        self.assertIsNotNone(found, "SKILL.md's frontmatter declares no hook command")
+        assert found is not None
+        # A YAML double-quoted scalar; the only escapes it uses are \" and \\.
+        return re.sub(r'\\(["\\])', r"\1", found.group(1))
+
+    def _run(self, tmpdir: str) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "TMPDIR": tmpdir, "CLAUDE_CODE_SESSION_ID": "probe"}
+        return subprocess.run(
+            ["sh", "-c", self._command()],
+            input='{"tool_name": "Bash"}\n',
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
         )
 
-    def test_it_is_valid_json_and_matches_both_recorded_tools(self) -> None:
-        """`Bash|Read`, proved against Claude Code before being relied on.
+    def test_no_plugin_level_hook_is_left_to_record_every_session(self) -> None:
+        """A plugin's `hooks/hooks.json` — or a `hooks` key in its manifest — runs
+        in every session the plugin is enabled in, which is the defect."""
+        for path in (ROOT / "hooks/hooks.json", SKILL / "hooks/hooks.json"):
+            self.assertFalse(
+                path.exists(),
+                f"{path.relative_to(ROOT)} records every session, not the audit",
+            )
+        manifest = json.loads((ROOT / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
+        self.assertNotIn("hooks", manifest, "a manifest-declared hook is plugin-level too")
 
-        A throwaway plugin with this matcher, one Bash call and one Read call,
-        recorded both: the Bash entry carried `command`, the Read entry carried
-        `file_path` and nothing else. Read is in because reading a plugin file by
-        hand — the deviation `plugin-file-read` exists for — goes through Read far
-        more often than through `cat` (#150).
-        """
-        cfg = json.loads(self.HOOKS.read_text(encoding="utf-8"))
-        entries = cfg["hooks"]["PreToolUse"]
-        matchers = [e.get("matcher") for e in entries]
-        self.assertTrue(any(m and "Bash" in m for m in matchers), matchers)
-        self.assertTrue(any(m and "Read" in m for m in matchers), matchers)
+    def test_it_is_declared_in_the_skill_frontmatter(self) -> None:
+        """`Bash|Read`, proved against Claude Code before being relied on (#150):
+        the Bash entry carries `command`, the Read entry `file_path` and nothing
+        else. Read is in because reading a plugin file by hand goes through Read
+        far more often than through `cat`."""
+        front = self._frontmatter()
+        self.assertRegex(front, r"(?m)^hooks:\s*$", "no top-level `hooks:` key")
+        self.assertRegex(front, r"(?m)^  PreToolUse:\s*$", "no PreToolUse hook under it")
+        matcher = re.search(r'(?m)^ +- matcher: "([^"]+)"', front)
+        self.assertIsNotNone(matcher, "the hook names no matcher")
+        assert matcher is not None
+        self.assertIn("Bash", matcher.group(1))
+        self.assertIn("Read", matcher.group(1))
 
     def test_it_writes_outside_the_audited_repository(self) -> None:
         """Read-only by contract, and a log file is a write. Measured on Claude Code
         2.1.278: `CLAUDE_PROJECT_DIR` is the subject's checkout, so writing the record
         relative to it would put a file in the repo under audit."""
-        cmd = json.loads(self.HOOKS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][
-            0
-        ]["command"]
+        cmd = self._command()
         self.assertIn("TMPDIR", cmd)
         self.assertNotIn("CLAUDE_PROJECT_DIR", cmd)
 
     def test_it_keys_on_the_session_the_script_reads(self) -> None:
         """Both halves must agree on the path, and they are written in two files."""
-        cmd = json.loads(self.HOOKS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][
-            0
-        ]["command"]
+        cmd = self._command()
         self.assertIn("dbaudit-run-", cmd)
         self.assertIn("CLAUDE_CODE_SESSION_ID", cmd)
         self.assertIn(
             "CLAUDE_CODE_SESSION_ID", (SCRIPTS / "verify_run.py").read_text(encoding="utf-8")
         )
 
+    def test_the_record_is_readable_by_its_owner_only(self) -> None:
+        """It holds every command the audit issued, and `/tmp` is shared.
+
+        Run as written, twice: the file 0.49.0's hook created was 0644, which any
+        local account can read until reboot. Claude Code keeps its own transcripts
+        at 0600, and a plugin should not be less careful than its host.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = self._run(tmp), self._run(tmp)
+            self.assertEqual((first.returncode, second.returncode), (0, 0))
+            record = pathlib.Path(tmp) / "dbaudit-run-probe.jsonl"
+            self.assertTrue(record.is_file(), "the hook as written wrote no record")
+            self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
+            self.assertEqual(len(record.read_text(encoding="utf-8").splitlines()), 2)
+
     def test_it_cannot_fail_the_tool_call(self) -> None:
-        cmd = json.loads(self.HOOKS.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][
-            0
-        ]["command"]
-        self.assertIn("|| true", cmd)
+        """A record it cannot write must not block the audit's own command."""
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self._run(str(pathlib.Path(tmp) / "no-such-dir"))
+        self.assertEqual(done.returncode, 0, done.stderr)
 
 
 if __name__ == "__main__":

@@ -105,3 +105,13 @@ standard library, deliberately: they run under whatever bare `python3` the audit
 repository has. There is no lockfile here to compromise and no dependency to
 confuse. The plugin's own supply chain is its GitHub Actions pins, which are
 SHA-pinned, and its pre-commit hook revisions.
+
+**What it writes outside the audited repository.** `$SCRATCH` — the worktrees
+and the evidence, under `${TMPDIR:-/tmp}` — and the audit's own command record:
+a `PreToolUse` hook declared in `SKILL.md`'s frontmatter appends each Bash command
+and each path opened with Read to `${TMPDIR:-/tmp}/dbaudit-run-<session>.jsonl`,
+owner-only, from the moment the skill is invoked. **0.49.0 through 0.54.0
+declared that hook on the plugin instead**, which recorded every session in which
+the plugin was enabled, audit or not, at mode 0644 — readable by any local
+account. Upgrading stops it. What those versions wrote stays until `/tmp` is
+cleared; `rm -f "${TMPDIR:-/tmp}"/dbaudit-run-*.jsonl` removes it now.
