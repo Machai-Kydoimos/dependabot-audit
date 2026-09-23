@@ -358,11 +358,7 @@ gh api "repos/<owner>/<action>/releases/tags/<tag>" \
 **A release body is mutable, and `.body` alone cannot tell you it changed.**
 `published_at` never moves; `updated_at` does. Measured 2026-09-17 on
 `actions/checkout`: **17 of the last 58 releases** have `updated_at >
-published_at`, **8 of them more than a day later** — v6.0.2 was published
-2026-01-09 and edited 2026-01-22, twelve days on. `setup-node` and
-`upload-artifact` carry the same pattern at a lower rate, and `rvben/rumdl`
-backfilled a whole `### Fixed` section into a shipped tag's notes ten days after
-cutting it.
+published_at`, **8 of them more than a day later**.
 
 So this is not a stale-cache worry. **Two audits of the same pin, months apart,
 can read different notes and reach different verdicts, and nothing in `.body`
@@ -385,7 +381,7 @@ that decides whether it applies:
 | Change | What to grep for here |
 |---|---|
 | a trigger is newly restricted | `pull_request_target:`, `workflow_run:`, `release:` in this repo's workflows — **and `push:` carrying a `tags:` key**, because a tag push is not an event name. It is `push` with a `refs/tags/` ref, so the event-name grep cannot see it |
-| a default input flips | that input's name — an explicit setting pins the old behaviour |
+| a default flips — of an input, or of an environment variable the action reads | an **input**: its name, and an explicit setting pins the old behaviour. An **environment variable**: its name across the whole tree, any case — a `run:` line or any file can set one, and so can a runner or a repo setting, where no grep reaches. So no hit is `inert here` only beside Row 3's `runs-on:` showing every runner GitHub-hosted; otherwise `underivable` |
 | a minimum runner or Node version | `runs-on:` — GitHub-hosted is fine, a self-hosted label is not |
 | credential or token handling | `permissions:`, `persist-credentials`, and what later steps do with the token |
 
@@ -417,6 +413,10 @@ printf '%s\n' "$PUSH" | grep -E 'tags:'
 # whatever the new default is, which is when a flipped default is a finding.
 git grep -nE '^[[:space:]]*<the input the notes named>:' pr-<N> -- '.github/workflows/'
 
+# Row 2, for an environment variable: the whole tree, any case. Its silence
+# answers nothing until Row 3 shows every runner GitHub-hosted.
+git grep -niw '<the variable the notes named>' pr-<N> --
+
 # Row 3.
 git grep -nE '^[[:space:]]*runs-on:' pr-<N> -- '.github/workflows/'
 
@@ -426,10 +426,8 @@ git grep -nE '^[[:space:]]*(permissions|persist-credentials):' pr-<N> -- '.githu
 
 **Every one of them exits 1 on no match**, which is the answer this table returns
 most of the time — so do not chain them with `&&`, and read an empty result as
-*inert here* rather than as a read that failed. Measured on a two-workflow fixture
-carrying all four cases: the event-name grep found `pull_request_target` and
-`workflow_run` and **missed the `tags:` line entirely**, which the second grep
-then found in `release.yml`. One alternation would have reported two of three.
+*inert here* rather than as a read that failed — except Row 2's environment
+variable, whose silence waits on Row 3.
 
 **When the question is whether a file exists at that ref, the command is
 `git cat-file -e` — and `git ls-tree <ref> -- <path>` is the one that looks
@@ -442,9 +440,7 @@ right and is not.** Measured:
 | `git ls-tree <ref> -- <path>` | exit 0 | exit **0**, printing nothing |
 
 The third cannot tell *absent* from *the lookup failed*, which is the distinction
-this whole procedure is built on. A replay reached for it while improvising a
-`uv.toml` check — because this table named a thing to look for and no way to look —
-and caught itself one command later. Nothing in the procedure would have.
+this whole procedure is built on.
 
 **Report "inert here" as a result, not as silence.** Reaching it deliberately is
 this phase working; reaching it by not looking is the failure. Observed:

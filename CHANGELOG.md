@@ -11,6 +11,203 @@ patch.
 
 ## [Unreleased]
 
+## [0.55.0] — 2026-09-23
+
+Three defects, and each is something looking somewhere other than where its
+answer lives: a record kept for every session rather than for the audit, scans
+reading the checkout rather than the PR, and a grep for an input asked about an
+environment variable. The first is the plugin's own footprint, on every machine
+it is installed on.
+
+### The audit's record is kept for the audit, and only for its owner
+
+0.49.0's `PreToolUse` hook lived in `<plugin root>/hooks/hooks.json`, and Claude
+Code runs a plugin's hooks in **every session where the plugin is enabled**. That
+is documented, and 0.49.0's entry never considered it: it discusses where Claude
+Code loads the file, not when the file runs. So from 2026-09-20 every session of
+every user appended each Bash command and each Read path to
+`/tmp/dbaudit-run-<session>.jsonl`, at **mode 0644** — readable by any local
+account until reboot. On 2026-09-23 four records sat in `/tmp` and **one** was an
+audit; the others were two development sessions in this repository and a 170-call
+`fpga-board-sim` session that never touched the plugin. Claude Code keeps its own
+transcripts at 0600. The README described the record as *"every command this
+audit issued"*.
+
+The hook is now declared in `SKILL.md`'s frontmatter, which Claude Code registers
+when the skill is invoked, and its command begins with `umask 077`. Measured
+before relying on it — a throwaway plugin carrying one hook at each level, driven
+through `claude -p --plugin-dir` on Claude Code 2.1.280:
+
+| session | frontmatter hook | plugin-level hook |
+|---|---|---|
+| never invokes the skill | silent | recorded |
+| invokes it, then one Bash call in the same turn | recorded, `CLAUDE_CODE_SESSION_ID` resolved | recorded |
+| invokes it twice, then one Bash call | recorded **once** | recorded |
+| the previous session, resumed with `--resume` | **silent** | recorded |
+
+The last row is the cost. `--resume` starts a new process, and the hook is not
+registered again until the skill is invoked again, so a resumed audit hands
+`verify_run.py` a partial record, or none; its `128` message now names that cause,
+and Phase 7 says it in one sentence. Commands issued before the audit in the same
+session are no longer recorded, and later ones still are — harmless, since Phase 7
+reads the record before they exist.
+
+**Upgrading stops the recording; it does not delete what 0.49.0–0.54.0 wrote.**
+`rm -f "${TMPDIR:-/tmp}"/dbaudit-run-*.jsonl` does, and `SECURITY.md` now says so.
+
+`tests/test_verify_run.py` runs the hook's command as written and asserts mode
+`0600` — `0644` with the `umask` removed, which is the mutation it was checked
+against — refuses a plugin-level `hooks/hooks.json` or a manifest `hooks` key, and
+keeps the path assertions 0.49.0's replay made necessary.
+
+### Phase 2 reads the PR's tree, not the checkout you are in
+
+Handed back by the `fpga-board-sim` #438 audit on 2026-09-22, under 0.54.0 as
+installed, as two rows of its deviation table (its #10 and #12). Phase 0 says
+*"Never audit the working tree"*, config included. Phase 2's three scan blocks
+broke it: `git grep` and `git ls-files` with no tree named, and `setext.py`, all
+ran in whatever directory the shell was in, which in a Claude Code session is the
+user's checkout. So did every tool run in `uv-lock.md` § Phase 2 — eight lines in
+three blocks, two pointed at `.` and the rest at a file whose path, and whose
+config, the checkout supplied. The rest of the corpus named `pr-<N>` or ran
+inside `$SCRATCH/pr-<N>`, with one exception the replay found in Phase 3 (#165).
+
+Measured on git 2.55.0, with the checkout on a branch lacking a setext heading and
+a `.rs` file that the PR's tree carries: the scans as written exited `1` — the
+*real zero* Phase 2 calls conclusive — and the same scans at `pr-<N>` found both.
+An audit started from a feature branch would report `inert here` about a tree it
+never read. The #438 run moved into `$SCRATCH/pr-438` on its own before both
+kinds of read and handed back only the `SKILL.md` half, and its stated condition
+was the wrong one: the results matched not because the PR changed only
+`uv.lock`, but because the checkout was `main` at the merge base.
+
+- The four `git grep` scans name `pr-<N>`. The type scan becomes
+  `git grep -l '' pr-<N> -- '*.rs'`, because `git ls-files --error-unmatch` has no
+  tree form: same exit codes as the scans beside it, and it skips an empty file,
+  which carries nothing a rewrite could corrupt — measured, exit `1` on a tree
+  whose only `.rs` file is empty. `git ls-tree <ref> -- '*.rs'` is not an
+  alternative: it does not glob, and prints nothing at exit `0` — #141's shape.
+- `setext.py` gains `--ref <tree-ish>`, and Phase 2 passes `pr-<N>`: it lists the
+  blobs at the ref with `git ls-tree` and reads them with one `git cat-file
+  --batch`, so it needs no worktree. The first form of this fix moved the block
+  into `$SCRATCH/pr-<N>` instead — see the replay below for what that did.
+- `uv-lock.md`'s Phase 2 tool runs — the config differential, the three runs,
+  and ruff's two traps — need files and config on disk, which no ref supplies. So
+  they run in `$SCRATCH/pr-<N>`, which exists only where Phase 4 or 5 runs; where
+  it does not, `--no-execute` included, the block exits `2`, which is
+  `underivable` and never `inert here`. Before, they read the checkout's files
+  *and its config*. The control input sits under `$SCRATCH` — a relative one would
+  land in the tree run 2 scans, and its own violation would read as exposure —
+  ruff's `--show-files` count moves beside run 2, which it describes, and the
+  traps' two commands into the differential block whose file they use.
+- *"Grep this repo's config for it"* carries its command,
+  `git grep -n '<setting>' pr-<N> --`. It named none, and the one to hand reads the
+  checkout.
+
+`TestNoBlockReadsTheCheckoutYouAreIn` is keyed on the **crossing** — a read of the
+repository's content, or a tool's files and config, through the current directory
+— rather than on the lines. On the 0.54.0 corpus it lists **thirteen** lines and
+nothing else: the five scans and eight tool runs. Its first form listed seven:
+a tool pointed at `<a representative file>` reads that file and its config
+through the current directory as surely as one pointed at `.`, and re-reading
+the section to fix what the replay found is what showed it. It also counts a
+`cd` as pinning only when `|| exit` follows, because a bare one that fails leaves
+the block in the checkout. Twelve mutations across this section's tests and
+#162's, each confirmed landed, were each caught.
+
+### An environment variable is not an input (#162)
+
+Round thirty-four's finding, over the bar since 0.54.0. `actions.md` § Phase 4
+row 2 greps for a workflow **input** — a YAML key at line start, in workflow files
+only — and setup-uv v10.1.0's *"`no_proxy`/`NO_PROXY` now respected (previously
+ignored)"* names an environment variable, which a `run:` line exports, any file
+sets, and a runner or a repository setting can hold where no grep reaches. Row 2
+now asks which kind the note names. For a variable it greps the whole tree in any
+case, and its silence is `inert here` only beside Row 3's `runs-on:` showing every
+runner GitHub-hosted — otherwise `underivable`. The sentence reading every empty
+result as *inert here* now carves that row out. Tested by running both forms as
+written over a fixture that exports `NO_PROXY` in a `run:` block and sets
+`no_proxy` in a script: the input grep exits `1`, the variable grep finds both.
+
+### The corpus shrinks
+
+`SKILL.md` 125,573 → 124,416 bytes and the references 139,309 → 139,137, with a
+hook, three commands, two preambles and a table row added — paid for by moving
+history into this file, per the freeze rule, and the budget lowered to match.
+The anchoring, single-dash and CRLF history of the shape scan is 0.47.0's and
+0.48.0's; #139 is 0.48.0's too, #137 0.47.0's, `MD090` 0.50.0's, and the
+two-workflow fixture 0.43.0's, #136 and the CodeQL finding on `project_urls`
+their own entries', and `actions/checkout` v6.0.2's edit date 0.44.0's. What no
+entry held yet, verbatim:
+
+> *(SKILL.md § Phase 2)* **`git ls-files` says "none" only with `--error-unmatch`.**
+> Without it a miss exits `0` printing nothing, so *there are `.rs` files* and
+> *there are none* reach the reader identically — the second line above shipped
+> that way from 0.36.0, and round twenty-five caught it by noticing the output was
+> empty at exit `0` (#141). With the flag a miss prints `error: pathspec '*.rs'
+> did not match any file(s) known to git` and exits `1`: that line **is** the real
+> zero, not a failure to report. Measured on git 2.55.0, where both forms exit
+> `128` outside a repository. Give it one pathspec per line — with two, a miss on
+> either exits `1` while the other still prints its files, and the count then
+> belongs to neither.
+
+> *(SKILL.md § Phase 2)* Round twenty-six ran both and asked for this sentence.
+> … Both commands come from a run that improvised them unaided, because the phase
+> said "grep this repo's config" and no config line could answer — the two in the
+> first block above, that is; the narrowings came later, from the rounds that had
+> to improvise them in turn.
+
+> *(uv-lock.md § Phase 4)* Round twenty-one of the replay gate re-ran every tool by
+> hand to get this, because the output was captured and never shown. … Round
+> twenty-one wrote this loop by hand, correctly, and without the gate, because
+> nothing supplied one. … Three replays of #437 re-derived this design, one of
+> them wrongly (#137); it is written here so the next one reads it instead.
+
+> *(actions.md § Phase 4)* `setup-node` and `upload-artifact` carry the same
+> pattern at a lower rate, and `rvben/rumdl` backfilled a whole `### Fixed` section
+> into a shipped tag's notes ten days after cutting it. … A replay reached for it
+> while improvising a `uv.toml` check — because this table named a thing to look
+> for and no way to look — and caught itself one command later. Nothing in the
+> procedure would have.
+
+### What the replay gate showed
+
+Three replays from a scratch clone of `fpga-board-sim`, through `claude -p
+--plugin-dir` on this branch with a denylist over every mutating `gh` and `git`
+command, and two probes of the hook before them. **The first replay found a
+defect in this version's own fix, which is folded in above.**
+
+- **Probes.** The branch loaded with `--plugin-dir`, the skill never invoked:
+  one Bash call, **no record** — the installed 0.54.0's plugin-level hook did not
+  fire either, so `--plugin-dir` shadows it. The skill invoked, then one call:
+  a record at mode **`-rw-------`** holding that call.
+- **#438 under `--no-execute`, from a checkout planted with a setext heading and
+  a `.rs` file the PR's tree lacks** — $1.83, 18 turns, 0 denials. The scans ran
+  at `pr-438` as written. But the first form of this fix had moved `setext.py`
+  into `$SCRATCH/pr-<N>`, and under `--no-execute` that worktree does not exist,
+  so the run left the top-level row `underivable` — in exactly the mode meant for
+  untrusted PRs — and said so. Phase 0 already stated the rule it broke: *"every
+  other read here reaches the PR through `git show` at a ref."* Hence `--ref`.
+  The same run found #165.
+- **#438 again, on the corrected branch** — $1.70, 18 turns, 0 denials.
+  `setext.py --ref` printed *"0 setext underline(s) under a paragraph line, in 0
+  of 41 file(s) matching \*.md at 4f01a2c…"* while the checkout held 42, planted
+  file included; the type scan exited `1` past `planted.rs`. Eleven deviations,
+  all `correct`. The named runs were reported as needing execution, which is the
+  `underivable` the new `cd` lines say.
+- **#436, the setup-uv bump #162 came from** — $1.41, 18 turns, 0 denials. Row 2's
+  new form ran verbatim, `git grep -niw 'no_proxy' pr-436 --` at exit `1`, and was
+  read with Row 3's thirteen `runs-on:` lines: *"Every runner is GitHub-hosted and
+  the repo sets no NO_PROXY, so that change doesn't apply here."* Ten deviations:
+  seven `correct`, one of the run's own that it corrected, and two prose gaps —
+  #166, a runner label behind `${{ matrix.os }}` that Row 3 cannot read and that
+  this version made load-bearing, and #167.
+
+The record was mode `0600` in all three. Of the #438 audit's six rows, 10 and 12
+are this version's Phase 2 section; 3 and 37, below the bar, are #168 and #169;
+13 and 18 were declined — the fix's own text is read with the command one
+paragraph on, and a scan per rule is the growth the freeze exists to stop.
+
 ## [0.54.0] — 2026-09-21
 
 The last sprint of this kind, and it closes three **classes** rather than the
@@ -6492,7 +6689,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.54.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...HEAD
+[0.55.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.51.0...v0.52.0

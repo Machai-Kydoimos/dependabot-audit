@@ -12,7 +12,14 @@ above (#141).
 
 This reads it:
 
-    python3 setext.py [<pathspec> ...]      # default '*.md', tracked files
+    python3 setext.py [--ref <tree-ish>] [<pathspec> ...]   # default '*.md'
+
+With `--ref` it reads the blobs at that tree-ish — Phase 2 passes `pr-<N>` —
+and without it the tracked files of the directory it runs in. Phase 2 reaches
+the PR at a ref because the worktree exists only where Phase 4 or 5 will run:
+under `--no-execute` there is no `$SCRATCH/pr-<N>` to run in, and the checkout
+you are in is not the PR. A pathspec is a shell-style glob matched against the
+whole path, or a literal path or directory; git's pathspec magic is not read.
 
 It prints `path:line: <heading> / <underline>` for each underline that sits under
 a paragraph line, then one summary line, and exits the way `git grep` does:
@@ -45,6 +52,7 @@ Requires Python 3.11+. No network. Standard library only.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import subprocess
@@ -113,8 +121,61 @@ def headings(text: str) -> list[tuple[int, str, str]]:
     return found
 
 
-def main(argv: list[str]) -> int:
-    pathspecs = argv or ["*.md"]
+def _matches(path: str, pathspecs: list[str]) -> bool:
+    """A glob against the whole path, as git's default pathspec reads `*.md`, or
+    a literal path or directory prefix."""
+    for spec in pathspecs:
+        if any(c in spec for c in "*?["):
+            if fnmatch.fnmatchcase(path, spec):
+                return True
+        elif path == spec or path.startswith(spec.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def _at_ref(ref: str, pathspecs: list[str]) -> list[tuple[str, str]]:
+    """(path, text) for each blob at `ref` the pathspecs select."""
+    listed = subprocess.run(  # noqa: S603
+        ["git", "ls-tree", "-r", "-z", ref],  # noqa: S607
+        capture_output=True,
+        check=False,
+    )
+    if listed.returncode:
+        underivable(listed.stderr.decode("utf-8", "replace").strip() or f"git ls-tree {ref} failed")
+    blobs: list[tuple[str, str]] = []
+    for entry in listed.stdout.split(b"\0"):
+        meta, _, raw = entry.partition(b"\t")
+        fields = meta.split()
+        # A submodule is a `commit` entry, not a file in this tree.
+        if len(fields) == 3 and fields[1] == b"blob":
+            path = raw.decode("utf-8", "surrogateescape")
+            if _matches(path, pathspecs):
+                blobs.append((path, fields[2].decode("ascii")))
+    if not blobs:
+        return []
+    read = subprocess.run(
+        ["git", "cat-file", "--batch"],  # noqa: S607
+        input="".join(f"{oid}\n" for _, oid in blobs).encode("ascii"),
+        capture_output=True,
+        check=False,
+    )
+    if read.returncode:
+        underivable(read.stderr.decode("utf-8", "replace").strip() or "git cat-file failed")
+    out, pos, found = read.stdout, 0, []
+    for path, _oid in blobs:
+        end = out.find(b"\n", pos)
+        header = out[pos:end].split() if end >= 0 else []
+        if len(header) != 3 or header[1] != b"blob":
+            underivable(f"could not read {path} at {ref}")
+        start = end + 1
+        size = int(header[2])
+        found.append((path, out[start : start + size].decode("utf-8", "replace")))
+        pos = start + size + 1  # the object's trailing newline
+    return found
+
+
+def _in_worktree(pathspecs: list[str]) -> list[tuple[str, str]]:
+    """(path, text) for each tracked file the pathspecs select, read from disk."""
     listed = subprocess.run(  # noqa: S603
         ["git", "ls-files", "-z", "--", *pathspecs],  # noqa: S607
         capture_output=True,
@@ -122,22 +183,36 @@ def main(argv: list[str]) -> int:
     )
     if listed.returncode:
         underivable(listed.stderr.decode("utf-8", "replace").strip() or "git ls-files failed")
-    paths = [p for p in listed.stdout.decode("utf-8", "surrogateescape").split("\0") if p]
-    hits = files = 0
-    for path in paths:
+    found = []
+    for path in (p for p in listed.stdout.decode("utf-8", "surrogateescape").split("\0") if p):
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
-                text = handle.read()
+                found.append((path, handle.read()))
         except OSError as exc:
             underivable(f"could not read {path}: {exc.strerror}")
+    return found
+
+
+def main(argv: list[str]) -> int:
+    ref = None
+    if argv[:1] == ["--ref"]:
+        if len(argv) < 2:
+            underivable("--ref needs a tree-ish")
+        ref, argv = argv[1], argv[2:]
+    pathspecs = argv or ["*.md"]
+    files_read = _at_ref(ref, pathspecs) if ref else _in_worktree(pathspecs)
+    prefix = f"{ref}:" if ref else ""
+    hits = files = 0
+    for path, text in files_read:
         found = headings(text)
         for number, heading, underline in found:
-            print(f"{path}:{number}: {heading} / {underline}")
+            print(f"{prefix}{path}:{number}: {heading} / {underline}")
         hits += len(found)
         files += bool(found)
     print(
         f"{hits} setext underline(s) under a paragraph line, "
-        f"in {files} of {len(paths)} file(s) matching {' '.join(pathspecs)}"
+        f"in {files} of {len(files_read)} file(s) matching {' '.join(pathspecs)}"
+        + (f" at {ref}" if ref else "")
     )
     return 0 if hits else 1
 

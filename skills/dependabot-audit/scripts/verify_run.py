@@ -8,10 +8,19 @@ exists because the report asserts "I followed this procedure" by silence. On
 2026-09-19 a replay wrote "No improvisation" in its report while its own
 transcript showed a flag this procedure names as one not to add.
 
-The record comes from a `PreToolUse` hook (see `hooks/hooks.json`), which appends
-one JSON object per matched call to `${TMPDIR:-/tmp}/dbaudit-run-<session>.jsonl`.
-The hook writes there and never into the audited repository: this plugin is
-read-only by contract, and a log file is a write.
+The record comes from a `PreToolUse` hook declared in `SKILL.md`'s frontmatter,
+which appends one JSON object per matched call to
+`${TMPDIR:-/tmp}/dbaudit-run-<session>.jsonl`, owner-only. The hook writes there
+and never into the audited repository: this plugin is read-only by contract, and a
+log file is a write.
+
+**It is declared on the skill, not the plugin, and that is the scope.** Claude Code
+registers a skill's frontmatter hooks when the skill is invoked; a plugin's
+`hooks/hooks.json` runs in every session the plugin is enabled in. 0.49.0 used the
+second, so from 2026-09-20 until 0.55.0 every session of every user was recorded,
+at mode 0644 — of four records in `/tmp` on 2026-09-23, one was an audit. The cost
+of the narrower scope, measured on Claude Code 2.1.280: `--resume` starts a new
+process, and the hook is not registered again until the skill is invoked again.
 
 The record holds **Bash and Read calls** — that is the hook's matcher — so a
 deviation carried out through any other tool never reaches it. Measured on round
@@ -377,7 +386,8 @@ def main(argv: list[str]) -> int:
     if not log.exists():
         print(
             f"underivable: no record at {log}. The PreToolUse hook did not run, so what this audit "
-            "issued was never written down. This is not a clean result — do not read it as one.",
+            "issued was never written down — a session resumed before the audit's first call is "
+            "one way. This is not a clean result — do not read it as one.",
             file=sys.stderr,
         )
         return 128

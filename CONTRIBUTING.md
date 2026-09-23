@@ -409,8 +409,13 @@ after nine commits of growth.
   `CLAUDE_CODE_SESSION_ID`, which is the one variable visible both to the hook
   and to the audit's own Bash, so the two halves agree on the path without
   anything crossing Phase 0's handoff. They are written in two different files —
-  `hooks/hooks.json` and `scripts/verify_run.py` — and
+  `SKILL.md`'s frontmatter and `scripts/verify_run.py` — and
   `tests/test_verify_run.py` is what stops them drifting apart.
+- **A hook belongs on the skill, not the plugin.** A plugin's `hooks/hooks.json`
+  runs in every session the plugin is enabled in, audit or not; a hook in
+  `SKILL.md`'s frontmatter registers when the skill is invoked. 0.49.0 used the
+  first and recorded every session of every user, world-readable, until 0.55.0.
+  The layout test refuses a plugin-level hook for that reason.
 - **A `verify_run.py` rule is about the shape of a call, never about its
   answer.** A `PreToolUse` hook fires *before* the call runs, so the record holds
   what was issued and nothing it printed. Two 0.50.0 candidates were written

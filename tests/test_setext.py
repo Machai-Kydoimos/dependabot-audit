@@ -227,6 +227,53 @@ class TestTheExitCodesAreGitGreps(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("my docs/read me.md:2:", done.stdout)
 
+    def _commit_as(self, branch: str) -> None:
+        subprocess.run(
+            [
+                "git", "-C", str(self.repo),
+                "-c", "user.email=fixture@example.com", "-c", "user.name=fixture",
+                "-c", "commit.gpgsign=false",
+                "commit", "-qm", branch,
+            ],
+            capture_output=True,
+            check=True,
+        )  # fmt: skip
+        if self.git("branch", "--show-current").stdout.strip() != branch:
+            self.git("branch", "-f", branch)
+
+    def test_with_a_ref_it_reads_that_tree_and_not_the_checkout(self) -> None:
+        """Phase 2 reaches the PR at a ref, because the worktree exists only where
+        Phase 4 or 5 will run — so under `--no-execute` there is none to `cd`
+        into. Measured on the `fpga-board-sim` #438 replay (0.55.0's branch): a
+        block that moved into `$SCRATCH/pr-<N>` left this row `underivable`."""
+        self.write("README.md", "Title\n---\n")
+        self._commit_as("pr-7")
+        self.git("checkout", "-qb", "feature")
+        self.git("rm", "-q", "README.md")
+        self._commit_as("feature")
+        self.assertEqual(self.run_script().returncode, 1, "the checkout has no heading")
+        done = self.run_script("--ref", "pr-7")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("pr-7:README.md:2: Title / ---", done.stdout)
+        self.assertIn("in 1 of 1 file(s)", done.stdout)
+
+    def test_with_a_ref_a_pathspec_still_narrows(self) -> None:
+        self.write("notes.markdown", "Title\n---\n")
+        self.write("README.md", "Text.\n")
+        self._commit_as("pr-7")
+        self.assertEqual(self.run_script("--ref", "pr-7").returncode, 1)
+        done = self.run_script("--ref", "pr-7", "*.markdown")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("pr-7:notes.markdown:2:", done.stdout)
+
+    def test_a_ref_that_does_not_resolve_is_underivable(self) -> None:
+        """Not a zero: nothing was read."""
+        self.write("README.md", "Title\n---\n")
+        self._commit_as("pr-7")
+        done = self.run_script("--ref", "pr-8")
+        self.assertEqual(done.returncode, 128, done.stdout)
+        self.assertIn("error:", done.stderr)
+
     def test_bytes_that_are_not_utf8_do_not_stop_the_scan(self) -> None:
         (self.repo / "raw.md").write_bytes(b"Caf\xe9\n---\n")
         self.git("add", "--", "raw.md")
