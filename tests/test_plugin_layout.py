@@ -299,7 +299,9 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # deliberately, and say in the same commit what was bought with it.
     # v0.56.0, 2026-09-25 — `uv-lock.md` § Phase 3 moved into `pipaudit.py`, whose
     # docstring carries the measurements the section used to (6,769 -> 1,698 bytes).
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 124_416, "references": 134_096}
+    # Then raised by what Row 3's `runners.py` call and its exit meaning cost in
+    # `actions.md` (#166), out of the 5,041 the Phase 3 move took out.
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 124_416, "references": 134_341}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

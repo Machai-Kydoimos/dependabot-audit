@@ -157,6 +157,59 @@ advisory on a package the PR never touched. Removing `--no-emit-workspace` alone
 survives a live run, because `--no-emit-local` also omits workspace members on uv
 0.12.19. It stays, with a comment saying so.
 
+### Row 3 resolves the runner behind an expression, or says it cannot (#166)
+
+0.55.0 made Row 3 load-bearing: Row 2 reads an environment variable's silence as
+`inert here` only beside Row 3 showing every runner GitHub-hosted, because a
+runner or a repository setting can set a variable no grep of the tree reaches.
+Row 3 was `git grep -nE '^[[:space:]]*runs-on:'`, and on `fpga-board-sim` #436 it
+printed `ci.yml:96: runs-on: ${{ matrix.os }}` among 13 lines. The run resolved
+it by hand, correctly. Nothing said to, and a matrix carrying a self-hosted label
+behind that expression would have read as a row with nothing wrong in it — the
+false clean #162 closed, one row down.
+
+Measured before building anything: 132 workflow files in nine repositories, 564
+jobs. 297 have a literal label. 159 have a ternary on the repository's own
+identity (`${{ github.repository_owner == 'astral-sh' &&
+'github-ubuntu-24.04-x86_64-4' || 'ubuntu-latest' }}`). 27 read the job's matrix,
+3 read a reusable workflow's input, and 78 call a reusable workflow with no
+`runs-on:` at all. Reading an expression by eye is the ordinary case, not the
+exception.
+
+`scripts/runners.py --ref pr-<N> --repo "$OWNER/$NAME"` resolves every job's
+`runs-on:` to the set of labels it can take:
+
+- literals, lists, and `group:`/`labels:` mappings;
+- `matrix.<key>` and `matrix.<key>.<field>`, `include` entries too;
+- `github.repository` and `github.repository_owner`, from the handoff;
+- `==`, `!=`, `&&`, `||`, `!` and parentheses, with GitHub's semantics.
+
+Anything else is `underivable`: an input, a variable, a function, a matrix built
+by `fromJSON`, a runner group, or a reusable workflow in another repository. A
+label is GitHub-hosted only in the forms GitHub publishes. An organisation's
+`github-ubuntu-24.04-x86_64-4` may be GitHub's hardware, but the name is the
+organisation's, so it reads as *not a standard GitHub-hosted label*. Exit 0 is
+every job hosted, 1 names each that is not, and Row 2 waits on the 0.
+
+Over the corpus, fpga-board-sim's 13 jobs, rumdl's 55, pytest's 12 and mypy's 9
+resolve to hosted. astral-sh's larger runners and its Depot and Namespace boxes
+read as not hosted, and cli/cli's shared reusable workflows as underivable. The
+stdlib has no YAML parser, so the script carries one for the subset workflows use
+and refuses anchors, aliases, tags and merge keys rather than guessing. Checked
+against PyYAML on all 132 files: the `runs-on:`, `strategy:` and `uses:` of all
+564 jobs agree. The first run of that check found the parser unable to read
+cli/cli's generated `dependabot-triage.lock.yml`: an escaped `\"` inside a
+double-quoted `run:` closed the string early, so a later ` #` read as a comment.
+
+`tests/test_runners.py` holds 23 cases, including a trimmed #436 `ci.yml` as the
+known answer. Eleven mutations were run and each is caught. Two tests had to be
+strengthened first:
+
+- The escaped-quote case had an even number of escapes before its ` #`, so a
+  parser that toggles on every quote landed back inside the string anyway.
+- The checkout case changed only the working tree, which `git show :path` (the
+  index) never reads. It is now a checkout on a `main` that has moved on.
+
 ## [0.55.0] — 2026-09-23
 
 Three defects, and each is something looking somewhere other than where its
