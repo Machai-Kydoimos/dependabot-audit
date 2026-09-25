@@ -248,7 +248,7 @@ git -C "$SCRATCH/pr-<N>" ls-files '*.md' | wc -l     # or whatever class the fie
 # 2. WITHOUT it — the tool alone, at each rev's pinned version, over the files the
 #    new `types_or`/`types`/`files` now selects. This is the pair that separates
 #    *the tool changed* from *the wrapper's selection changed*, and nothing else does.
-cd "$SCRATCH/pr-<N>"
+cd "$SCRATCH/pr-<N>" || exit 2
 uvx <tool>@<old version> format --check $(git ls-files '*.md')
 uvx <tool>@<new version> format --check $(git ls-files '*.md')
 ```

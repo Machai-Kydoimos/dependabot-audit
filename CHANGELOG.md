@@ -81,6 +81,82 @@ mode, collapsing the tier into the tail, restoring the old cut sentence, admitti
 `ci` bumps, removing the marker, removing the Renovate crate shape, and widening
 the verbs to take `resolve`.
 
+### Phase 3's auditor runs on every path, over everything the PR pins (#165)
+
+`uv-lock.md` § Phase 3 ran `cd "$SCRATCH/pr-<N>"` and then `uv export`. That
+worktree exists only where Phase 4 or 5 will run, which rules out `--no-execute`,
+`$MAY_EXECUTE=no` (a `pull` tier, a non-bot author, a cross-repo head) and a fired
+Phase 1 gate: three of Phase 0's five no-worktree paths. With no `|| exit`, the
+block carried on in the user's checkout and exported **its** lockfile. Reproduced
+on `fpga-board-sim` #438 from a checkout at the base: the `cd` exits 1, the export
+exits 0 in the checkout with `ruff==0.16.7` where the PR proposes 0.16.8, and the
+check after it (`grep` for the names Phase 1 found) passes, because the names are
+the same at either version. The issue called the row clean in that case. It was
+not quite: the OSV half is `audit.py`'s batch over `pr-<N>:uv.lock` and would
+still flag a vulnerable version. What failed was the corroborating half, which
+silently audited the checkout while the row showed two sources agreeing.
+
+Measuring the fix found three more defects in the same command, on every path,
+on uv 0.12.19 and pip-audit 2.10.1:
+
+- **Extras were never exported.** `--all-groups` covers `[dependency-groups]`,
+  not `[project.optional-dependencies]`.
+- **One unhashable line made `pip-audit` refuse the whole file.** A workspace
+  member exports as `-e ./packages/x`, a path dependency as `./vendor/x`, a git
+  source as `x @ git+https://…`, and `--disable-pip` then stops at *"requirement
+  … does not contain a hash"* — at exit 1, which is also its status for
+  *vulnerabilities found*, with stdout empty. In any uv workspace, the auditor
+  half has never produced a result. The block's own hint, `--all-packages for a
+  workspace`, added `-e .` and made it worse.
+- **`pip-audit` evaluates markers against its own interpreter and drops what does
+  not match.** On #438, 4 of 38 exported pins never appeared in its answer, not
+  even as skipped: `colorama ; sys_platform == 'win32'` and three
+  `python_full_version < '3.11'` forks, one of them rpds-py's older release.
+  `uv-lock.md` said the audit sees that fork. The export did; the audit did not.
+
+`scripts/pipaudit.py` replaces the block. It reads `uv.lock` at `pr-<N>` and at
+the merge base, and derives the versions the PR introduces. It writes that
+lockfile and every regular-file `pyproject.toml` at the ref into `$SCRATCH` with
+`git cat-file`, which is all `uv export --frozen` reads: on #438 the result is
+byte-identical to the export from a full worktree. It exports with
+`--no-config --all-packages --no-emit-workspace --no-emit-local --all-groups
+--all-extras`, plus `--no-emit-package` for each git or URL source, and names
+everything it left out. It checks that every introduced version is in the export,
+by version, and strips markers into passes that hold each name once (two pins of
+one name in one file get *"duplicate requirements"*). It reads each pass's JSON
+rather than the exit status, and names any pin absent from every answer.
+Measured before relying on each piece:
+
+- `uv export --frozen` never builds. A member with dynamic metadata and a
+  tripwire backend was imported by `uv lock`, and not by the frozen export.
+- `--no-config` changes no export on five fixtures, and neutralises a
+  `required-version = ">=99"` that stops the plain export at exit 2.
+- `uvx` ignores a directory's `[tool.uv]` index settings (it fetched pip-audit
+  with an unreachable `index-url` in place), and runs from `$SCRATCH` anyway.
+
+No worktree means the row runs on every path Phase 3 does, and no file the PR
+ships is on disk to run. The section went from 6,769 bytes to 1,698. Its
+measurements live in the script's docstring and here.
+
+The class the issue named, a `cd` that can fail and carry on, is now keyed on the
+`cd` itself: every `cd "$SCRATCH/…"` must be followed by `|| exit`. That found the
+other three, in Phase 4 of `pre-commit.md` and Phase 5 of `uv-lock.md`, which fail
+open only on broken state. It also found a hole in 0.55.0's guard: `-C` and
+`--tree` pinned the rest of a block, so `git -C "$SCRATCH/pr-<N>" ls-files`
+excused a bare `cd` and two `$(git ls-files '*.md')` reads two lines below it.
+They now pin their own line.
+
+`tests/test_pipaudit.py` holds 22 cases and `integration/test_pipaudit_live.py`
+runs the real tools over a workspace with extras, a path dependency, a git source,
+a tripwire member and jinja2 moved into 2.11.3 (found, tagged as the PR's) and back
+out (clean). The script was written before its tests, so every behaviour was
+mutation-checked instead: sixteen mutations, each caught, two of them only after
+the test was strengthened. The stale-JSON case first used an empty answer, which a
+second check caught for the wrong reason. The fork-tagging case first put the
+advisory on a package the PR never touched. Removing `--no-emit-workspace` alone
+survives a live run, because `--no-emit-local` also omits workspace members on uv
+0.12.19. It stays, with a comment saying so.
+
 ## [0.55.0] — 2026-09-23
 
 Three defects, and each is something looking somewhere other than where its

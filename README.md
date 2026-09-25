@@ -102,7 +102,7 @@ queue actually contains — on this plugin's own test repo the bot PRs split
 
 | | |
 |---|---|
-| **Python — `uv.lock`** | `scripts/audit.py`, end-to-end and tested against it: artifact hashes, PEP 740 build provenance, the registry's true latest, and the OSV batch |
+| **Python — `uv.lock`** | `scripts/audit.py`, end-to-end and tested against it: artifact hashes, PEP 740 build provenance, the registry's true latest, and the OSV batch. `scripts/pipaudit.py` adds the ecosystem's own auditor over the PR's lockfile at its ref — every package, group, extra and fork, with no worktree and no PR code on disk |
 | **GitHub Actions** | no lockfile and no artifact hash, so Phase 1 becomes a pin question — is it a SHA or a movable tag, and which way has that tag moved. Every later phase has an actions method too: GHSA for advisories, scope analysis where a gate cannot be run, run history where nothing can be installed |
 | **`pre-commit`** | `scripts/precommit.py`. A `rev:` is a git ref on another repository, so it is a pin question again — and two more besides: what tool version that rev *installs*, which is declared in the hook repo's packaging and is not the tag, and whether the **hook's own definition** moved. The last is the one that pays |
 
