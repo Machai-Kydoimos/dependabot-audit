@@ -88,6 +88,9 @@ MADE_BY_WORKTREE = re.compile(
     # Flags may sit between `add` and the path (`--detach`, `-b <name>`).
     r"git worktree add\s+(?:-\S+\s+)*\"?(\$SCRATCH/[A-Za-z0-9_.<>-]+)"
 )
+# `discover.py --handoff FILE` writes the handoff itself, from the same read as the
+# report (#168). Named narrowly: a generic `--out` would count reads as writes.
+MADE_BY_FLAG = re.compile(r"--handoff\s+\"?(\$SCRATCH/[A-Za-z0-9_.<>-]+)")
 
 # The fetched branch. Not preceded by a word character or a slash, so
 # `$SCRATCH/pr-<N>` does not also read as a use of the ref.
@@ -421,7 +424,7 @@ class TestNoPhaseConsumesALaterPhase(SkillHarness):
         """The Phase 4 / Phase 5 worktree defect, and anything shaped like it."""
         made: dict[str, list[int]] = {}
         for number, code in sorted(self.shell.items()):
-            for pattern in (MADE_BY_REDIRECT, MADE_BY_WORKTREE):
+            for pattern in (MADE_BY_REDIRECT, MADE_BY_WORKTREE, MADE_BY_FLAG):
                 for path in pattern.findall(code):
                     made.setdefault(path, []).append(number)
         for path, phases_using in self._scan(SCRATCH_PATH).items():
@@ -2836,7 +2839,7 @@ class TestEveryConsumerReloadsTheHandoff(SkillHarness):
             # with $BASE_SHA empty exits **0** and serves 17,623 bytes from the
             # index — the user's working tree — which is the exact failure
             # Phase 0's "read every one of them at a ref" rule exists to prevent.
-            if "--shell >" in code:
+            if "--handoff" in code:
                 continue
             used = sorted(n for n in USED.findall(code) if n in names)
             if not used:

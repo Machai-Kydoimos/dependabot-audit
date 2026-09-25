@@ -11,6 +11,35 @@ patch.
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-09-25
+
+The five follow-ups 0.55.0's replay filed under the stopping rule (#165–#169), each
+measured before it was fixed, and fixed in a script wherever a script could decide
+it rather than in prose a run has to follow.
+
+### Phase 0 reads once, and a failed read says why (#168)
+
+Phase 0 ran `discover.py` twice — once for the report, once with `--shell` for the
+handoff — and nothing compared the two. On `fpga-board-sim` #438 they disagreed:
+the report printed `$BASE_SHA (underivable)` and `RESULT: NEEDS REVIEW` at exit 1,
+and the `--shell` run seconds later wrote a derived `BASE_SHA` at exit 0. The
+phases read only the handoff, so nothing downstream used the wrong value, but the
+report the audit quoted still asserted it. Nobody could say what had failed,
+because `_gh()` kept the exit code and stdout and dropped stderr.
+
+`discover.py --handoff FILE` prints the report and writes the handoff from one
+read, so the two cannot disagree, and Phase 0 makes half the API calls it did.
+The file is emptied before anything can fail, which is what the shell redirect it
+replaces did: a run that cannot finish leaves nothing to source, never the last
+run's values. A failed `gh` call keeps the first line of its stderr. An
+underivable `$BASE_SHA` carries it into the report's row, its finding and the
+handoff's comment — never into an assignment — and the report lists every failed
+call before its `RESULT` line.
+
+Four tests, each mutation-checked: computing the handoff from a second read (the
+old shape) fails two of them; dropping the truncation, dropping stderr, or
+dropping the reason from the handoff fails one each.
+
 ## [0.55.0] — 2026-09-23
 
 Three defects, and each is something looking somewhere other than where its
@@ -6689,7 +6718,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...HEAD
+[0.56.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.52.0...v0.53.0
