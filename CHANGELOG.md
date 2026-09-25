@@ -15,7 +15,9 @@ patch.
 
 The five follow-ups 0.55.0's replay filed under the stopping rule (#165–#169), each
 measured before it was fixed, and fixed in a script wherever a script could decide
-it rather than in prose a run has to follow.
+it rather than in prose a run has to follow. Two new scripts, `pipaudit.py` and
+`runners.py`, carry what the prose used to: `SKILL.md` goes from 124,416 bytes to
+124,389, and the references from 139,137 to 134,938.
 
 ### Phase 0 reads once, and a failed read says why (#168)
 
@@ -209,6 +211,31 @@ strengthened first:
   parser that toggles on every quote landed back inside the string anyway.
 - The checkout case changed only the working tree, which `git show :path` (the
   index) never reads. It is now a checkout on a `main` that has moved on.
+
+### The current pin is read in every workflow, by subpath (#167)
+
+`actions.md` § Phase 2 said to compare an old or merged actions PR against *"the
+repo's current pin"*, and gave no command. On #436 the run improvised `git show
+origin/main:.github/workflows/ci.yml | grep setup-uv@`, which reads one workflow
+and pipes away `git show`'s status. The issue proposed `git grep -n
+'<owner>/<action>@' "origin/$DEFAULT"`, and asked for a check against a repository
+with more than one workflow pinning the action.
+
+That check found the proposal wrong along a different axis. On cli/cli's `trunk`,
+`<owner>/<action>@` exits **1** for `github/codeql-action` and
+`github/gh-aw-actions`. Both are pinned by subpath (`…/init@`, `…/setup@`), in 4
+and 28 `uses:` lines, and that 1 reads as *not pinned*. `actions.md`'s own worked
+example, `github/gh-aw-actions/setup`, is one of them. `[/@]` finds them all.
+Anchoring on `uses:` drops two comments that name the action, and an optional `"`
+keeps the quoted `uses:` values the corpus carries (2 of 1,677). The same read shows
+what the comparison is for: cli/cli's four generated lock files pin
+`gh-aw-actions` at two different SHAs.
+
+The block lists `.github/workflows/` at `origin/$DEFAULT` first, as Phase 4's does,
+so *no match* is distinguishable from *no workflows*. The checkout guard now counts
+`origin/$DEFAULT` as a named tree. A test runs the line as written over a fixture
+with a subpath action in two workflows, a comment and a quoted `uses:`. The issue's
+`@` form fails it, and so do dropping the anchor and dropping the quote.
 
 ## [0.55.0] — 2026-09-23
 

@@ -276,7 +276,17 @@ as two commits *ahead* of the tag. The bot PR was closed and replaced by hand.
 
 Auditing an old or merged actions PR, compare against **the repo's current pin**
 as well as the PR's proposal: a mismatch may already have been fixed, and the
-workflow file on the default branch is what says so.
+workflow files on the default branch are what say so — every one of them, by
+subpath too, since `github/codeql-action/init@…` is how that action is pinned:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+git ls-tree --name-only "origin/$DEFAULT:.github/workflows/"; echo "list exit: $?"
+git grep -nE 'uses:[[:space:]]*"?<owner>/<action>[/@]' "origin/$DEFAULT" -- '.github/workflows/'
+```
 
 **CI cannot see any of this.** On the observed case every required check was
 green, because the workflow parses and the job runs whichever commit it is

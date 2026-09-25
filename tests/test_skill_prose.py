@@ -2692,6 +2692,72 @@ class TestPhase4ReadsTheActionsInterfaceNotOnlyItsNotes(SkillHarness):
         )
 
 
+class TestTheCurrentPinIsReadInEveryWorkflowBySubpath(SkillHarness):
+    """#167. `actions.md` § Phase 2 asked for *"the repo's current pin"* and
+    supplied no command, and the #436 run improvised `git show
+    origin/main:.github/workflows/ci.yml | grep setup-uv@` -- one workflow, with
+    `git show`'s status piped away.
+
+    The issue proposed `<owner>/<action>@`. Measured on cli/cli's `trunk` before
+    writing anything in: it exits 1 for `github/codeql-action` and
+    `github/gh-aw-actions`, which are pinned by subpath (`.../init@`,
+    `.../setup@`) in 4 and 28 `uses:` lines, and that 1 reads as *not pinned*.
+    `[/@]` finds them; anchoring on `uses:` drops two comments that mention the
+    action. So the line is run here as written, over a fixture with a subpath
+    action in two workflows, a comment naming it, and a quoted `uses:`.
+    """
+
+    def _phase2(self) -> str:
+        return dict(phases((PLUGIN / "references/actions.md").read_text(encoding="utf-8")))[2]
+
+    def test_the_default_branchs_pins_are_found_in_every_workflow_by_subpath(self):
+        lines = "\n".join(bash_blocks(self._phase2())).splitlines()
+        grep = next(
+            (ln for ln in lines if ln.startswith("git grep") and "<owner>/<action>" in ln), None
+        )
+        self.assertIsNotNone(grep, "Phase 2 asks for the current pin and supplies no command")
+        assert grep is not None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            flows = root / ".github/workflows"
+            flows.mkdir(parents=True)
+            (flows / "codeql.yml").write_text(
+                "jobs:\n  a:\n    steps:\n"
+                "      - uses: github/codeql-action/init@aaaa  # v3.29.0\n"
+                "      - uses: github/codeql-action/analyze@aaaa  # v3.29.0\n",
+                encoding="utf-8",
+            )
+            (flows / "scorecard.yml").write_text(
+                "jobs:\n  s:\n    permissions:\n"
+                "      security-events: write  # for github/codeql-action/upload-sarif\n"
+                '    steps:\n      - uses: "github/codeql-action/upload-sarif@bbbb"  # v3.28.0\n',
+                encoding="utf-8",
+            )
+            _commit_as_pr(root, 1)
+            _git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+            def run(line: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["bash", "-c", line.replace("<owner>/<action>", "github/codeql-action")],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env={**os.environ, "DEFAULT": "main"},
+                )
+
+            found = run(grep)
+            self.assertEqual(found.returncode, 0, found.stderr)
+            pins = found.stdout.splitlines()
+            self.assertEqual(len(pins), 3, "three `uses:` lines; the comment is not a pin")
+            self.assertTrue(any("scorecard.yml" in p and "bbbb" in p for p in pins))
+            # The control: the form the issue proposed finds none of them.
+            proposed = run(
+                "git grep -n '<owner>/<action>@' \"origin/$DEFAULT\" -- '.github/workflows/'"
+            )
+            self.assertEqual(proposed.returncode, 1, proposed.stdout)
+
+
 def _git(root: pathlib.Path, *args: str) -> None:
     """Commit-capable git in a fixture, whatever the user's own config signs with."""
     subprocess.run(
@@ -2764,7 +2830,9 @@ class TestNoBlockReadsTheCheckoutYouAreIn(SkillHarness):
         r"|\buv run --no-project --with\b"
     )
     # Names the tree it reads, so the directory it runs from does not matter.
-    TREE_NAMED = re.compile(r"pr-<N>|base-<N>|\$BASE_SHA")
+    # `origin/$DEFAULT` is a ref too: `actions.md` § Phase 2 reads the default
+    # branch's pins there (#167).
+    TREE_NAMED = re.compile(r"pr-<N>|base-<N>|\$BASE_SHA|origin/\$DEFAULT")
     # Moves into a tree the audit owns before it reads — and stops if it cannot.
     # A bare `cd` that fails leaves the block in the checkout, reading it anyway.
     # This pins the rest of the block, because a `cd` moves the shell.
