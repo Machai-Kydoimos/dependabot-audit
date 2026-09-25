@@ -40,6 +40,47 @@ Four tests, each mutation-checked: computing the handoff from a second read (the
 old shape) fails two of them; dropping the truncation, dropping stderr, or
 dropping the reason from the handoff fails one each.
 
+### A dependency bump reaches the changelog read, whatever it is labelled (#169)
+
+`changelog.py` ranks what the prose does not name and shows the top 40. It had
+three tiers — destructive wording, fix wording, everything else — and a bump sat
+in the third. Measured on ruff 0.16.7...0.16.8: 72 of 86 commits unreconciled; the
+screen showed the 7 fix-worded rows, then the first 33 of the 65 in tier 2 in API
+order, so `Update Rust crate bstr` and `uuid` fell among the 32 cut. The line under
+the cut said *"Ranked, so nothing marked was cut"* — true of its own marker, and
+read as true of everything.
+
+The issue called that below the bar, because the evidence file lists every row.
+In **conventional** mode it was not, and the issue had left that half unmeasured.
+`candidates()` dropped every type outside the fix types before reconciling, so a
+`chore(deps)` commit never reached the evidence file either. A live case: rumdl
+v0.2.75...v0.2.76 holds `chore(deps): refresh Rust dependencies`, which moved 28
+crates, among them rustls 0.23.38 → 0.23.45, the fix for **RUSTSEC-2026-0285**.
+The script's output (17 commits, 9 of fix type, 2 unreconciled) and its 6,449-byte
+evidence file never mentioned it, and neither did the release notes. The wheel's
+SBOM leaves rustls out, so no verdict moved; that was the dependency graph's luck,
+not something the audit checked.
+
+A dependency bump is now recognised by a `deps` scope or by the subject shapes bots
+and maintainers write, in both modes. In conventional mode it is a candidate under
+any type except one the project labelled as shipping nothing (`ci`, `docs`, `test`,
+`style` — rumdl's `ci(deps): move upd to v0.8.2` stays out). It ranks third, after
+destructive and fix-worded rows and before the tail, carries `<- dependency bump`,
+and its body goes to the evidence file where it has one, cut before a bot's own
+settings: the #438 replay found Renovate's schedule and rebase text had grown
+ruff's evidence file by 23%. Cut, the growth is 13%, and it is the bumps' own tables
+and notes. The cut line counts what
+it cut, by tier. Re-run on the same two ranges: ruff shows its seven bumps on
+screen and reports `Cut from this list: 32 other.`; rumdl lists the refresh,
+marked. ruff's `[ty] Resolve dependencies within …` and `[ty] Share strings in
+dependency metadata` name dependencies and bump none, and a test holds that the
+recogniser does not fire on them.
+
+Eight tests, and seven mutations each caught: dropping bumps from conventional
+mode, collapsing the tier into the tail, restoring the old cut sentence, admitting
+`ci` bumps, removing the marker, removing the Renovate crate shape, and widening
+the verbs to take `resolve`.
+
 ## [0.55.0] — 2026-09-23
 
 Three defects, and each is something looking somewhere other than where its

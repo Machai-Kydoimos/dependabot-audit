@@ -52,6 +52,7 @@ from changelog import (
     SHOWN,
     _gh,
     _gh_hard,
+    bump_body,
     candidates,
     cli,
     described,
@@ -59,6 +60,7 @@ from changelog import (
     gap,
     github_slug,
     headings,
+    is_dependency_bump,
     labelled,
     main,
     match_tag,
@@ -201,6 +203,34 @@ MYPY_30_31 = [
     "[mypyc] Fix `default_factory` for inherited dataclass (#21785)",
     "[mypyc] Fix crash on double yielding Iterators (#21826)",
     "Bump version to 2.3.1",
+]
+
+# --- recorded: rvben/rumdl v0.2.75...v0.2.76, the compare API's subjects -----
+#
+# Fetched 2026-09-25 (#169). `chore(deps): refresh Rust dependencies` moved 28
+# crates in Cargo.lock -- rustls 0.23.38 -> 0.23.45 among them, the fix for
+# RUSTSEC-2026-0285 -- and the release notes do not name it. The conventional
+# classifier read only fix types, so it never reached the output or the evidence
+# file either. The commit has no body.
+
+RUMDL_75_76 = [
+    "chore(deps): refresh Rust dependencies",
+    "docs: redirect legacy /docs/rules/<rule> URLs to rule pages",
+    "test(cli): show full command output when stdin exclude JSON fails to parse",
+    "fix(discovery): attribute empty runs to .markdownlintignore separately",
+    "fix(cli): name every ignore file --respect-gitignore controls",
+    "fix(lint-context): record only CommonMark headings as headings",
+    "chore: bump version to v0.2.76",
+    "feat(encoding): lint files with non-UTF8 chars",
+    "update rumdl schema",
+    "feat(MD094): report invalid UTF-8 instead of refusing the file",
+    "fix(MD092): follow the invocation's rule selection",
+    "fix(cli): report a skipped file where the run reports findings",
+    "fix(MD013): recognize mkdocstrings blocks whose identifier has no dot",
+    "fix(MD013): keep every block of consecutive mkdocstrings blocks out of reflow",
+    "fix(MD013): leave definition lists as written when reflowing",
+    "fix(MD094): report invalid UTF-8 under --only-code-block-tools",
+    "chore(changelog): list every change in the 0.2.76 section",
 ]
 
 MYPY_CHANGELOG = """\
@@ -1073,7 +1103,8 @@ class TestTheMarkerRanksAndTheCapCutsTheTail(ChangelogHarness):
     def test_destructive_outranks_fix_worded_outranks_the_rest(self):
         self.assertEqual(rank("fix(cli): stop rewriting Rust source"), 0)
         self.assertEqual(rank("[mypyc] Fix crash on double yielding"), 1)
-        self.assertEqual(rank("[ty] Add an opt-in unsound-return-statement lint"), 2)
+        self.assertEqual(rank("Update Rust crate bstr to v1.13.1 (#28628)"), 2)
+        self.assertEqual(rank("[ty] Add an opt-in unsound-return-statement lint"), 3)
 
     def test_nothing_marked_is_ever_cut(self):
         """A long unlabelled range with the marked row last in API order."""
@@ -1541,3 +1572,189 @@ class TestTheEvidenceOutlivesTheTerminal(ChangelogHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestADependencyBumpIsReadWhateverItsType(ChangelogHarness):
+    """#169: a crate compiled into a wheel is Phase 2's first scope row, and the
+    bump that moves it was invisible to this script in both modes.
+
+    Conventional mode read only fix types, so `chore(deps)` never became a
+    candidate -- not cut, absent, from the evidence file too. Unlabelled mode
+    listed it, in the tier the 40-row cut drops, and then said *"nothing marked
+    was cut"*: true of its own marker, and read as true of everything.
+    """
+
+    def rumdl_75_76(self) -> Repo:
+        return Repo(
+            "rvben/rumdl",
+            releases=[
+                (
+                    "v0.2.76",
+                    "\n### Fixed\n\n- **cli**: report a skipped file where the "
+                    "run reports findings\n",
+                ),
+                ("v0.2.75", ""),
+            ],
+            files={"Cargo.toml": ""},
+            commits=RUMDL_75_76,
+        )
+
+    @staticmethod
+    def wall(*tail: str) -> Repo:
+        rows = [f"Add feature number {n} (#{n})" for n in range(SHOWN + 20)]
+        return Repo(
+            "example/wall",
+            releases=[("v2.0.0", "### Added\n\n- nothing relevant\n"), ("v1.0.0", "")],
+            files={},
+            commits=[*rows, *tail],
+        )
+
+    def test_the_conventional_classifier_keeps_a_chore_deps_bump(self):
+        kept, mode, _ = candidates(RUMDL_75_76)
+        self.assertEqual(mode, "conventional")
+        self.assertIn("chore(deps): refresh Rust dependencies", kept)
+        # The control: the filter still filters. A docs commit is not a candidate.
+        self.assertNotIn("docs: redirect legacy /docs/rules/<rule> URLs to rule pages", kept)
+
+    def test_it_reaches_the_screen_and_the_evidence_file_marked(self):
+        status, out, evidence = self.run_main(
+            self.rumdl_75_76(), "--from", "0.2.75", "--to", "0.2.76"
+        )
+        self.assertEqual(status, 1)
+        shown = out.split("UNRECONCILED")[1]
+        row = next(ln for ln in shown.splitlines() if "refresh Rust dependencies" in ln)
+        self.assertIn("dependency bump", row)
+        self.assertIn("- chore(deps): refresh Rust dependencies", evidence)
+        flat = " ".join(out.split())
+        self.assertRegex(flat, r"classifier: conventional commits.*dependency bumps")
+
+    def test_a_bump_the_project_labelled_ci_stays_out(self):
+        """The label is the project's word that nothing ships from it. Measured on
+        rumdl v0.2.61...v0.2.62, where counting it would add a CI tool's bump to a
+        range whose five fix commits are the finding."""
+        kept, _, _ = candidates(RUMDL_61_62)
+        self.assertNotIn("ci(deps): move upd to v0.8.2 and align the last mise pin", kept)
+        self.assertTrue(
+            is_dependency_bump("ci(deps): move upd to v0.8.2 and align the last mise pin")
+        )
+
+    def test_the_bot_and_maintainer_shapes_are_recognised(self):
+        for subject in (
+            "Update Rust crate bstr to v1.13.1 (#28628)",
+            "Update dependency pyright to v1.1.413 (#28626)",
+            "build(deps): bump h2 from 0.4.15 to 0.4.16",
+            "Bump serde from 1.0.1 to 1.0.2",
+            "chore(deps): lock file maintenance",
+            "fix(deps): update h2 to 0.4.16",
+            "chore(deps): refresh Rust dependencies",
+            "Update Cargo.lock",
+        ):
+            self.assertTrue(is_dependency_bump(subject), subject)
+        # Measured on ruff 0.16.7...0.16.8: two [ty] rows name dependencies and
+        # bump none. A tier that fires on them ranks prose over the crate bumps.
+        for subject in (
+            "[ty] Resolve dependencies within correlated inference alternatives (#28252)",
+            "[ty] Share strings in dependency metadata (#28141)",
+            "docs: redirect legacy /docs/rules/<rule> URLs to rule pages",
+            "Add feature number 3 (#3)",
+        ):
+            self.assertFalse(is_dependency_bump(subject), subject)
+
+    def test_the_ruff_shape_puts_the_crate_bumps_on_screen(self):
+        """Sixty tail rows in API order before two crate bumps -- the #438 shape,
+        where `Update Rust crate bstr` and `uuid` fell among the 32 cut."""
+        repo = self.wall(
+            "Update Rust crate bstr to v1.13.1 (#28628)",
+            "Update Rust crate uuid to v1.24.1 (#28629)",
+        )
+        _, out, _ = self.run_main(repo, "--from", "1.0.0", "--to", "2.0.0")
+        shown = out.split("UNRECONCILED")[1].split("... and")[0]
+        self.assertIn("Update Rust crate bstr", shown)
+        self.assertIn("Update Rust crate uuid", shown)
+
+    def test_the_cut_line_counts_what_it_cut_by_tier(self):
+        rows = [f"Update Rust crate c{n} to v1.0.{n} (#{n})" for n in range(SHOWN + 5)]
+        repo = Repo(
+            "example/crates",
+            releases=[("v2.0.0", "### Added\n\n- nothing relevant\n"), ("v1.0.0", "")],
+            files={},
+            commits=[
+                *rows,
+                "Add feature one (#1)",
+                "Add feature two (#2)",
+                "Add feature three (#3)",
+            ],
+        )
+        _, out, _ = self.run_main(repo, "--from", "1.0.0", "--to", "2.0.0")
+        flat = " ".join(out.split())
+        self.assertNotIn("nothing marked was cut", flat)
+        self.assertIn("Cut from this list: 5 dependency bump(s), 3 other.", flat)
+
+    def test_nothing_is_said_about_a_cut_that_did_not_happen(self):
+        _, out, _ = self.run_main(self.rumdl_75_76(), "--from", "0.2.75", "--to", "0.2.76")
+        self.assertNotIn("Cut from this list", out)
+
+
+# Recorded from astral-sh/ruff 0.16.7...0.16.8, the squash commit for #28628 --
+# Renovate's whole PR description, as the compare API returns the message.
+RENOVATE_BSTR = """\
+Update Rust crate bstr to v1.13.1 (#28628)
+
+This PR contains the following updates:
+
+| Package | Type | Update | Change |
+|---|---|---|---|
+| [bstr](https://redirect.github.com/BurntSushi/bstr) |
+workspace.dependencies | patch | `1.13.0` → `1.13.1` |
+
+---
+
+### Release Notes
+
+<details>
+<summary>BurntSushi/bstr (bstr)</summary>
+
+###
+[`v1.13.1`](https://redirect.github.com/BurntSushi/bstr/compare/1.13.0...1.13.1)
+
+</details>
+
+---
+
+### Configuration
+
+📅 **Schedule**: (UTC)
+
+- Branch creation
+  - "before 4am on Wednesday"
+
+♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the
+rebase/retry checkbox.
+
+---
+
+This PR was generated by [Mend Renovate](https://mend.io/renovate/).
+"""
+
+
+class TestABumpsBodyIsItsEvidenceNotItsBoilerplate(unittest.TestCase):
+    """The #438 replay under 0.56.0's branch: the ruff evidence file grew 23%
+    (16.2 KB to 19.9 KB) on two bump bodies, and the run had already called it
+    too large to read whole. Half of each body is Renovate's schedule and rebase
+    settings, which say nothing about what moved."""
+
+    def test_what_moved_and_its_notes_stay(self):
+        body = bump_body(RENOVATE_BSTR)
+        self.assertIn("`1.13.0` → `1.13.1`", body)
+        self.assertIn("### Release Notes", body)
+
+    def test_the_bots_settings_go(self):
+        body = bump_body(RENOVATE_BSTR)
+        self.assertNotIn("Configuration", body)
+        self.assertNotIn("Mend Renovate", body)
+        self.assertNotIn("Rebasing", body)
+
+    def test_a_long_body_is_capped_and_says_so(self):
+        body = bump_body("Update everything\n\n" + "\n".join(f"- crate {n}" for n in range(200)))
+        self.assertLessEqual(len(body.splitlines()), 41)
+        self.assertRegex(body, r"\[\.\.\. \d+ more line\(s\) in the commit\]")

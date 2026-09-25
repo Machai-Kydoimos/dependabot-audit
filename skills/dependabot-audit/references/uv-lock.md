@@ -194,8 +194,8 @@ looked for — the range is fetched either way, because gating the *call* on tha
 judgement asks the auditor to be right about write mode before it has the
 evidence.
 
-**Read the exit code; do not chain on it.** `0` the prose names every fix in the
-range, `1` it does not and the unreconciled commits are listed, `2` could not
+**Read the exit code; do not chain on it.** `0` the prose names every fix and
+bump, `1` it does not and the unreconciled commits are listed, `2` could not
 run. `1` is a finding, so `&&` swallows exactly the case the call is for. Use
 `--repo-slug owner/repo` instead of `--package` where the project is not on PyPI
 or its metadata carries no GitHub link.
