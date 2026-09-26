@@ -48,6 +48,16 @@ never guessed at. Checked against PyYAML on the same 132 files: the `runs-on:`,
 unreadable -- cli/cli's generated `dependabot-triage.lock.yml`, whose `\\"` escapes
 inside a double-quoted `run:` made a later ` #` look like a comment.
 
+Until 0.57.0 a scalar had to start on its key's line and, if quoted, end there,
+so 9 of psf/black's 13 workflows were unreadable -- `if:` with its expression on
+the lines below -- and so were `action.yml` files in setup-uv and
+download-artifact (#175). Those lines are folded as YAML folds them now, and
+the check was rerun on 337 files, 304 workflows from 22 repositories plus 33
+`action.yml` files, against PyYAML's `BaseLoader`: every document agrees, except
+block scalars, which this keeps raw. Refused on purpose where PyYAML reads on: a
+quoted scalar whose next line sits at its key's own indent, which reads as the
+next key.
+
 Exit status: 0 = every job's runner resolved, and to a GitHub-hosted label.
 1 = at least one job's runner is not a standard GitHub-hosted label, or could not
 be resolved from the tree -- the output names which, and why. 2 = could not run.
@@ -128,6 +138,14 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
 
 
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "0": "\0", "a": "\a", "b": "\b", "e": "\x1b"}
+
+
+def _unescape(text: str) -> str:
+    """A double-quoted scalar's escapes; one this does not name stands for itself."""
+    return re.sub(r"\\(.)", lambda m: _ESCAPES.get(m.group(1), m.group(1)), text, flags=re.DOTALL)
+
+
 def _scalar(text: str) -> Any:
     text = text.strip()
     if not text:
@@ -137,7 +155,7 @@ def _scalar(text: str) -> Any:
     if text[0] == '"':
         if not text.endswith('"') or len(text) < 2:
             raise Unreadable(f"unterminated string: {text[:40]}")
-        return re.sub(r"\\(.)", r"\1", text[1:-1])
+        return _unescape(text[1:-1])
     if text[0] == "'":
         if not text.endswith("'") or len(text) < 2:
             raise Unreadable(f"unterminated string: {text[:40]}")
@@ -299,6 +317,23 @@ def _block(lines: _Lines, i: int, indent: int) -> tuple[Any, int]:
     return _mapping(lines, i, indent)
 
 
+def _node(lines: _Lines, i: int, parent: int) -> tuple[Any, int]:
+    """A value that starts on a line of its own, below a key or a dash at `parent`.
+
+    A collection, or a scalar: `if:` with its expression on the next line, or a
+    `description:` whose quoted text does. Both are ordinary YAML, and reading
+    every such line as a mapping entry made 9 of psf/black's 13 workflows
+    unreadable (#175).
+    """
+    column = _indent(lines.clean[i])
+    text = lines.clean[i][column:]
+    if text == "-" or text.startswith("- "):
+        return _block(lines, i, column)
+    if _split_key(text) and not text.startswith(("[", "{")):
+        return _block(lines, i, column)
+    return _value(lines, i, text, parent)
+
+
 def _sequence(lines: _Lines, i: int, indent: int) -> tuple[list[Any], int]:
     items: list[Any] = []
     while True:
@@ -313,7 +348,7 @@ def _sequence(lines: _Lines, i: int, indent: int) -> tuple[list[Any], int]:
         if not rest:
             nxt = lines.next_content(i + 1)
             if nxt < len(lines.clean) and _indent(lines.clean[nxt]) > indent:
-                value, i = _block(lines, nxt, _indent(lines.clean[nxt]))
+                value, i = _node(lines, nxt, indent)
             else:
                 value, i = None, i + 1
         elif _split_key(rest) and not rest.startswith(("[", "{")):
@@ -351,7 +386,7 @@ def _mapping(lines: _Lines, i: int, indent: int) -> tuple[dict[str, Any], int]:
                     and re.match(r"-(?: |$)", lines.clean[nxt][indent:])
                 )
             ):
-                value, i = _block(lines, nxt, _indent(lines.clean[nxt]))
+                value, i = _node(lines, nxt, indent)
             else:
                 value, i = None, i + 1
         mapping[key] = value
@@ -376,18 +411,95 @@ def _value(lines: _Lines, i: int, rest: str, indent: int) -> tuple[Any, int]:
             text += " " + lines.clean[j].strip()
             j += 1
         return _flow(text), j
-    # A plain scalar may continue on deeper lines that are not entries of their own.
+    if rest[:1] in "'\"":
+        return _quoted(lines, i, len(lines.clean[i]) - len(rest), indent)
+    # A plain scalar may continue on deeper lines, folded as YAML folds them: a line
+    # break reads as a space, and each blank line between two as a newline.
     j = i + 1
-    parts = [rest]
+    folded = rest
     while True:
         nxt = lines.next_content(j)
         if nxt >= len(lines.clean) or _indent(lines.clean[nxt]) <= indent:
             break
-        if rest[:1] in "'\"":
-            raise Unreadable(f"a quoted scalar continues past line {i + 1}")
-        parts.append(lines.clean[nxt].strip())
+        # A comment line ends a plain scalar, and a deeper line after it is not
+        # YAML. Stopping here leaves that line to fail the structure, not be read.
+        if any(lines.raw[k].strip() for k in range(j, nxt)):
+            break
+        blanks = nxt - j
+        folded += ("\n" * blanks or " ") + lines.clean[nxt].strip()
         j = nxt + 1
-    return _scalar(" ".join(parts)), j
+    return _scalar(folded), j
+
+
+def _quoted(lines: _Lines, i: int, column: int, indent: int) -> tuple[str, int]:
+    """A quoted scalar that opens at `column` on line `i`, however many lines it takes.
+
+    Read from the raw lines: inside the quotes a `#` is text, never a comment.
+    """
+    quote = lines.raw[i][column]
+    pieces: list[str] = []
+    j, start = i, column + 1
+    while True:
+        line = lines.raw[j]
+        if j > i and line.strip() and _indent(line) <= indent:
+            raise Unreadable(f"a quoted scalar opened on line {i + 1} never closes")
+        end = _closing(line, start, quote)
+        if end is not None:
+            pieces.append(line[start:end])
+            after = line[end + 1 :].strip()
+            if after and not after.startswith("#"):
+                raise Unreadable(f"text after a quoted scalar on line {j + 1}: {after[:40]}")
+            break
+        pieces.append(line[start:])
+        j, start = j + 1, 0
+        if j >= len(lines.raw):
+            raise Unreadable(f"a quoted scalar opened on line {i + 1} never closes")
+    text = _fold_lines(pieces, quote)
+    return (_unescape(text) if quote == '"' else text.replace("''", "'")), j + 1
+
+
+def _closing(line: str, start: int, quote: str) -> int | None:
+    """Where the quote closes on this line, or None when it runs on to the next."""
+    k = start
+    while k < len(line):
+        if quote == '"' and line[k] == "\\":
+            k += 2
+            continue
+        if line[k] == quote:
+            if quote == "'" and line[k + 1 : k + 2] == "'":
+                k += 2
+                continue
+            return k
+        k += 1
+    return None
+
+
+def _fold_lines(pieces: list[str], quote: str) -> str:
+    """A quoted scalar's lines joined as YAML joins them.
+
+    A line break is a space and each blank line a newline; the whitespace around a
+    break goes. In double quotes, a backslash at the end of a line escapes the
+    break, so the lines join with nothing between them.
+    """
+    if len(pieces) == 1:
+        return pieces[0]
+    out = pieces[0].rstrip(" \t")
+    n = 1
+    while n < len(pieces):
+        blanks = 0
+        while n < len(pieces) - 1 and not pieces[n].strip(" \t"):
+            blanks += 1
+            n += 1
+        text = pieces[n].lstrip(" \t")
+        if n < len(pieces) - 1:
+            text = text.rstrip(" \t")
+        trailing = len(out) - len(out.rstrip("\\"))
+        if quote == '"' and trailing % 2:
+            out = out[:-1] + "\n" * blanks + text
+        else:
+            out += ("\n" * blanks or " ") + text
+        n += 1
+    return out
 
 
 # --- GitHub's expression language, the part runners are written in ----------
@@ -518,7 +630,12 @@ def _matrix_values(matrix: Any, path: str) -> list[Any]:
         found += listed
     elif listed is not None:
         found.append(listed)
-    for entry in matrix.get("include") or []:
+    include = matrix.get("include") or []
+    if isinstance(include, str):
+        # psf/black's `include: ${{ fromJson(needs.configure.outputs.include) }}`,
+        # which a loop over its characters reported as a key missing from the matrix.
+        raise Underivable("`matrix.include` is built by an expression, not written in the file")
+    for entry in include:
         if isinstance(entry, dict) and head in entry:
             found.append(entry[head])
     values = []

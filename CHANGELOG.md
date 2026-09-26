@@ -11,6 +11,43 @@ patch.
 
 ## [Unreleased]
 
+## [0.57.0] — 2026-09-26
+
+### A value on the line after its key is read, not refused (#175)
+
+`runners.py`'s YAML reader took a scalar only on its key's line, and a quoted one
+only if it closed there. Both are ordinary YAML, and the reader refused them:
+9 of psf/black's 13 workflows were unreadable, because their `if:` expressions
+run onto the lines below. On black, Row 3 answered `NOT ALL HOSTED -- 0 job(s)
+on another runner, 9 unresolved, of 15`, so an environment variable's silence
+could never be `inert here` there. The same refusal hit `action.yml` in
+astral-sh/setup-uv, whose `description:` value sits on the next line, and in
+actions/download-artifact, whose description is quoted across three lines.
+Found while prototyping #172's trigger reader, which is built on this parser.
+
+A value that starts on a line of its own is now read as a collection when it is
+one, and as a scalar otherwise. Continued lines fold the way YAML folds them:
+a line break becomes a space, and each blank line a newline. Inside quotes the
+reader keeps a `#` as text, and in double quotes a trailing backslash joins two
+lines. Double-quoted escapes now decode, so `\n` is a newline rather than `n`.
+On black, 24 of 25 jobs now resolve. The 25th builds its matrix with
+`fromJson`, and it now says so: the old loop walked the expression's characters
+and reported `matrix.os` missing from the matrix.
+
+The check against PyYAML's `BaseLoader` was rerun on whole documents: 304
+workflows from 22 repositories, plus 33 `action.yml` files. Before the fix,
+319 agreed and 18 were unreadable, every one of them this failure. After it,
+all 337 agree, except block scalars, which stay raw by design. Three kinds of
+text that PyYAML refuses are still refused here: a comment inside a plain
+scalar, a quote that never closes, and text after the closing quote. One that
+PyYAML reads is refused on purpose: a quoted scalar whose next line sits at its
+key's own indent, which reads as the next key.
+
+Eight tests, and thirteen mutations each caught by the test aimed at it. The
+first run of that harness launched from the wrong directory, so the test module
+never imported, and it printed `CAUGHT` for all thirteen. It now names that
+failure as a harness error, not a catch.
+
 ## [0.56.0] — 2026-09-25
 
 The five follow-ups 0.55.0's replay filed under the stopping rule (#165–#169), each
@@ -6915,7 +6952,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.57.0...HEAD
+[0.57.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.53.0...v0.54.0

@@ -6,9 +6,10 @@ if every runner is GitHub-hosted, and until 0.56.0 Row 3 was a grep whose line f
 carries a self-hosted label behind the expression read, from the grep alone, as a
 row with nothing wrong in it -- the false clean #162 closed, one row down.
 
-The parser half was checked once against PyYAML on 132 real workflow files (564
-jobs, no disagreement on `runs-on:`, `strategy:` or `uses:`); the cases here pin
-the shapes that check and the corpus measurement turned up.
+The parser half was checked against PyYAML on 132 real workflow files (564 jobs, no
+disagreement on `runs-on:`, `strategy:` or `uses:`), and again for 0.57.0 on 337
+files, whole documents (#175); the cases here pin the shapes those checks and the
+corpus measurement turned up.
 
     python3 -m unittest discover -s tests -v
 """
@@ -168,6 +169,17 @@ jobs:
         self.assertEqual(verdict, "underivable")
         self.assertIn("matrix.os", detail)
 
+    def test_an_include_built_by_an_expression_says_so(self):
+        """psf/black's mypyc job. The loop walked the expression's characters and
+        reported `matrix.os` missing, which was underivable for the wrong reason."""
+        text = (
+            "jobs:\n  j:\n    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n"
+            "        include: ${{ fromJson(needs.configure.outputs.include) }}\n"
+        )
+        verdict, detail = state(text)
+        self.assertEqual(verdict, "underivable")
+        self.assertIn("`matrix.include` is built by an expression", detail)
+
 
 class TestTheRepositorysOwnIdentityIsKnown(unittest.TestCase):
     """159 of the corpus's jobs choose a runner by the repository they run in."""
@@ -257,6 +269,115 @@ class TestTheParserRefusesWhatItDoesNotRead(unittest.TestCase):
     def test_a_compact_sequence_at_the_keys_indent_is_read(self):
         text = "on:\n  push:\n    branches:\n    - main\njobs:\n  j:\n    runs-on: ubuntu-latest\n"
         self.assertEqual(state(text), ("hosted", "ubuntu-latest"))
+
+
+# Recorded from psf/black at 8d5a2d9, `.github/workflows/test.yml`, the `test` job
+# trimmed to what reaches its runner. Its `if:` runs over two more lines, and its
+# `python-version:` list starts on the line after the key. Until 0.57.0 the first
+# of those made the file unreadable, and 9 of black's 13 workflows with it (#175).
+BLACK_TEST = """\
+jobs:
+  test:
+    # We want to run on external PRs, but not on our own internal PRs as they'll be run
+    # by the push to the branch. Without this if check, checks are duplicated since
+    # internal PRs match both the push and pull_request events.
+    if:
+      github.event_name == 'push' || github.event.pull_request.head.repo.full_name !=
+      github.repository
+
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          ["3.10", "3.11", "3.12.10", "3.13", "3.14", "3.15", "pypy3.11-v7.3.22"]
+        os: [ubuntu-latest, macOS-latest, windows-latest, windows-11-arm]
+"""
+
+
+class TestAValueThatStartsOnTheNextLineIsRead(unittest.TestCase):
+    """#175. A scalar on the line after its key, or over several lines, is YAML.
+
+    Checked against PyYAML's `BaseLoader` on 304 workflow files from 22 repositories
+    and 33 `action.yml` files: every document agrees, block scalars aside, which
+    stay raw by design. The expected values below are PyYAML's on the same text.
+    """
+
+    def test_blacks_test_job_resolves(self):
+        found = job(BLACK_TEST, "test")
+        self.assertEqual(
+            found["if"],
+            "github.event_name == 'push' || "
+            "github.event.pull_request.head.repo.full_name != github.repository",
+        )
+        self.assertEqual(found["strategy"]["matrix"]["python-version"][0], "3.10")
+        self.assertEqual(
+            classify(found, "psf/black"),
+            ("hosted", "macOS-latest, ubuntu-latest, windows-11-arm, windows-latest"),
+        )
+
+    def test_a_quoted_value_on_the_next_line(self):
+        """astral-sh/setup-uv's `action.yml` opens this way, at every tag read."""
+        text = (
+            'name: "astral-sh/setup-uv"\ndescription:\n'
+            '  "Set up your GitHub Actions workflow with a specific version of uv."\n'
+            'author: "astral-sh"\n'
+        )
+        self.assertEqual(
+            load(text)["description"],
+            "Set up your GitHub Actions workflow with a specific version of uv.",
+        )
+
+    def test_a_quoted_value_over_several_lines(self):
+        """actions/download-artifact at 484a0b5: a single-quoted description over
+        three lines, and the `default:` after it that a script would compare."""
+        text = (
+            "inputs:\n"
+            "  merge-multiple:\n"
+            "    description: 'When multiple artifacts are matched, this changes the"
+            " behavior of the destination directories.\n"
+            "      If true, the downloaded artifacts will be in the same directory"
+            " specified by path.\n"
+            "      If false, the downloaded artifacts will be extracted into individual"
+            " named directories within the specified path.'\n"
+            "    required: false\n"
+            "    default: 'false'\n"
+        )
+        entry = load(text)["inputs"]["merge-multiple"]
+        self.assertEqual(entry["default"], "false")
+        self.assertIn("directories. If true, the downloaded", entry["description"])
+        self.assertTrue(entry["description"].endswith("within the specified path."))
+
+    def test_lines_fold_as_yaml_folds_them(self):
+        cases = {
+            "a:\n  one\n  two\n\n  three\n": "one two\nthree",
+            'a: "one \\\n    two"\n': "one two",
+            'a: "one\n\n  two"\n': "one\ntwo",
+            'a: "one\n  # not a comment"\n': "one # not a comment",
+            "a: 'it''s\n  here'\n": "it's here",
+            'a: "tab\\tnl\\n"\n': "tab\tnl\n",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(load(text)["a"], expected)
+
+    def test_a_dash_then_a_scalar_below_it(self):
+        self.assertEqual(
+            load("a:\n  -\n    one\n    two\n  - three\n"), {"a": ["one two", "three"]}
+        )
+
+    def test_what_is_not_yaml_stays_unreadable(self):
+        """PyYAML refuses the first three. It reads the fourth as `one b: x`, but
+        a line at the key's own indent reads as the next key, so that is refused
+        here rather than guessed at."""
+        for text in (
+            "a:\n  one\n  # note\n  two\nb: x\n",
+            'a: "one\nb: x\n',
+            'a: "one\n  two" tail\n',
+            'a: "one\nb: x"\n',
+        ):
+            with self.subTest(text=text), self.assertRaises(Unreadable):
+                load(text)
 
 
 class TestTheScriptAtARef(unittest.TestCase):
