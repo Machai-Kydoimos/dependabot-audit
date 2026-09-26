@@ -388,15 +388,15 @@ With the notes in hand, look for changes to a *default*, a *trigger*, an
 *input*, or a *runner requirement* — then find the line in this repo's workflows
 that decides whether it applies:
 
-| Change | What to grep for here |
+| Change | What answers it here |
 |---|---|
-| a trigger is newly restricted | `pull_request_target:`, `workflow_run:`, `release:` in this repo's workflows — **and `push:` carrying a `tags:` key**, because a tag push is not an event name. It is `push` with a `refs/tags/` ref, so the event-name grep cannot see it |
+| a trigger is newly restricted | `runners.py`'s trigger list: every workflow's events and filters. A tag push reads `push [every branch and tag]` or a `tags` filter; a merge queue, `merge_group`. An unreadable file's triggers are unknown, not none |
 | a default flips — of an input, or of an environment variable the action reads | an **input**: its name, and an explicit setting pins the old behaviour. An **environment variable**: its name across the whole tree, any case — a `run:` line or any file can set one, and so can a runner or a repo setting, where no grep reaches. So no hit is `inert here` only beside Row 3 — every job's `runs-on:`, resolved — exiting 0; otherwise `underivable` |
-| a minimum runner or Node version | `runners.py` — exit 0 is every job on a GitHub-hosted label; 1 names each that is not, or that the tree cannot resolve |
+| a minimum runner or Node version | `runners.py`, the same call — exit 0 is every job on a GitHub-hosted label; 1 names each that is not, or that the tree cannot resolve |
 | credential or token handling | `permissions:`, `persist-credentials`, and what later steps do with the token |
 
-Those are four reads, not four phrasings of one, and they run against the PR's
-own ref because that is the tree the bump lands in:
+Those are four questions, not four phrasings of one, and they run against the
+PR's own ref because that is the tree the bump lands in:
 
 ```bash
 # Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
@@ -407,17 +407,9 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 # distinguishable from "there are no workflows".
 git ls-tree --name-only "pr-<N>:.github/workflows/"; echo "list exit: $?"
 
-# Row 1, by event name.
-git grep -nE '^[[:space:]]*(pull_request_target|workflow_run|release):' pr-<N> -- '.github/workflows/'
-
-# Row 1 again — a SEPARATE grep, not a longer alternation. A tag push is `push`
-# carrying a `refs/tags/` ref, so the line above cannot see it at any width.
-# Captured, not piped: a pipeline reports the LAST stage's status, and here that
-# would turn a failed read into "no tag trigger". `1` is checked apart from `2`
-# because grep exits 1 for *found nothing*, which in this table is an answer.
-PUSH=$(git grep -nE -A2 '^[[:space:]]*push:' pr-<N> -- '.github/workflows/'); RC=$?
-[ "$RC" -le 1 ] || { echo "the push grep failed ($RC) — underivable, not inert" >&2; exit 2; }
-printf '%s\n' "$PUSH" | grep -E 'tags:'
+# Rows 1 and 3: every workflow's triggers, then every job's runner, a matrix or
+# a ternary on the repository resolved.
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/runners.py" --ref pr-<N> --repo "$OWNER/$NAME"
 
 # Row 2. A hit means this repo pins the old behaviour; no hit means it takes
 # whatever the new default is, which is when a flipped default is a finding.
@@ -427,9 +419,6 @@ git grep -nE '^[[:space:]]*<the input the notes named>:' pr-<N> -- '.github/work
 # answers nothing until Row 3 exits 0.
 git grep -niw '<the variable the notes named>' pr-<N> --
 
-# Row 3: every job's runner, a matrix or a ternary on the repository resolved.
-python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/runners.py" --ref pr-<N> --repo "$OWNER/$NAME"
-
 # Row 4.
 git grep -nE '^[[:space:]]*(permissions|persist-credentials):' pr-<N> -- '.github/workflows/'
 ```
@@ -437,8 +426,9 @@ git grep -nE '^[[:space:]]*(permissions|persist-credentials):' pr-<N> -- '.githu
 **Every grep there exits 1 on no match**, which is the answer this table returns
 most of the time — so do not chain them with `&&`, and read an empty result as
 *inert here* rather than as a read that failed — except Row 2's environment
-variable, whose silence waits on Row 3. Row 3's 1 is a finding: a runner that
-is not GitHub-hosted, or one the tree cannot resolve, each named.
+variable, whose silence waits on Row 3. `runners.py`'s status is Row 3's: 1 is
+a finding, a runner that is not GitHub-hosted or one the tree cannot resolve,
+each named. Row 1 is its list, read for the event the notes restrict.
 
 **When the question is whether a file exists at that ref, the command is
 `git cat-file -e` — and `git ls-tree <ref> -- <path>` is the one that looks
@@ -458,7 +448,7 @@ this phase working; reaching it by not looking is the failure. Observed:
 `actions/checkout@v7` blocks fork-PR checkout under `pull_request_target` and
 `workflow_run` — a security change shipped as a plain bullet with no heading and
 no ⚠️ — and it was genuinely inert on a repo that uses neither trigger. The report
-should say so and name the greps that settled it.
+should say so and name the reads that settled it.
 
 **Read the interface, not only the notes.** The notes are prose written by the
 releaser; `action.yml` is what the runner loads, it ships in the action's own

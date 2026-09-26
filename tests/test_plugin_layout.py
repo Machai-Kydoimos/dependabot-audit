@@ -303,7 +303,7 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # `actions.md` (#166), and by the current-pin command Phase 2 named and never
     # supplied (#167), out of the 5,041 the Phase 3 move took out. Both numbers are
     # the 0.56.0 corpus as measured: `SKILL.md` is 27 bytes lighter for #168.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 124_389, "references": 134_938}
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 124_389, "references": 134_310}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

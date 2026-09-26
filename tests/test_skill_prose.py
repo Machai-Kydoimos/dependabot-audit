@@ -2681,14 +2681,30 @@ class TestPhase4ReadsTheActionsInterfaceNotOnlyItsNotes(SkillHarness):
             "the blanket reading of an empty result has to carve this row out",
         )
 
-    def test_the_tag_push_shape_is_named_rather_than_the_event_list(self):
-        """`push:` + `tags:` — grepping the three event names cannot find it."""
+    def test_row_1_reads_every_trigger_not_a_list_of_names(self):
+        """#172. Row 1 was three event names and a `tags:` grep two lines deep:
+        `merge_group` was in neither, and 17 of 36 tag-push workflows across 22
+        repositories escaped the second -- a bare `push:` runs on every tag. The
+        row now points at `runners.py`'s trigger list, which names every event,
+        and the closed lists are gone from the block."""
+        row = next(
+            (
+                line
+                for line in self._phase4().splitlines()
+                if line.startswith("|") and "trigger is newly restricted" in line
+            ),
+            "",
+        )
+        self.assertIn("runners.py", row, "Row 1 is not answered by the trigger list")
         self.assertIn(
-            "tags:",
-            self._phase4(),
-            "the trigger row greps for event names, and tag push is not one: it is "
-            "`push` plus a refs/tags ref, so the three-name grep returns nothing and "
-            "reports inert on a repo that publishes tags",
+            "every branch and tag", row, "a bare push is a tag push, and the row must say so"
+        )
+        self.assertIn("merge_group", row)
+        blocks = "\n".join(bash_blocks(self._phase4()))
+        self.assertNotRegex(
+            blocks,
+            r"git grep[^\n]*pull_request_target\|workflow_run",
+            "a closed alternation of event names is back in Row 1's block",
         )
 
 
@@ -6313,9 +6329,11 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
         ),
         (
             4,
-            "the greps its own what-to-grep-for table names",
+            "the triggers its own table's first row asks about (#172)",
             "runs",
-            r"git grep[^\n]*pull_request_target",
+            # `runners.py`'s trigger list (0.57.0), which replaced an alternation of
+            # three event names and a `tags:` grep two lines deep.
+            r"def triggers\(document",
         ),
         (
             4,

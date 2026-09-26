@@ -31,7 +31,7 @@ sys.path.insert(
     0, str(pathlib.Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
 )
 
-from runners import Unreadable, classify, jobs, load, main
+from runners import Unreadable, classify, describe, jobs, load, main, triggers
 
 # Recorded from fpga-board-sim #436 at 629ed25, `.github/workflows/ci.yml`, trimmed
 # to two of its jobs: the literal one and the matrix one Row 3's grep printed as
@@ -380,6 +380,74 @@ class TestAValueThatStartsOnTheNextLineIsRead(unittest.TestCase):
                 load(text)
 
 
+# Recorded 2026-09-26: the `on:` of Homebrew/brew's `tests.yml` (ce46735), which
+# runs in a merge queue, and of pydantic/pydantic's `ci.yml` (bb6da4c), whose
+# `tags:` sits three lines below `push:`, past the old grep's two.
+BREW_ON = """\
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  merge_group:
+"""
+
+PYDANTIC_ON = """\
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - '**'
+  pull_request: {}
+"""
+
+
+def listed(text: str) -> str:
+    return ", ".join(describe(event, spec) for event, spec in triggers(load(text)).items())
+
+
+class TestRow1ListsEveryTrigger(unittest.TestCase):
+    """#172. Row 1 was an alternation of three event names and a `tags:` grep two
+    lines deep. The list cannot leave an event out, and says which refs a push takes."""
+
+    def test_a_merge_queue_is_listed(self):
+        self.assertEqual(
+            listed(BREW_ON),
+            "push [branches: main, master; no tag pushes], pull_request, merge_group",
+        )
+
+    def test_a_tag_filter_below_a_branch_list_is_found(self):
+        self.assertEqual(listed(PYDANTIC_ON), "push [branches: main; tags: **], pull_request")
+
+    def test_a_push_with_no_ref_filter_runs_on_every_tag(self):
+        """17 of the corpus's 36 tag-push workflows looked like this or like
+        pydantic's, and the old grep missed every one."""
+        for text in (
+            "on: push\n",
+            "on: [push, pull_request]\n",
+            "on:\n  push:\n    paths:\n      - src/**\n",
+        ):
+            with self.subTest(text=text):
+                self.assertIn("push [every branch and tag", listed(text))
+
+    def test_the_filters_are_shown_as_written(self):
+        text = (
+            "on:\n  release:\n    types: [published]\n"
+            "  workflow_run:\n    workflows: [CI]\n    types: [completed]\n"
+            "  push:\n    tags-ignore: ['**']\n  schedule:\n    - cron: '0 3 * * 1'\n"
+        )
+        self.assertEqual(
+            listed(text),
+            "release [types: published], workflow_run [types: completed; workflows: CI], "
+            "push [tags-ignore: **], schedule",
+        )
+
+    def test_no_on_key_starts_nothing(self):
+        self.assertEqual(triggers(load("jobs:\n  j:\n    runs-on: ubuntu-latest\n")), {})
+
+
 class TestTheScriptAtARef(unittest.TestCase):
     """End to end, against a throwaway repository: the files come from the ref."""
 
@@ -427,6 +495,36 @@ class TestTheScriptAtARef(unittest.TestCase):
         code, out, _ = self.run_main(where)
         self.assertEqual(code, 0, out)
         self.assertIn("RESULT: HOSTED -- every one of 2 job(s)", out)
+
+    def test_row_1_lists_every_workflows_triggers_and_indexes_them(self):
+        where = self.repo(
+            {
+                ".github/workflows/ci.yml": BREW_ON + FBS_CI,
+                ".github/workflows/docs.yml": "on: [push, pull_request]\n",
+            }
+        )
+        code, out, _ = self.run_main(where)
+        self.assertEqual(code, 0, out)
+        self.assertIn(
+            ".github/workflows/ci.yml: push [branches: main, master; no tag pushes], "
+            "pull_request, merge_group",
+            out,
+        )
+        self.assertIn(".github/workflows/docs.yml: push [every branch and tag], pull_request", out)
+        self.assertIn("events: merge_group (1), pull_request (2), push (2)", out)
+
+    def test_an_unreadable_file_has_unknown_triggers_not_none(self):
+        where = self.repo(
+            {
+                ".github/workflows/ci.yml": BREW_ON + FBS_CI,
+                ".github/workflows/x.yml": "on: &x push\njobs:\n  j:\n    runs-on: ubuntu-latest\n",
+            }
+        )
+        code, out, _ = self.run_main(where)
+        self.assertEqual(code, 1, out)
+        flat = " ".join(out.split())
+        self.assertIn("x.yml: unreadable here, so its triggers are unknown -- not none", flat)
+        self.assertIn("1 file(s) unreadable, so an event missing from this index", flat)
 
     def test_one_job_elsewhere_exits_1_and_says_what_it_costs(self):
         other = "jobs:\n  deploy:\n    runs-on: [self-hosted, prod]\n"

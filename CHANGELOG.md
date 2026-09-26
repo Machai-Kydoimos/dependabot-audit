@@ -13,6 +13,36 @@ patch.
 
 ## [0.57.0] — 2026-09-26
 
+### Row 1 lists every trigger instead of grepping for three (#172)
+
+`actions.md`'s Row 1 asks whether this repo uses a trigger the release restricts.
+It was two greps: an alternation of `pull_request_target`, `workflow_run` and
+`release`, and a `tags:` key within two lines of `push:`. On `fpga-board-sim`
+#436, setup-uv v10.2.0 stops saving its cache in merge queues, and a merge queue
+fires `merge_group`, which was in neither grep. The run answered it by hand.
+
+The issue proposed adding `merge_group` to the alternation. Measuring the second
+grep showed the closed list was the defect. A `push:` with no `branches:` or
+`tags:` runs on every tag push, and a `tags:` below a `branches:` list sits more
+than two lines down. Across 304 workflows from 22 repositories, 36 run on tag
+pushes. The grep missed 17 of them in six repositories: all 10 bare pushes, and
+7 that nest their tags, pydantic's `ci.yml` among them.
+
+`runners.py` already loads every workflow at `pr-<N>` for Row 3, so it now also
+prints each workflow's `on:`: every event, with the filters GitHub applies, and
+an index of events across files. A `push` always says which refs it runs on:
+`every branch and tag`, or branch filters marked `no tag pushes`, or the tag
+filters as written. An unreadable file's triggers are unknown, not none, and the
+index says an event missing from it may still start that file. Row 1 and Row 3
+are one call, the two greps are gone, and `actions.md` is 628 bytes shorter.
+
+Seven tests on recorded `on:` blocks from Homebrew/brew (a merge queue) and
+pydantic (tags three lines down). Nine mutations on the listing and three on the
+prose guards, each caught by the test aimed at it. The old prose guard only
+asserted that `tags:` appeared somewhere in Phase 4. After the rewrite a
+paragraph about #363 still satisfied it, so it was rewritten to read Row 1's own
+table row and block.
+
 ### A value on the line after its key is read, not refused (#175)
 
 `runners.py`'s YAML reader took a scalar only on its key's line, and a quoted one
