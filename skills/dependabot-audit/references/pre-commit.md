@@ -182,6 +182,18 @@ gh api graphql -f query='{securityVulnerabilities(first:20, ecosystem:PIP, packa
   --jq '.data.securityVulnerabilities.nodes[] | .advisory.ghsaId+"  "+.advisory.severity+"  "+.vulnerableVersionRange'
 ```
 
+The package can be a compiled wheel, like `ruff`, and then the crates inside it
+are a third source. `vendored.py` reads them, as uv-lock.md § Phase 3 describes:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/vendored.py" \
+  --package <pkg> --current <the version pinned now> --proposed <the version adopted>; echo "vendored exit: $?"
+```
+
 **Both were run while writing this, and the GHSA one was run against a control.**
 `ruff` returns zero from each, at 0.16.2, 0.16.5 and 0.16.6. A check that has only
 ever returned empty proves nothing about whether it discriminates, so the same

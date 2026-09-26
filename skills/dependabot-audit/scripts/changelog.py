@@ -1180,8 +1180,8 @@ def main() -> int:
         print(
             f"{len(bumps)} of them bump{'s' if len(bumps) == 1 else ''} a dependency. "
             "One compiled into the wheel can carry\n"
-            "a fix no Python-side scanner sees, and the notes need not name it: see\n"
-            "uv-lock.md § When the changelog entry names a dependency."
+            "a fix no Python-side scanner sees, and the notes need not name it:\n"
+            "vendored.py in Phase 3 reads whether a wheel ships it."
         )
         print()
     if destructive:

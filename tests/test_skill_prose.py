@@ -2527,6 +2527,33 @@ class TestPhase0PromisesOnlyWhatItProduces(SkillHarness):
             )
 
 
+class TestTheCratesAWheelShipsAreRead(SkillHarness):
+    """#171. A dependency bump inside a compiled wheel reached the changelog read in
+    0.56.0 and stopped there: the pointer to the SBOM method was not followed, and
+    ruff 0.16.9's salsa fix (RUSTSEC-2026-0308), which its notes never name, was
+    reported as *"nothing security-shaped"*. So the read runs in Phase 3's own block,
+    in both ecosystems that install a Python package, rather than behind a pointer.
+    """
+
+    def _phase3(self, reference: str) -> str:
+        return dict(phases((PLUGIN / "references" / reference).read_text(encoding="utf-8")))[3]
+
+    def test_the_lockfile_block_runs_it_beside_the_auditor(self):
+        blocks = "\n".join(bash_blocks(self._phase3("uv-lock.md")))
+        self.assertIn('vendored.py" \\\n  --ref "pr-<N>" --base "$BASE_SHA"', blocks)
+        self.assertIn('echo "pipaudit exit: $?"', blocks, "two commands, two statuses")
+
+    def test_the_hook_block_runs_it_for_the_package_the_hook_installs(self):
+        blocks = "\n".join(bash_blocks(self._phase3("pre-commit.md")))
+        self.assertIn("vendored.py", blocks)
+        self.assertIn("--package <pkg> --current", blocks)
+
+    def test_the_changelog_pointer_names_the_script(self):
+        """The soft pointer was the defect; the note now names the command."""
+        source = (PLUGIN / "scripts/changelog.py").read_text(encoding="utf-8")
+        self.assertIn("vendored.py in Phase 3 reads whether a wheel ships it", source)
+
+
 class TestPhase4ReadsTheActionsInterfaceNotOnlyItsNotes(SkillHarness):
     """The release notes understated the change, and the method had no second source.
 
@@ -6327,6 +6354,13 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
             "the action's source, where the notes and the interface disagree",
             "runs",
             r"application/vnd\.github\.raw",
+        ),
+        (
+            3,
+            "advisories on the crates a compiled wheel ships (#171)",
+            "runs",
+            # `vendored.py` (0.57.0) reads each wheel's PEP 770 SBOM member.
+            r"/sboms/",
         ),
         (
             4,

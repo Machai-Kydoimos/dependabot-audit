@@ -13,6 +13,65 @@ patch.
 
 ## [0.57.0] — 2026-09-26
 
+### What a compiled wheel ships is read in Phase 3, not behind a pointer (#171)
+
+0.56.0 made `changelog.py` surface a dependency bump the notes never named, and
+its note sent the reader to `uv-lock.md`'s SBOM method. On `fpga-board-sim` #438
+the reader stopped at the note. The issue called that below the bar, because both
+cases measured so far had turned out to be dev-only crates. Measured again for
+this version, it was not below the bar. ruff 0.16.9, released 2026-09-24, ships
+`salsa` 0.28.5, which fixes RUSTSEC-2026-0308 (GHSA-xc3w-55vh-cw3w), a
+use-after-free that OSV marks `unsound`. ruff 0.16.7 and 0.16.8 ship `salsa`
+0.28.2 in all 17 of their wheels. The advisory was published eight hours before
+the release, and the release notes name none of it. The #438 replay reported
+those notes as *"nothing security-shaped … nothing to hand-land"*: true of the
+notes, wrong about the release, and a currency conclusion rested on it.
+
+The issue's proposed fix was wrong in two places, and measuring found both.
+- It started from `Cargo.lock`, which records dev-dependencies. rumdl 0.2.76's
+  `rustls` fix is there, and no rumdl wheel ships `rustls`.
+- `uv-lock.md`'s reader took `wheels[0]` on the claim that *"the vendored set
+  is the same across platforms"*. rumdl 0.2.76's seven wheels list 214 to 219
+  components: `inotify` on Linux, `fsevent-sys` on macOS, `mimalloc` and
+  `windows-sys` on Windows.
+
+`scripts/vendored.py` reads the wheels, every one of them. It takes the PEP 770
+SBOM out of each wheel by HTTP range, without downloading the wheel: ruff 0.16.8's
+17 wheels are 175 MB, and their SBOMs read in 4 s. It leaves out components
+scoped `excluded`, which are build-time crates. It queries OSV by purl for every
+crate shipped at the current pin, the proposed one and the registry's latest, and
+places each advisory in one of these:
+- fixed by this PR;
+- fixed above it;
+- introduced by it;
+- standing;
+- `underivable`, where a release was not read in full.
+
+A wheel with no SBOM is `underivable`. So is a release: pydantic-core 2.41.5 has
+no SBOM in any of its 120 wheels. The script stops after three such wheels and
+says so, instead of reading them all. An `unmaintained` notice is listed, and on
+its own is not a finding.
+
+It runs in Phase 3's own block, beside `pipaudit.py`, for every package `uv.lock`
+moves. Pre-commit's Phase 3 runs it for the package the hook installs, and
+`changelog.py`'s note now names the script. The inline SBOM reader and its table
+are gone.
+
+Live, on #438's lockfile, both known answers come out right. ruff shows
+RUSTSEC-2026-0308 **fixed above this PR**, *"latest 0.16.9: not shipped, ships
+salsa 0.28.5"*, and RUSTSEC-2026-0204 in `crossbeam-epoch` as standing. rumdl is
+clean at every version read. In about 15 s.
+
+Building it found a defect of its own. pydantic-core 2.49.0 does carry SBOMs, and
+the first draft labelled its `lru` advisory `standing`, printing *"not shipped"*
+for 2.41.x. Those releases were never read, so the answer for them is unknown. A
+release not read in full now clears nothing, and the row says it is underivable
+at the proposed pin, and that the latest ships the crate.
+
+Eighteen tests, over real wheels built in memory and served by byte range, and
+three live ones. Fifteen mutations on the script and three on the prose guards,
+each caught by the test aimed at it.
+
 ### Phase 6 reads the runs that happened, not the triggers (#176)
 
 Phase 6's second question is whether the green came from a run that exercised
