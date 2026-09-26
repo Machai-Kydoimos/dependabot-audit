@@ -392,12 +392,11 @@ by the same route.
 
 **Whole file, not a filter on `run:`.** A `run: |` block puts its commands on
 following lines, and a `uses:` step is not a `run:` at all, so a line-anchored
-filter misses the two commonest shapes of the thing being looked for — the same
-reason Phase 6's install-step scan is deliberately loose. The cost is that a
-comment or formatting change also shows up, and reading three lines of diff is
-cheaper than a gate that never ran. Rounds twenty-nine and thirty-one each
-improvised a different form of this and each reported "no difference"; only one
-of them had asked a question that could have found one (#153).
+filter misses the two commonest shapes of the thing being looked for. The cost
+is that a comment or formatting change also shows up, and reading three lines of
+diff is cheaper than a gate that never ran. Rounds twenty-nine and thirty-one
+each improvised a different form of this and each reported "no difference"; only
+one of them had asked a question that could have found one (#153).
 
 If `git worktree add` refuses because the path already exists, a previous run
 left it there. **Prove it still points at this PR's head before reusing it** — a
@@ -1166,67 +1165,31 @@ exercised the change**. Those are two questions, and an actions bump routinely
 passes the first while failing the second. A third follows whenever something is
 red: whether the bump is why.
 
-**Check that the changed file is reachable from a pull request.** A workflow
-triggered only by `push: tags:` or `schedule:` never runs on a PR, so every check
-on it comes from *other* workflows and none of them execute the changed line:
+**Did it exercise the change? Read the runs, not the triggers.** A workflow
+filtered by `paths:` never runs on a lockfile bump, and 25 of 52 `pull_request`
+triggers across 12 repositories carry a filter like that (#176). A job can be green
+with the one step that matters `skipped` by its own `if:`. `exercised.py` reads
+the runs GitHub made on `$HEAD_SHA`. It then follows each changed file to the step
+that exercises it: `uv sync` or `uv run` for `uv.lock`, `pre-commit run` for the
+hook config, the bumped `uses:` for a workflow.
 
 ```bash
 # Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
-# `<workflow>` is Phase 0's derived list, narrowed to what this PR's diff
-# touched — the same derivation, the same token, one filter added. Captured,
-# because this prints nothing at exit 0 both when no workflow changed and when
-# it could not run, and for a lockfile bump the empty list is the NORMAL result.
-CHANGED=$(git diff --name-only "$BASE_SHA...pr-<N>" -- '.github/workflows/') \
-  || { echo "cannot diff $BASE_SHA...pr-<N> — underivable, not 'nothing changed'" >&2; exit 2; }
-printf 'workflows changed: %s\n' "${CHANGED:-<none — take the manifest question below>}"
-
-# The manifest case: which workflows install from the file this PR changed.
-# Deliberately loose. A `run: |` block puts the command on its own line, so
-# anchoring to the `run:` key would miss the commonest shape of the thing being
-# looked for; comment lines come back too and are read off rather than filtered.
-git grep -nE 'uv (sync|run|pip)|pre-commit|astral-sh/setup-uv' "pr-<N>" -- '.github/workflows/'
-echo "install-step scan exit: $?"
-
-# Then, for each name it gave, read its triggers. Captured, not piped:
-# `sed` succeeds on empty input, so a failed read prints nothing at exit 0 and
-# reads as "this workflow has no pull_request trigger" — the reassuring answer.
-TRIGGERS=$(git show "pr-<N>:<workflow>") \
-  || { echo "cannot read <workflow> at pr-<N>" >&2; exit 2; }
-printf '%s\n' "$TRIGGERS" | sed -n '/^on:/,/^[a-z]/p'
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/exercised.py" \
+  --owner "$OWNER" --name "$NAME" --number <N> --head-sha "$HEAD_SHA"; echo "exercised exit: $?"
 ```
 
-**Which workflows to feed that read depends on what the diff changed, and the
-two cases are opposite questions.** The trigger read above is the same command
-either way; the list it runs over is not:
-
-| The diff changed | The question | The list |
-|---|---|---|
-| a **workflow file** | does a `pull_request` trigger *the workflow that changed*? | `$CHANGED` |
-| a **dependency manifest** — `uv.lock`, `.pre-commit-config.yaml` | do the workflows a `pull_request` *does* trigger install from it? | what the install-step scan named |
-| **neither** | nothing is reachable by this route | — and then the green is unattributed |
-
-Row one's empty intersection is the finding: CI is green and green for reasons
-unrelated to this diff. Then fall back to Phase 5's run-history substitute.
-Observed: a PR changing only `release.yml`, which triggers on
-`push: tags: [<prefix>-*]`, carried three green checks — all of them from the
-repo's separate test workflow.
-
-**Row one's rule read onto row two manufactures that finding on every lockfile
-bump.** A `uv.lock` or `.pre-commit-config.yaml` bump touches no workflow file,
-so `$CHANGED` is empty and the intersection is empty with it — every time, by
-construction, for the bumps this plugin exists to audit. On `fpga-board-sim` #437
-every CI job runs `uv sync --group dev` and then the bumped tools, which is as
-reachable as a change gets, and the row-one reading would have called that green
-unrelated. Round twenty-seven met this, declined to write the false finding, and
-handed the gap back instead of acting on it (#144) — which is the recovery not to
-rely on twice.
-
-`git grep` exits `0` found, `1` a real zero and `128` could not run, as in
-Phase 2. A `1` here is the third row and says so; a `128` is `underivable` and
-is not a third row.
+Exit `0` means every changed file was exercised. Exit `1` names each changed file
+that was not: nothing ran it, its job or step was skipped, it is still running, or
+it could not be read. A workflow that did not run is listed with what starts it,
+which is where a path filter or a schedule shows. That `1` is the finding: CI is
+green for reasons unrelated to this diff, so fall back to Phase 5's run-history
+substitute. Observed: a PR changing only `release.yml`, which triggers on
+`push: tags: [<prefix>-*]`, carried three green checks, all from the repo's
+separate test workflow.
 
 **Run the script; it is this phase's three questions in one call.** Every query
 below used to be issued by hand, and three of the seven defects that have shipped
@@ -1397,8 +1360,8 @@ the whole name list at the comparison point for exactly this reason; read it
 rather than the one name you are chasing.
 
 **A red check on a workflow the diff never touched is a strong prior for
-pre-existing**, and Phase 6 already derives which workflows the diff touched for
-the PR-reachability check above. Share that input rather than deriving it twice.
+pre-existing**, and `exercised.py` above already lists which workflows the diff
+touched and which of them ran. Read it there rather than deriving it twice.
 
 Matching on name and conclusion establishes that the check was *already
 failing*, not that it is failing for the same reason. Where the distinction
@@ -1485,39 +1448,10 @@ commit; the third is about it covering fewer jobs than it looks like:
 - **A run is `success` when no job *failed*, which is not the same as every job
   having succeeded.** Only the latest run counts, a duplicate event can cancel an
   earlier one, and `cancelled` is not `failure` — but the gap that actually opens
-  is `skipped`, and the block below is what reads it.
+  is `skipped`, and `exercised.py` above is what reads it, job and step.
 - **A bot's own rebase does not re-trigger CI** — push-recursion suppression on
   the bot's token. So a green you are reading may belong to the commit before the
   rebase. Close and reopen under your own auth, or ask the bot to recreate.
-
-**Ask for the jobs; nothing above this point does.** A run's conclusion is an
-aggregate, and `skipped` does not spoil it:
-
-```bash
-# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
-. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
-
-gh api "repos/$OWNER/$NAME/actions/runs?head_sha=$HEAD_SHA&per_page=100" \
-  --jq '.workflow_runs[] | "\(.id)\t\(.conclusion)\t\(.name)"'
-
-# Then, for each id that came back:
-gh api "repos/$OWNER/$NAME/actions/runs/<run-id>/jobs?per_page=100" \
-  --jq '.jobs[] | "\(.conclusion)\t\(.name)"'
-```
-
-Measured 2026-09-16: **6 of 12** recent `success` runs on `cli/cli` and **7 of
-12** on `astral-sh/uv` contained at least one `skipped` job, while **no**
-`success` run among about a hundred scanned across four repositories carried a
-`failure` or a `cancelled` one. So `skipped` is the whole of the gap — and it is
-the half that reads as coverage. A required check can be green because the job
-that would have exercised the change was conditioned out of the run entirely.
-
-That is this phase's **second** question — *did it exercise the change* — asked
-one level below the trigger read at the top. The trigger grep settles whether a
-`pull_request` can start the workflow; only the job list settles whether the step
-inside it ran. A bump can pass both the rollup and the trigger check while every
-job that touches it was skipped.
 
 ## Phase 7 — Report
 

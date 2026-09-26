@@ -113,8 +113,13 @@ class TestEveryScriptRunsOnABareInterpreter(unittest.TestCase):
     """
 
     def test_no_script_imports_anything_outside_the_standard_library(self):
+        """A sibling script counts as present: `python3 "$SCRIPTS/x.py"` puts the
+        scripts directory first on `sys.path`, and the plugin ships them together.
+        `exercised.py` (0.57.0) reads workflows with `runners.py`'s parser rather
+        than a second copy of it."""
         scripts = sorted((ROOT / "skills/dependabot-audit/scripts").glob("*.py"))
         self.assertTrue(scripts, "no scripts found — has the directory moved?")
+        siblings = {script.stem for script in scripts}
         for script in scripts:
             for node in ast.walk(ast.parse(script.read_text(encoding="utf-8"))):
                 if isinstance(node, ast.Import):
@@ -127,7 +132,7 @@ class TestEveryScriptRunsOnABareInterpreter(unittest.TestCase):
                     root = module.split(".")[0]
                     self.assertIn(
                         root,
-                        sys.stdlib_module_names,
+                        sys.stdlib_module_names | siblings,
                         f"{script.name} imports {module!r}, which the audited "
                         f"repository's interpreter will not have",
                     )
@@ -303,7 +308,7 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # `actions.md` (#166), and by the current-pin command Phase 2 named and never
     # supplied (#167), out of the 5,041 the Phase 3 move took out. Both numbers are
     # the 0.56.0 corpus as measured: `SKILL.md` is 27 bytes lighter for #168.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 124_389, "references": 134_310}
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_607, "references": 134_310}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

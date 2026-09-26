@@ -83,7 +83,7 @@ the verdict, and the merge command **left un-run**.
 | 3 | Known vulnerabilities — what is already known to be wrong with this. OSV batch plus the ecosystem's own auditor for `uv.lock`; GHSA's `actions` ecosystem for a workflow bump |
 | 4 | Behavior change — does this change what runs here. For `uv.lock`, each gate run at the old and new versions **against the merge base**, comparing what they *do to the files*; measuring the PR's own tree reports nothing whenever the PR already contains the fixup, which is exactly when the change was real. For actions, which cannot be run locally, whether this repo's workflows are in the change's scope at all |
 | 5 | Independent reproduction — frozen install and the repo's own gates in an isolated worktree; for actions, where no local reproduction exists, the run history of the workflow the bump changed |
-| 6 | CI verification — `scripts/ci_state.py`: the rollup paged to exhaustion, which checks GitHub says are *required*, whether anything still blocks, and every red check labelled **attributable / pre-existing / underivable** against the commit the bot branched from. Plus, in prose because no script can answer it, whether the change is reachable from a pull request at all — which is a different question for a workflow bump (does a PR trigger the workflow that changed?) than for a lockfile bump (do the workflows a PR does trigger install from that manifest?), and reading the first onto the second calls the green unrelated on every dependency bump |
+| 6 | CI verification — `scripts/ci_state.py`: the rollup paged to exhaustion, which checks GitHub says are *required*, whether anything still blocks, and every red check labelled **attributable / pre-existing / underivable** against the commit the bot branched from. And `scripts/exercised.py`: whether the runs on the head commit exercised the change, read from the runs GitHub made rather than predicted from triggers — each changed file followed to the step that runs it (`uv sync` for a lockfile, the bumped `uses:` for a workflow), a skipped job or step counted as not run, and a workflow that did not run listed with what starts it |
 | 7 | Report — and the verdict *derived* from the evidence rather than judged: a table mapping findings to one of the three recommendations, a precedence for when phases disagree (they are meant to), and confidence as a function of what could not be derived. `scripts/verify_run.py` reads the record a `PreToolUse` hook on the skill keeps — every command and file read from the moment the audit starts, owner-only — so the deviation list is computed rather than recalled — the report used to assert *"I followed this procedure"* by silence, and twice that assertion was false. Also where the worktrees and branch get cleaned up, because it is the only phase every audit reaches |
 | 8 | Learning loop — hand back anything that could not have been derived |
 
@@ -178,11 +178,11 @@ before 0.10.0 a real `Cargo.lock` produced `unexpected AttributeError ... This i
 a bug`, and a real `poetry.lock` produced a confident *"either this lockfile did
 not change, or it is being compared against itself"*.
 
-`scripts/discover.py` (Phase 0) and `scripts/ci_state.py` (Phase 6) are
-ecosystem-independent for a different
+`scripts/discover.py` (Phase 0), `scripts/ci_state.py` and `scripts/exercised.py`
+(Phase 6) are ecosystem-independent for a different
 reason: the PR's own shape is not a property of the lockfile. Between them those two
 phases carried **five of the seven** defects that have shipped in the prose, and
-a hand-run query cannot be regression-tested. Both are read-only.
+a hand-run query cannot be regression-tested. All three are read-only.
 
 `scripts/gate_diff.py` (Phase 4) is the exception: it is
 **ecosystem-independent**, because it parses nothing. It runs a gate once per

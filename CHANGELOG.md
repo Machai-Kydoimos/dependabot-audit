@@ -13,6 +13,69 @@ patch.
 
 ## [0.57.0] — 2026-09-26
 
+### Phase 6 reads the runs that happened, not the triggers (#176)
+
+Phase 6's second question is whether the green came from a run that exercised
+the change. The procedure answered it by **prediction**: a loose grep for install
+steps, then `sed -n '/^on:/,/^[a-z]/p'` over each workflow the grep named, read
+for a `pull_request` trigger. Nothing in `SKILL.md` or the references mentioned
+`paths:` or `paths-ignore:`. Across the workflows of 12 repositories, 25 of 52
+`pull_request` triggers carry one, `fpga-board-sim`'s own `install-docs.yml`
+among them. A workflow filtered that way never runs on a PR that changes only
+`uv.lock`, but the trigger read said it would. The jobs came later and by hand.
+A job-level `if:` read that way was visible, but a step-level one was not: a job
+can finish `success` with its install step `skipped`, as fpga-board-sim's
+Windows job does with `Install GHDL`.
+
+`scripts/exercised.py` observes instead. It lists the runs GitHub made on
+`$HEAD_SHA`. It reads the workflow files at that commit through `runners.py`'s
+parser, in one GraphQL call. Then it follows each changed file to the step that
+exercises it:
+- `uv.lock` and `pyproject.toml`: a `uv sync` or `uv run`;
+- the hook config: a `pre-commit run` or `prek run`, or their action;
+- a workflow file: the `uses:` its patch bumps, or the step that sets a value
+  its patch changes. Renovate's `version: "0.12.18"` under ruff's setup-uv
+  steps bumps no action.
+
+It matches each step against the job's step list by the name GitHub shows: the
+step's own `name:`, or else `Run <uses>` or `Run <first line of run>`. A called
+workflow runs as `caller / callee` under its caller's path, including ruff's
+cargo-dist calls spelled `$/`. When two jobs fit one name equally, the script
+says so instead of guessing. A workflow that did not run is listed with what
+starts it. `pre-commit.ci`'s status counts for the hook config. Exit 0 means
+every changed file was exercised. Exit 1 names each that was not.
+
+Measured live before it went in, on seven merged PRs:
+- fpga-board-sim #438 and #436: exercised, by 30 jobs each.
+- cli/cli #14486: `codeql.yml` was exercised. Its group also bumped
+  `upload-sarif` in `govulncheck.yml`, which starts on `schedule` and
+  `workflow_dispatch` only, so nothing on the PR ran it.
+- ruff#28880: 4 of 11 workflow files exercised.
+- pytest #15027: exercised through `pre-commit.ci`.
+- pytest #15070 and ruff#28807: exercised.
+
+Phase 6's trigger read, its three-case table, the two paragraphs on reading it
+and the hand-run jobs block are gone. `SKILL.md` is 3,782 bytes shorter, and its
+budget drops to match.
+
+Twenty-four tests, plus two live ones against #438 and #14486. Twenty-two
+mutations: twenty on the script and two on the Phase 6 prose guards, each caught by
+the test aimed at it. Two more survived, and both marked dead code, since removed:
+- a comment filter the key pattern already enforced;
+- a `docker://` exclusion that was also wrong, since an image digest is a
+  matchable step.
+
+Writing the live test surfaced a defect of its own. A head SHA typed from memory
+had its tail wrong, and the script reported no runs and empty rows, which reads
+as "nothing ran". It now checks `--head-sha` against the PR's head, as
+`ci_state.py` does, and says when it is not.
+
+Two guards changed with the prose. The `--no-execute` guard fired on
+`exercised.py`'s rule labels, which name `uv sync` without running it, so each
+label and its match are now built from one list of verbs. The stdlib-only layout
+test now admits a sibling script, which `python3 "$SCRIPTS/x.py"` puts first on
+`sys.path`.
+
 ### Row 1 lists every trigger instead of grepping for three (#172)
 
 `actions.md`'s Row 1 asks whether this repo uses a trigger the release restricts.

@@ -6294,7 +6294,8 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
             6,
             "a `success` run only counts if its jobs actually ran",
             "runs",
-            r"actions/runs/<run-id>/jobs",
+            # `exercised.py` (0.57.0), which reads each run's jobs and their steps.
+            r"actions/runs/\{run_id\}/jobs",
         ),
         (
             3,
@@ -6918,44 +6919,43 @@ class TestTheGrepFormStillDiscriminates(SkillHarness):
 
 
 class TestPhase6AsksTheReachabilityQuestionThatFitsTheDiff(SkillHarness):
-    """#144, handed back by round twenty-seven and declined rather than acted on.
+    """#144, then #176. Whether CI exercised the change is a question about runs.
 
-    Phase 6 asked one question — *does a `pull_request` trigger the workflow the
-    diff touched?* — written for an actions bump. A `uv.lock` bump touches no
-    workflow, so that set is empty every time and the intersection with it is
-    too. Read literally, the phase manufactures *"CI is green for reasons
-    unrelated to this diff"* on every dependency bump this plugin exists for,
-    while on #437 every job runs `uv sync --group dev` and then the bumped tools.
+    Phase 6 first asked one question -- *does a `pull_request` trigger the workflow
+    the diff touched?* -- written for an actions bump, and a `uv.lock` bump touches
+    no workflow, so read literally it manufactured *"green for reasons unrelated"*
+    on every dependency bump (#144). The fix was a table of three cases and a
+    loose install-step grep, still a prediction from triggers, and it never read a
+    path filter: 25 of 52 `pull_request` triggers across 12 repositories carry one
+    (#176). From 0.57.0 `exercised.py` reads the runs on the head commit, and the
+    cases the table held are its unit tests (`tests/test_exercised.py`). What stays
+    here is that the phase runs it, and says what its answer means.
     """
 
-    def test_the_manifest_case_has_its_own_question(self) -> None:
-        flat = self.flat(6)
-        self.assertIn("dependency manifest", flat)
-        self.assertIn("install from it", flat)
-
-    def test_the_manifest_case_has_a_command(self) -> None:
-        """#127's class: the row that had no command is the row that got read
-        off the other row's rule."""
+    def test_the_phase_runs_the_script_on_the_head_commit(self) -> None:
         runs = self.reachable(6)
-        self.assertIn("install-step scan exit", runs)
-        self.assertIn(".github/workflows/", runs)
+        self.assertIn(
+            'exercised.py" \\\n  --owner "$OWNER" --name "$NAME" --number <N> --head-sha "$HEAD_SHA"',
+            runs,
+        )
+        self.assertRegex(runs, r"actions/runs\?head_sha=")
 
-    def test_the_empty_list_is_not_read_as_a_finding(self) -> None:
+    def test_each_kind_of_change_has_its_own_rule(self) -> None:
+        """#144: a lockfile is exercised by what installs it, a workflow by its step."""
         flat = self.flat(6)
-        self.assertIn("manufactures that finding on every lockfile bump", flat)
+        self.assertIn("for `uv.lock`", flat)
+        self.assertIn("the bumped `uses:` for a workflow", flat)
 
-    def test_the_changed_list_is_captured_not_read_off_an_exit_code(self) -> None:
-        """`git diff --name-only` exits 0 printing nothing both when no workflow
-        changed and when it could not run — the `exit 0 is not a zero` trap that
-        0.48.0 fixed in Phase 2's type scan (#141)."""
-        runs = self.reachable(6)
-        self.assertIn("CHANGED=$(git diff --name-only", runs)
-        self.assertIn("underivable, not 'nothing changed'", runs)
-
-    def test_all_three_cases_are_present(self) -> None:
+    def test_the_prediction_it_replaced_is_named(self) -> None:
         flat = self.flat(6)
-        for case in ("a **workflow file**", "a **dependency manifest**", "**neither**"):
-            self.assertIn(case.lower(), flat, f"Phase 6's reachability table is missing {case}")
+        self.assertIn("read the runs, not the triggers", flat)
+        self.assertIn("`paths:`", flat)
+        self.assertIn("`skipped` by its own `if:`", flat)
+
+    def test_its_one_is_the_finding_and_says_what_follows(self) -> None:
+        flat = self.flat(6)
+        self.assertIn("that `1` is the finding", flat)
+        self.assertIn("fall back to phase 5's run-history substitute", flat)
 
 
 class TestTheOneSidedGateFindingHasACommand(SkillHarness):
