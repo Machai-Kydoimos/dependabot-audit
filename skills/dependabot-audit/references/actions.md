@@ -276,7 +276,17 @@ as two commits *ahead* of the tag. The bot PR was closed and replaced by hand.
 
 Auditing an old or merged actions PR, compare against **the repo's current pin**
 as well as the PR's proposal: a mismatch may already have been fixed, and the
-workflow file on the default branch is what says so.
+workflow files on the default branch are what say so — every one of them, by
+subpath too, since `github/codeql-action/init@…` is how that action is pinned:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+git ls-tree --name-only "origin/$DEFAULT:.github/workflows/"; echo "list exit: $?"
+git grep -nE 'uses:[[:space:]]*"?<owner>/<action>[/@]' "origin/$DEFAULT" -- '.github/workflows/'
+```
 
 **CI cannot see any of this.** On the observed case every required check was
 green, because the workflow parses and the job runs whichever commit it is
@@ -381,11 +391,11 @@ that decides whether it applies:
 | Change | What to grep for here |
 |---|---|
 | a trigger is newly restricted | `pull_request_target:`, `workflow_run:`, `release:` in this repo's workflows — **and `push:` carrying a `tags:` key**, because a tag push is not an event name. It is `push` with a `refs/tags/` ref, so the event-name grep cannot see it |
-| a default flips — of an input, or of an environment variable the action reads | an **input**: its name, and an explicit setting pins the old behaviour. An **environment variable**: its name across the whole tree, any case — a `run:` line or any file can set one, and so can a runner or a repo setting, where no grep reaches. So no hit is `inert here` only beside Row 3's `runs-on:` showing every runner GitHub-hosted; otherwise `underivable` |
-| a minimum runner or Node version | `runs-on:` — GitHub-hosted is fine, a self-hosted label is not |
+| a default flips — of an input, or of an environment variable the action reads | an **input**: its name, and an explicit setting pins the old behaviour. An **environment variable**: its name across the whole tree, any case — a `run:` line or any file can set one, and so can a runner or a repo setting, where no grep reaches. So no hit is `inert here` only beside Row 3 — every job's `runs-on:`, resolved — exiting 0; otherwise `underivable` |
+| a minimum runner or Node version | `runners.py` — exit 0 is every job on a GitHub-hosted label; 1 names each that is not, or that the tree cannot resolve |
 | credential or token handling | `permissions:`, `persist-credentials`, and what later steps do with the token |
 
-Those are four greps, not four phrasings of one, and they run against the PR's
+Those are four reads, not four phrasings of one, and they run against the PR's
 own ref because that is the tree the bump lands in:
 
 ```bash
@@ -414,20 +424,21 @@ printf '%s\n' "$PUSH" | grep -E 'tags:'
 git grep -nE '^[[:space:]]*<the input the notes named>:' pr-<N> -- '.github/workflows/'
 
 # Row 2, for an environment variable: the whole tree, any case. Its silence
-# answers nothing until Row 3 shows every runner GitHub-hosted.
+# answers nothing until Row 3 exits 0.
 git grep -niw '<the variable the notes named>' pr-<N> --
 
-# Row 3.
-git grep -nE '^[[:space:]]*runs-on:' pr-<N> -- '.github/workflows/'
+# Row 3: every job's runner, a matrix or a ternary on the repository resolved.
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/runners.py" --ref pr-<N> --repo "$OWNER/$NAME"
 
 # Row 4.
 git grep -nE '^[[:space:]]*(permissions|persist-credentials):' pr-<N> -- '.github/workflows/'
 ```
 
-**Every one of them exits 1 on no match**, which is the answer this table returns
+**Every grep there exits 1 on no match**, which is the answer this table returns
 most of the time — so do not chain them with `&&`, and read an empty result as
 *inert here* rather than as a read that failed — except Row 2's environment
-variable, whose silence waits on Row 3.
+variable, whose silence waits on Row 3. Row 3's 1 is a finding: a runner that
+is not GitHub-hosted, or one the tree cannot resolve, each named.
 
 **When the question is whether a file exists at that ref, the command is
 `git cat-file -e` — and `git ls-tree <ref> -- <path>` is the one that looks

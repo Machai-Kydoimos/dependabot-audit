@@ -75,9 +75,11 @@ other two rungs produced -- as a substring after normalisation, or close enough
 by `difflib` that a reader would call it the same entry.
 
 **Which commits are reconciled depends on who did the labelling, and the output
-says which.** Where the project writes conventional commits, only fix types are
-read: a `docs:` commit absent from a changelog is correct behaviour, and rows
-nobody acts on are how a report stops being read. Where it does not, nothing is
+says which.** Where the project writes conventional commits, fix types are read,
+and so are dependency bumps of any type: a `docs:` commit absent from a changelog
+is correct behaviour, and rows nobody acts on are how a report stops being read,
+but `chore(deps): refresh Rust dependencies` is how rumdl v0.2.76 shipped the fix
+for RUSTSEC-2026-0285 in rustls, and its notes never named it (#169). Where it does not, nothing is
 filtered -- because a filter that keys on `fix(` reports **zero fixes** for a
 range full of them, which is this plugin's own failure class rebuilt inside the
 tool written to remove it. `python/mypy` v2.3.0...v2.3.1 is that case, and the
@@ -91,15 +93,16 @@ not comparable, so the threshold sits where the cheap mistake happens.
 The unlabelled mode is noisy at scale -- ruff 0.16.2...0.16.5 leaves 266 of 307
 unnamed, most of them `ty`, a second product under the same tags. That is
 answered by **ranking and a cap, never by filtering**: destructive shapes first,
-fix-worded next, the top `SHOWN` on the terminal and every one of them in the
-evidence file.
+fix-worded next, dependency bumps third, the top `SHOWN` on the terminal and every
+one of them in the evidence file -- and the cut line counts what it cut, by tier.
 
 Usage:
     changelog.py --scratch DIR --from VERSION --to VERSION \\
                  (--package NAME | --repo-slug OWNER/REPO) [--write-mode]
 
-Exit status: 0 = the prose names every fix in the range. 1 = it does not, and the
-unreconciled commits are listed (a Phase 2 finding, not a script failure).
+Exit status: 0 = the prose names every fix in the range, and every dependency bump.
+1 = it does not, and the unreconciled commits are listed (a Phase 2 finding, not a
+script failure).
 2 = could not run.
 Requires Python 3.11+. Network: `gh api`, and PyPI for `--package`.
 """
@@ -128,6 +131,13 @@ TIMEOUT = 60
 # how a report stops being read.
 FIX_TYPES = ("fix", "perf", "revert", "security", "sec")
 
+# Types that say, in the project's own labelling, that the commit ships nothing:
+# a `ci(deps)` bump moves a workflow's tool, not the wheel. A dependency bump is
+# a candidate under any *other* type, because `chore` and `build` are exactly the
+# labels a runtime crate bump arrives under (#169). Measured on rumdl
+# v0.2.61...v0.2.62: `ci(deps): move upd to v0.8.2 ...` is the case.
+UNSHIPPED_TYPES = ("ci", "docs", "test", "style")
+
 # SKILL.md Phase 2: *entries like "stop deleting..." or "no longer removes..."*.
 # Exactly those two shapes, and not the wider family of English negations.
 #
@@ -153,6 +163,39 @@ FIX_WORDED = re.compile(
     r"|data.loss|panic|deadlock|leak|overwrit(?:e|es|ing|ten))\b",
     re.IGNORECASE,
 )
+
+# Third tier, and in conventional mode a candidate whatever its type: a commit
+# that moves a dependency. A crate compiled into a wheel is Phase 2's first scope
+# row, and a bump is how its fix arrives -- `rumdl` v0.2.76 shipped the rustls fix
+# for RUSTSEC-2026-0285 as `chore(deps): refresh Rust dependencies`, named in no
+# notes. Two halves: a conventional scope that names dependencies, and the subject
+# shapes bots and maintainers write, whatever the label. Measured against ruff
+# 0.16.7...0.16.8, whose `[ty] Resolve dependencies within ...` and `[ty] Share
+# strings in dependency metadata` name dependencies and bump none: neither matches.
+DEPENDENCY_SCOPE = re.compile(
+    r"^(?:[a-z]+\((?:deps|deps-dev|dependencies|dependency)\)|deps(?:\([^)]*\))?)!?:",
+    re.IGNORECASE,
+)
+DEPENDENCY_BUMP = re.compile(
+    r"\b(?:update|bump|upgrade)\s+(?:rust\s+crates?|crates?|dependency|dependencies|deps)\b"
+    r"|\bbump\s+\S+\s+from\s+\S+\s+to\b"
+    r"|\bbump\s+the\s+[\w-]+\s+group\b"
+    r"|\block\s*file\s+maintenance\b"
+    r"|\b(?:refresh|update|upgrade|bump)\s+(?:[\w-]+\s+){0,3}(?:dependencies|deps|crates)\b"
+    r"|\b(?:update|refresh|bump)\s+(?:the\s+)?(?:cargo\.lock|lockfile|lock\s+file)\b"
+    r"|\bcargo\s+update\b",
+    re.IGNORECASE,
+)
+
+# A bump's body is kept to what it says about the bump. Renovate's squash commit
+# carries its whole PR description, and everything from its `### Configuration`
+# heading on is schedule, rebase and automerge settings: on the #438 replay, two
+# bodies grew ruff 0.16.7...0.16.8's evidence file by 23%, most of it that tail.
+BOT_SETTINGS = re.compile(r"^#{2,3} Configuration\b", re.MULTILINE)
+BUMP_BODY_LINES = 40
+
+# The ranking's tiers, named for the line that says what the cap cut.
+TIERS = ("destructive-shaped", "fix-worded", "dependency bump(s)", "other")
 
 # How many unreconciled rows reach the terminal. The rest go to the evidence
 # file. A wall of rows is the same failure as silence -- the reader's eye slides
@@ -785,8 +828,10 @@ def candidates(messages: list[str]) -> tuple[list[str], str, int]:
     different depending on who did the classifying, so a reader must not have to
     guess.
 
-    - `conventional`: the project labels its commits, so filter to `FIX_TYPES`.
-      A `docs:` commit absent from a changelog is correct behaviour.
+    - `conventional`: the project labels its commits, so filter to `FIX_TYPES`,
+      plus any commit that bumps a dependency, whatever its type -- the label on
+      a `chore(deps)` says nothing about the fix it may carry (#169). A `docs:`
+      commit absent from a changelog is correct behaviour.
     - `unlabelled`: it does not, so **nothing is filtered**. Every commit the
       prose fails to name is listed. That is noisier and it is the honest answer:
       the script cannot tell a fix from a refactor here, and saying so beats
@@ -800,7 +845,8 @@ def candidates(messages: list[str]) -> tuple[list[str], str, int]:
     fixes = []
     for subject in kept:
         parsed = described(subject)
-        if parsed and parsed[0] in FIX_TYPES:
+        kind = parsed[0] if parsed else ""
+        if kind in FIX_TYPES or (is_dependency_bump(subject) and kind not in UNSHIPPED_TYPES):
             fixes.append(subject)
     return fixes, "conventional", chores
 
@@ -835,16 +881,38 @@ def reconciled(description: str, prose_lines: list[str]) -> bool:
     return bool(best)
 
 
-def rank(subject: str) -> int:
-    """Sort key: destructive shape first, fix-worded next, everything else last.
+def bump_body(message: str) -> str:
+    """What a bump's message says about the bump: what moved, and its notes."""
+    text = message.strip()
+    settings = BOT_SETTINGS.search(text)
+    if settings:
+        text = text[: settings.start()].rstrip().removesuffix("---").rstrip()
+    lines = text.splitlines()
+    if len(lines) > BUMP_BODY_LINES:
+        rest = len(lines) - BUMP_BODY_LINES
+        lines = [*lines[:BUMP_BODY_LINES], f"[... {rest} more line(s) in the commit]"]
+    return "\n".join(lines)
 
-    So the cap below can only ever cut the tail. The two rows Phase 2 came for
-    sat at positions 8 and 13 of 266 in ruff 0.16.2...0.16.5, in the order the
-    API returned them.
+
+def is_dependency_bump(subject: str) -> bool:
+    """Does this subject move a dependency? A label or a shape says so."""
+    return bool(DEPENDENCY_SCOPE.search(subject) or DEPENDENCY_BUMP.search(subject))
+
+
+def rank(subject: str) -> int:
+    """Sort key: destructive shape, fix-worded, dependency bump, everything else.
+
+    So the cap below cuts the tail first. The two rows Phase 2 came for sat at
+    positions 8 and 13 of 266 in ruff 0.16.2...0.16.5, in the order the API
+    returned them; and in 0.16.7...0.16.8 `Update Rust crate bstr` and `uuid`
+    sat among the 32 rows cut, because a bump shared the tail with everything
+    else and the tail is in API order (#169).
     """
     if DESTRUCTIVE.search(subject):
         return 0
-    return 1 if FIX_WORDED.search(subject) else 2
+    if FIX_WORDED.search(subject):
+        return 1
+    return 2 if is_dependency_bump(subject) else 3
 
 
 def write_evidence(
@@ -876,8 +944,8 @@ def write_evidence(
     prose that does not match what landed.
 
     Only the marked rows, because these are the ones Phase 7 takes the verdict
-    from; a body for all 266 of ruff's would be the wall this file exists to
-    replace.
+    from, and the dependency bumps that carry a body; a body for all 266 of
+    ruff's would be the wall this file exists to replace.
     """
     out = scratch / f"changelog-{slug.replace('/', '-')}-{from_tag}-{to_tag}.md"
     header = [
@@ -896,6 +964,15 @@ def write_evidence(
             *(f"- {subject}" for subject in missing),
         ]
     marked = [s for s in missing if DESTRUCTIVE.search(s) and bodies.get(s, "").strip()]
+    # A bump's body is where a bot lists what moved, and a maintainer's refresh
+    # may name nothing -- so only where there is a body past the subject line.
+    bumps = [
+        s
+        for s in missing
+        if is_dependency_bump(s)
+        and not DESTRUCTIVE.search(s)
+        and len(bodies.get(s, "").strip().splitlines()) > 1
+    ]
     if marked:
         tail += [
             "",
@@ -906,6 +983,17 @@ def write_evidence(
         ]
         for subject in marked:
             tail += ["", f"### {subject}", "", "```", bodies[subject].strip(), "```"]
+    if bumps:
+        tail += [
+            "",
+            f"## dependency bumps -- full commit message ({len(bumps)})",
+            "",
+            "A dependency compiled into the wheel can carry a fix no Python-side",
+            "scanner sees. The body is where a bump lists what moved; a bot's own",
+            "settings are cut, and a long body is capped.",
+        ]
+        for subject in bumps:
+            tail += ["", f"### {subject}", "", "```", bump_body(bodies[subject]), "```"]
     out.write_text("\n".join(header + blocks + tail), encoding="utf-8")
     return out
 
@@ -1012,12 +1100,13 @@ def main() -> int:
     bodies: dict[str, str] = {}
     for message in messages:
         bodies.setdefault(subject_of(message), message)
-    what = "of fix type" if mode == "conventional" else "after release chores"
+    what = (
+        "of fix type or bumping a dependency" if mode == "conventional" else "after release chores"
+    )
     print(f"rung 3 -- commit range: {len(messages)} commit(s), {len(subjects)} {what}")
     if mode == "conventional":
-        print(
-            f"         classifier: conventional commits, so only {'/'.join(FIX_TYPES[:3])} are read"
-        )
+        print(f"         classifier: conventional commits, so {'/'.join(FIX_TYPES)} are read,")
+        print("         and dependency bumps of any type -- a chore(deps) can carry a crate's fix")
     else:
         print("         classifier: this project does not label its commits, so")
         print("         nothing is filtered -- every unnamed commit is listed below")
@@ -1034,7 +1123,15 @@ def main() -> int:
     print("Read it for `Security` sections -- no count here substitutes for that.")
     print()
 
-    noun = "fix commit(s)" if mode == "conventional" else "commit(s)"
+    noun = "commit(s)"
+    if mode == "conventional":
+        # "fix commit(s)" stays true of a `fix(deps)` bump; only a bump the
+        # project labelled something else changes what was counted.
+        noun = (
+            "fix or dependency-bump commit(s)"
+            if any((described(s) or ("",))[0] not in FIX_TYPES for s in subjects)
+            else "fix commit(s)"
+        )
     if not missing:
         print(
             f"RECONCILED: the prose names all {len(subjects)} {noun} in the range."
@@ -1048,13 +1145,20 @@ def main() -> int:
     print()
     destructive = [s for s in missing if DESTRUCTIVE.search(s)]
     for subject in missing[:SHOWN]:
-        mark = "   <- destructive-fix shape" if DESTRUCTIVE.search(subject) else ""
+        mark = ""
+        if DESTRUCTIVE.search(subject):
+            mark = "   <- destructive-fix shape"
+        elif is_dependency_bump(subject):
+            mark = "   <- dependency bump"
         print(f"  {subject}{mark}")
     if len(missing) > SHOWN:
-        print(
-            f"  ... and {len(missing) - SHOWN} more, all of them in the file above."
-            "\n  Ranked, so nothing marked was cut."
-        )
+        # Counted from the rows actually cut, so it is true of every tier -- the
+        # line this replaces said "nothing marked was cut", which was true of its
+        # own marker and read as true of everything (#169).
+        cut = [rank(s) for s in missing[SHOWN:]]
+        tiers = ", ".join(f"{cut.count(t)} {TIERS[t]}" for t in range(len(TIERS)) if t in cut)
+        print(f"  ... and {len(missing) - SHOWN} more, all of them in the file above.")
+        print(f"  Cut from this list: {tiers}.")
     print()
     if mode == "unlabelled" and len(missing) > SHOWN:
         # Gated on having actually elided rows, not on the ratio. Measured on
@@ -1069,6 +1173,15 @@ def main() -> int:
             "usual for a repository shipping more than one product under one tag.\n"
             "The ranked head above is the part to read first; this is not a claim\n"
             "that the project omitted that many fixes."
+        )
+        print()
+    bumps = [s for s in missing if is_dependency_bump(s)]
+    if bumps:
+        print(
+            f"{len(bumps)} of them bump{'s' if len(bumps) == 1 else ''} a dependency. "
+            "One compiled into the wheel can carry\n"
+            "a fix no Python-side scanner sees, and the notes need not name it: see\n"
+            "uv-lock.md § When the changelog entry names a dependency."
         )
         print()
     if destructive:

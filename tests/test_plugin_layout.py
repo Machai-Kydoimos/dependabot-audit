@@ -297,7 +297,13 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # commands and two preambles, and paid for them by moving version history into
     # the CHANGELOG. Lower these when prose comes out; raise one only
     # deliberately, and say in the same commit what was bought with it.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 124_416, "references": 139_137}
+    # v0.56.0, 2026-09-25 — `uv-lock.md` § Phase 3 moved into `pipaudit.py`, whose
+    # docstring carries the measurements the section used to (6,769 -> 1,698 bytes).
+    # Then raised by what Row 3's `runners.py` call and its exit meaning cost in
+    # `actions.md` (#166), and by the current-pin command Phase 2 named and never
+    # supplied (#167), out of the 5,041 the Phase 3 move took out. Both numbers are
+    # the 0.56.0 corpus as measured: `SKILL.md` is 27 bytes lighter for #168.
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 124_389, "references": 134_938}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

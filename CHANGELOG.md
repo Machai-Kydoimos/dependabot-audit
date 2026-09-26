@@ -11,6 +11,232 @@ patch.
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-09-25
+
+The five follow-ups 0.55.0's replay filed under the stopping rule (#165–#169), each
+measured before it was fixed, and fixed in a script wherever a script could decide
+it rather than in prose a run has to follow. Two new scripts, `pipaudit.py` and
+`runners.py`, carry what the prose used to: `SKILL.md` goes from 124,416 bytes to
+124,389, and the references from 139,137 to 134,938.
+
+### Phase 0 reads once, and a failed read says why (#168)
+
+Phase 0 ran `discover.py` twice — once for the report, once with `--shell` for the
+handoff — and nothing compared the two. On `fpga-board-sim` #438 they disagreed:
+the report printed `$BASE_SHA (underivable)` and `RESULT: NEEDS REVIEW` at exit 1,
+and the `--shell` run seconds later wrote a derived `BASE_SHA` at exit 0. The
+phases read only the handoff, so nothing downstream used the wrong value, but the
+report the audit quoted still asserted it. Nobody could say what had failed,
+because `_gh()` kept the exit code and stdout and dropped stderr.
+
+`discover.py --handoff FILE` prints the report and writes the handoff from one
+read, so the two cannot disagree, and Phase 0 makes half the API calls it did.
+The file is emptied before anything can fail, which is what the shell redirect it
+replaces did: a run that cannot finish leaves nothing to source, never the last
+run's values. A failed `gh` call keeps the first line of its stderr. An
+underivable `$BASE_SHA` carries it into the report's row, its finding and the
+handoff's comment — never into an assignment — and the report lists every failed
+call before its `RESULT` line.
+
+Four tests, each mutation-checked: computing the handoff from a second read (the
+old shape) fails two of them; dropping the truncation, dropping stderr, or
+dropping the reason from the handoff fails one each.
+
+### A dependency bump reaches the changelog read, whatever it is labelled (#169)
+
+`changelog.py` ranks what the prose does not name and shows the top 40. It had
+three tiers — destructive wording, fix wording, everything else — and a bump sat
+in the third. Measured on ruff 0.16.7...0.16.8: 72 of 86 commits unreconciled; the
+screen showed the 7 fix-worded rows, then the first 33 of the 65 in tier 2 in API
+order, so `Update Rust crate bstr` and `uuid` fell among the 32 cut. The line under
+the cut said *"Ranked, so nothing marked was cut"* — true of its own marker, and
+read as true of everything.
+
+The issue called that below the bar, because the evidence file lists every row.
+In **conventional** mode it was not, and the issue had left that half unmeasured.
+`candidates()` dropped every type outside the fix types before reconciling, so a
+`chore(deps)` commit never reached the evidence file either. A live case: rumdl
+v0.2.75...v0.2.76 holds `chore(deps): refresh Rust dependencies`, which moved 28
+crates, among them rustls 0.23.38 → 0.23.45, the fix for **RUSTSEC-2026-0285**.
+The script's output (17 commits, 9 of fix type, 2 unreconciled) and its 6,449-byte
+evidence file never mentioned it, and neither did the release notes. The wheel's
+SBOM leaves rustls out, so no verdict moved; that was the dependency graph's luck,
+not something the audit checked.
+
+A dependency bump is now recognised by a `deps` scope or by the subject shapes bots
+and maintainers write, in both modes. In conventional mode it is a candidate under
+any type except one the project labelled as shipping nothing (`ci`, `docs`, `test`,
+`style` — rumdl's `ci(deps): move upd to v0.8.2` stays out). It ranks third, after
+destructive and fix-worded rows and before the tail, carries `<- dependency bump`,
+and its body goes to the evidence file where it has one, cut before a bot's own
+settings: the #438 replay found Renovate's schedule and rebase text had grown
+ruff's evidence file by 23%. Cut, the growth is 13%, and it is the bumps' own tables
+and notes. The cut line counts what
+it cut, by tier. Re-run on the same two ranges: ruff shows its seven bumps on
+screen and reports `Cut from this list: 32 other.`; rumdl lists the refresh,
+marked. ruff's `[ty] Resolve dependencies within …` and `[ty] Share strings in
+dependency metadata` name dependencies and bump none, and a test holds that the
+recogniser does not fire on them.
+
+Eight tests, and seven mutations each caught: dropping bumps from conventional
+mode, collapsing the tier into the tail, restoring the old cut sentence, admitting
+`ci` bumps, removing the marker, removing the Renovate crate shape, and widening
+the verbs to take `resolve`.
+
+### Phase 3's auditor runs on every path, over everything the PR pins (#165)
+
+`uv-lock.md` § Phase 3 ran `cd "$SCRATCH/pr-<N>"` and then `uv export`. That
+worktree exists only where Phase 4 or 5 will run, which rules out `--no-execute`,
+`$MAY_EXECUTE=no` (a `pull` tier, a non-bot author, a cross-repo head) and a fired
+Phase 1 gate: three of Phase 0's five no-worktree paths. With no `|| exit`, the
+block carried on in the user's checkout and exported **its** lockfile. Reproduced
+on `fpga-board-sim` #438 from a checkout at the base: the `cd` exits 1, the export
+exits 0 in the checkout with `ruff==0.16.7` where the PR proposes 0.16.8, and the
+check after it (`grep` for the names Phase 1 found) passes, because the names are
+the same at either version. The issue called the row clean in that case. It was
+not quite: the OSV half is `audit.py`'s batch over `pr-<N>:uv.lock` and would
+still flag a vulnerable version. What failed was the corroborating half, which
+silently audited the checkout while the row showed two sources agreeing.
+
+Measuring the fix found three more defects in the same command, on every path,
+on uv 0.12.19 and pip-audit 2.10.1:
+
+- **Extras were never exported.** `--all-groups` covers `[dependency-groups]`,
+  not `[project.optional-dependencies]`.
+- **One unhashable line made `pip-audit` refuse the whole file.** A workspace
+  member exports as `-e ./packages/x`, a path dependency as `./vendor/x`, a git
+  source as `x @ git+https://…`, and `--disable-pip` then stops at *"requirement
+  … does not contain a hash"* — at exit 1, which is also its status for
+  *vulnerabilities found*, with stdout empty. In any uv workspace, the auditor
+  half has never produced a result. The block's own hint, `--all-packages for a
+  workspace`, added `-e .` and made it worse.
+- **`pip-audit` evaluates markers against its own interpreter and drops what does
+  not match.** On #438, 4 of 38 exported pins never appeared in its answer, not
+  even as skipped: `colorama ; sys_platform == 'win32'` and three
+  `python_full_version < '3.11'` forks, one of them rpds-py's older release.
+  `uv-lock.md` said the audit sees that fork. The export did; the audit did not.
+
+`scripts/pipaudit.py` replaces the block. It reads `uv.lock` at `pr-<N>` and at
+the merge base, and derives the versions the PR introduces. It writes that
+lockfile and every regular-file `pyproject.toml` at the ref into `$SCRATCH` with
+`git cat-file`, which is all `uv export --frozen` reads: on #438 the result is
+byte-identical to the export from a full worktree. It exports with
+`--no-config --all-packages --no-emit-workspace --no-emit-local --all-groups
+--all-extras`, plus `--no-emit-package` for each git or URL source, and names
+everything it left out. It checks that every introduced version is in the export,
+by version, and strips markers into passes that hold each name once (two pins of
+one name in one file get *"duplicate requirements"*). It reads each pass's JSON
+rather than the exit status, and names any pin absent from every answer.
+Measured before relying on each piece:
+
+- `uv export --frozen` never builds. A member with dynamic metadata and a
+  tripwire backend was imported by `uv lock`, and not by the frozen export.
+- `--no-config` changes no export on five fixtures, and neutralises a
+  `required-version = ">=99"` that stops the plain export at exit 2.
+- `uvx` ignores a directory's `[tool.uv]` index settings (it fetched pip-audit
+  with an unreachable `index-url` in place), and runs from `$SCRATCH` anyway.
+
+No worktree means the row runs on every path Phase 3 does, and no file the PR
+ships is on disk to run. The section went from 6,769 bytes to 1,698. Its
+measurements live in the script's docstring and here.
+
+The class the issue named, a `cd` that can fail and carry on, is now keyed on the
+`cd` itself: every `cd "$SCRATCH/…"` must be followed by `|| exit`. That found the
+other three, in Phase 4 of `pre-commit.md` and Phase 5 of `uv-lock.md`, which fail
+open only on broken state. It also found a hole in 0.55.0's guard: `-C` and
+`--tree` pinned the rest of a block, so `git -C "$SCRATCH/pr-<N>" ls-files`
+excused a bare `cd` and two `$(git ls-files '*.md')` reads two lines below it.
+They now pin their own line.
+
+`tests/test_pipaudit.py` holds 22 cases and `integration/test_pipaudit_live.py`
+runs the real tools over a workspace with extras, a path dependency, a git source,
+a tripwire member and jinja2 moved into 2.11.3 (found, tagged as the PR's) and back
+out (clean). The script was written before its tests, so every behaviour was
+mutation-checked instead: sixteen mutations, each caught, two of them only after
+the test was strengthened. The stale-JSON case first used an empty answer, which a
+second check caught for the wrong reason. The fork-tagging case first put the
+advisory on a package the PR never touched. Removing `--no-emit-workspace` alone
+survives a live run, because `--no-emit-local` also omits workspace members on uv
+0.12.19. It stays, with a comment saying so.
+
+### Row 3 resolves the runner behind an expression, or says it cannot (#166)
+
+0.55.0 made Row 3 load-bearing: Row 2 reads an environment variable's silence as
+`inert here` only beside Row 3 showing every runner GitHub-hosted, because a
+runner or a repository setting can set a variable no grep of the tree reaches.
+Row 3 was `git grep -nE '^[[:space:]]*runs-on:'`, and on `fpga-board-sim` #436 it
+printed `ci.yml:96: runs-on: ${{ matrix.os }}` among 13 lines. The run resolved
+it by hand, correctly. Nothing said to, and a matrix carrying a self-hosted label
+behind that expression would have read as a row with nothing wrong in it — the
+false clean #162 closed, one row down.
+
+Measured before building anything: 132 workflow files in nine repositories, 564
+jobs. 297 have a literal label. 159 have a ternary on the repository's own
+identity (`${{ github.repository_owner == 'astral-sh' &&
+'github-ubuntu-24.04-x86_64-4' || 'ubuntu-latest' }}`). 27 read the job's matrix,
+3 read a reusable workflow's input, and 78 call a reusable workflow with no
+`runs-on:` at all. Reading an expression by eye is the ordinary case, not the
+exception.
+
+`scripts/runners.py --ref pr-<N> --repo "$OWNER/$NAME"` resolves every job's
+`runs-on:` to the set of labels it can take:
+
+- literals, lists, and `group:`/`labels:` mappings;
+- `matrix.<key>` and `matrix.<key>.<field>`, `include` entries too;
+- `github.repository` and `github.repository_owner`, from the handoff;
+- `==`, `!=`, `&&`, `||`, `!` and parentheses, with GitHub's semantics.
+
+Anything else is `underivable`: an input, a variable, a function, a matrix built
+by `fromJSON`, a runner group, or a reusable workflow in another repository. A
+label is GitHub-hosted only in the forms GitHub publishes. An organisation's
+`github-ubuntu-24.04-x86_64-4` may be GitHub's hardware, but the name is the
+organisation's, so it reads as *not a standard GitHub-hosted label*. Exit 0 is
+every job hosted, 1 names each that is not, and Row 2 waits on the 0.
+
+Over the corpus, fpga-board-sim's 13 jobs, rumdl's 55, pytest's 12 and mypy's 9
+resolve to hosted. astral-sh's larger runners and its Depot and Namespace boxes
+read as not hosted, and cli/cli's shared reusable workflows as underivable. The
+stdlib has no YAML parser, so the script carries one for the subset workflows use
+and refuses anchors, aliases, tags and merge keys rather than guessing. Checked
+against PyYAML on all 132 files: the `runs-on:`, `strategy:` and `uses:` of all
+564 jobs agree. The first run of that check found the parser unable to read
+cli/cli's generated `dependabot-triage.lock.yml`: an escaped `\"` inside a
+double-quoted `run:` closed the string early, so a later ` #` read as a comment.
+
+`tests/test_runners.py` holds 23 cases, including a trimmed #436 `ci.yml` as the
+known answer. Eleven mutations were run and each is caught. Two tests had to be
+strengthened first:
+
+- The escaped-quote case had an even number of escapes before its ` #`, so a
+  parser that toggles on every quote landed back inside the string anyway.
+- The checkout case changed only the working tree, which `git show :path` (the
+  index) never reads. It is now a checkout on a `main` that has moved on.
+
+### The current pin is read in every workflow, by subpath (#167)
+
+`actions.md` § Phase 2 said to compare an old or merged actions PR against *"the
+repo's current pin"*, and gave no command. On #436 the run improvised `git show
+origin/main:.github/workflows/ci.yml | grep setup-uv@`, which reads one workflow
+and pipes away `git show`'s status. The issue proposed `git grep -n
+'<owner>/<action>@' "origin/$DEFAULT"`, and asked for a check against a repository
+with more than one workflow pinning the action.
+
+That check found the proposal wrong along a different axis. On cli/cli's `trunk`,
+`<owner>/<action>@` exits **1** for `github/codeql-action` and
+`github/gh-aw-actions`. Both are pinned by subpath (`…/init@`, `…/setup@`), in 4
+and 28 `uses:` lines, and that 1 reads as *not pinned*. `actions.md`'s own worked
+example, `github/gh-aw-actions/setup`, is one of them. `[/@]` finds them all.
+Anchoring on `uses:` drops two comments that name the action, and an optional `"`
+keeps the quoted `uses:` values the corpus carries (2 of 1,677). The same read shows
+what the comparison is for: cli/cli's four generated lock files pin
+`gh-aw-actions` at two different SHAs.
+
+The block lists `.github/workflows/` at `origin/$DEFAULT` first, as Phase 4's does,
+so *no match* is distinguishable from *no workflows*. The checkout guard now counts
+`origin/$DEFAULT` as a named tree. A test runs the line as written over a fixture
+with a subpath action in two workflows, a comment and a quoted `uses:`. The issue's
+`@` form fails it, and so do dropping the anchor and dropping the quote.
+
 ## [0.55.0] — 2026-09-23
 
 Three defects, and each is something looking somewhere other than where its
@@ -6689,7 +6915,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...HEAD
+[0.56.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.52.0...v0.53.0

@@ -88,6 +88,9 @@ MADE_BY_WORKTREE = re.compile(
     # Flags may sit between `add` and the path (`--detach`, `-b <name>`).
     r"git worktree add\s+(?:-\S+\s+)*\"?(\$SCRATCH/[A-Za-z0-9_.<>-]+)"
 )
+# `discover.py --handoff FILE` writes the handoff itself, from the same read as the
+# report (#168). Named narrowly: a generic `--out` would count reads as writes.
+MADE_BY_FLAG = re.compile(r"--handoff\s+\"?(\$SCRATCH/[A-Za-z0-9_.<>-]+)")
 
 # The fetched branch. Not preceded by a word character or a slash, so
 # `$SCRATCH/pr-<N>` does not also read as a use of the ref.
@@ -421,7 +424,7 @@ class TestNoPhaseConsumesALaterPhase(SkillHarness):
         """The Phase 4 / Phase 5 worktree defect, and anything shaped like it."""
         made: dict[str, list[int]] = {}
         for number, code in sorted(self.shell.items()):
-            for pattern in (MADE_BY_REDIRECT, MADE_BY_WORKTREE):
+            for pattern in (MADE_BY_REDIRECT, MADE_BY_WORKTREE, MADE_BY_FLAG):
                 for path in pattern.findall(code):
                     made.setdefault(path, []).append(number)
         for path, phases_using in self._scan(SCRATCH_PATH).items():
@@ -2689,6 +2692,72 @@ class TestPhase4ReadsTheActionsInterfaceNotOnlyItsNotes(SkillHarness):
         )
 
 
+class TestTheCurrentPinIsReadInEveryWorkflowBySubpath(SkillHarness):
+    """#167. `actions.md` § Phase 2 asked for *"the repo's current pin"* and
+    supplied no command, and the #436 run improvised `git show
+    origin/main:.github/workflows/ci.yml | grep setup-uv@` -- one workflow, with
+    `git show`'s status piped away.
+
+    The issue proposed `<owner>/<action>@`. Measured on cli/cli's `trunk` before
+    writing anything in: it exits 1 for `github/codeql-action` and
+    `github/gh-aw-actions`, which are pinned by subpath (`.../init@`,
+    `.../setup@`) in 4 and 28 `uses:` lines, and that 1 reads as *not pinned*.
+    `[/@]` finds them; anchoring on `uses:` drops two comments that mention the
+    action. So the line is run here as written, over a fixture with a subpath
+    action in two workflows, a comment naming it, and a quoted `uses:`.
+    """
+
+    def _phase2(self) -> str:
+        return dict(phases((PLUGIN / "references/actions.md").read_text(encoding="utf-8")))[2]
+
+    def test_the_default_branchs_pins_are_found_in_every_workflow_by_subpath(self):
+        lines = "\n".join(bash_blocks(self._phase2())).splitlines()
+        grep = next(
+            (ln for ln in lines if ln.startswith("git grep") and "<owner>/<action>" in ln), None
+        )
+        self.assertIsNotNone(grep, "Phase 2 asks for the current pin and supplies no command")
+        assert grep is not None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            flows = root / ".github/workflows"
+            flows.mkdir(parents=True)
+            (flows / "codeql.yml").write_text(
+                "jobs:\n  a:\n    steps:\n"
+                "      - uses: github/codeql-action/init@aaaa  # v3.29.0\n"
+                "      - uses: github/codeql-action/analyze@aaaa  # v3.29.0\n",
+                encoding="utf-8",
+            )
+            (flows / "scorecard.yml").write_text(
+                "jobs:\n  s:\n    permissions:\n"
+                "      security-events: write  # for github/codeql-action/upload-sarif\n"
+                '    steps:\n      - uses: "github/codeql-action/upload-sarif@bbbb"  # v3.28.0\n',
+                encoding="utf-8",
+            )
+            _commit_as_pr(root, 1)
+            _git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+            def run(line: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["bash", "-c", line.replace("<owner>/<action>", "github/codeql-action")],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env={**os.environ, "DEFAULT": "main"},
+                )
+
+            found = run(grep)
+            self.assertEqual(found.returncode, 0, found.stderr)
+            pins = found.stdout.splitlines()
+            self.assertEqual(len(pins), 3, "three `uses:` lines; the comment is not a pin")
+            self.assertTrue(any("scorecard.yml" in p and "bbbb" in p for p in pins))
+            # The control: the form the issue proposed finds none of them.
+            proposed = run(
+                "git grep -n '<owner>/<action>@' \"origin/$DEFAULT\" -- '.github/workflows/'"
+            )
+            self.assertEqual(proposed.returncode, 1, proposed.stdout)
+
+
 def _git(root: pathlib.Path, *args: str) -> None:
     """Commit-capable git in a fixture, whatever the user's own config signs with."""
     subprocess.run(
@@ -2761,33 +2830,96 @@ class TestNoBlockReadsTheCheckoutYouAreIn(SkillHarness):
         r"|\buv run --no-project --with\b"
     )
     # Names the tree it reads, so the directory it runs from does not matter.
-    TREE_NAMED = re.compile(r"pr-<N>|base-<N>|\$BASE_SHA")
+    # `origin/$DEFAULT` is a ref too: `actions.md` § Phase 2 reads the default
+    # branch's pins there (#167).
+    TREE_NAMED = re.compile(r"pr-<N>|base-<N>|\$BASE_SHA|origin/\$DEFAULT")
     # Moves into a tree the audit owns before it reads — and stops if it cannot.
     # A bare `cd` that fails leaves the block in the checkout, reading it anyway.
-    PINNED = re.compile(
-        r'\bcd "\$(?:SCRATCH/(?:pr|base)-<N>|F)"\s*\|\|\s*exit|--tree "\$SCRATCH|-C "\$SCRATCH'
+    # This pins the rest of the block, because a `cd` moves the shell.
+    PINNED = re.compile(r'\bcd "\$(?:SCRATCH/(?:pr|base)-<N>|F)"\s*\|\|\s*exit')
+    # These move one command, not the shell, so they pin their own line and no
+    # other. Until 0.56.0 they pinned the rest of the block too, and
+    # `pre-commit.md`'s `git -C "$SCRATCH/pr-<N>" ls-files` excused a bare `cd`
+    # and two `$(git ls-files '*.md')` reads two lines below it.
+    LINE_PINNED = re.compile(r'--tree "\$SCRATCH|-C "\$SCRATCH')
+    # A `cd` into a tree the audit owns, with no `|| exit` after it. Where the tree
+    # is not there, the block carries on in the checkout — which is #165: Phase 3's
+    # export ran in the user's checkout under `--no-execute` and exported its
+    # lockfile. Keyed on the `cd` itself, not on what reads after it, so a new
+    # command in such a block cannot slip past a list of reads.
+    BARE_CD = re.compile(
+        r'^[ \t]*cd "\$(?:SCRATCH/[^"]*|F)"(?![ \t]*\|\|[ \t]*exit)[ \t]*(?:#[^\n]*)?$', re.M
     )
+
+    def _offenders(self, body: str) -> list[str]:
+        """The lines of one block that read the current directory unpinned."""
+        offenders: list[str] = []
+        pinned = False
+        for line in body.splitlines():
+            code = "" if line.lstrip().startswith("#") else line.split("  #")[0]
+            pinned = pinned or bool(self.PINNED.search(code))
+            if pinned or self.LINE_PINNED.search(code) or not self.READS_CWD.search(code):
+                continue
+            if not self.TREE_NAMED.search(code):
+                offenders.append(code.strip()[:100])
+        return offenders
 
     def test_no_block_reads_the_checkout_you_are_in(self):
         offenders = []
         for path in [SKILL, *sorted((PLUGIN / "references").glob("*.md"))]:
             for lang, body in FENCE.findall(path.read_text(encoding="utf-8")):
-                if lang not in {"bash", "sh", "shell"}:
-                    continue
-                pinned = False
-                for line in body.splitlines():
-                    code = "" if line.lstrip().startswith("#") else line.split("  #")[0]
-                    pinned = pinned or bool(self.PINNED.search(code))
-                    if pinned or not self.READS_CWD.search(code):
-                        continue
-                    if not self.TREE_NAMED.search(code):
-                        offenders.append(f"{path.name}: {code.strip()[:100]}")
+                if lang in {"bash", "sh", "shell"}:
+                    offenders += [f"{path.name}: {o}" for o in self._offenders(body)]
         self.assertEqual(
             offenders,
             [],
             "these read the directory the shell is in — the user's checkout — and not "
             'the PR: name the tree (`git grep … pr-<N> --`) or cd into "$SCRATCH/pr-<N>"',
         )
+
+    def test_every_cd_into_a_tree_the_audit_owns_stops_if_it_cannot(self):
+        offenders = []
+        for path in [SKILL, *sorted((PLUGIN / "references").glob("*.md"))]:
+            for lang, body in FENCE.findall(path.read_text(encoding="utf-8")):
+                if lang in {"bash", "sh", "shell"}:
+                    offenders += [
+                        f"{path.name}: {m.group(0).strip()}" for m in self.BARE_CD.finditer(body)
+                    ]
+        self.assertEqual(
+            offenders,
+            [],
+            "a `cd` into $SCRATCH that can fail and carry on: add `|| exit 2`, which makes "
+            "the rows it feeds `underivable` where the tree is missing, never about the checkout",
+        )
+
+    def test_the_bare_cd_pattern_discriminates(self):
+        """Anti-vacuity, on literals: the two shapes it must tell apart."""
+        for bare in (
+            'cd "$SCRATCH/pr-<N>"',
+            '  cd "$SCRATCH/pr-<N>"   # the PR\'s tree',
+            'cd "$F"',
+        ):
+            self.assertRegex(bare, self.BARE_CD, bare)
+        for guarded in (
+            'cd "$SCRATCH/pr-<N>" || exit 2',
+            'cd "$SCRATCH/base-<N>" || exit 2   # its files',
+            '( cd "$SCRATCH/base-<N>" && $PC run x --all-files )',
+        ):
+            self.assertNotRegex(guarded, self.BARE_CD, guarded)
+
+    def test_a_per_command_directory_does_not_pin_the_block(self):
+        """`git -C` moves one command. A bare `cd` after it, then a read of the
+        current directory, is still a read of the checkout."""
+        block = (
+            'git -C "$SCRATCH/pr-<N>" ls-files | wc -l\n'
+            'cd "$SCRATCH/pr-<N>"\n'
+            "uvx tool@1.0 format --check $(git ls-files '*.md')\n"
+        )
+        self.assertEqual(
+            self._offenders(block), ["uvx tool@1.0 format --check $(git ls-files '*.md')"]
+        )
+        # And the control: guarded, the same block reads the PR's tree.
+        self.assertEqual(self._offenders(block.replace('pr-<N>"\n', 'pr-<N>" || exit 2\n', 2)), [])
 
 
 class TestEveryConsumerReloadsTheHandoff(SkillHarness):
@@ -2836,7 +2968,7 @@ class TestEveryConsumerReloadsTheHandoff(SkillHarness):
             # with $BASE_SHA empty exits **0** and serves 17,623 bytes from the
             # index — the user's working tree — which is the exact failure
             # Phase 0's "read every one of them at a ref" rule exists to prevent.
-            if "--shell >" in code:
+            if "--handoff" in code:
                 continue
             used = sorted(n for n in USED.findall(code) if n in names)
             if not used:
@@ -5211,12 +5343,17 @@ class TestNoExecutePhaseBuildsTheAuditedProject(SkillHarness):
         )
 
     def test_phase_3_names_the_tree_it_reads(self):
-        """An unstated tree audits the pre-bump environment and reports clean."""
-        self.assertIn(
-            "$SCRATCH/pr-<N>",
+        """An unstated tree audits the pre-bump set and reports clean.
+
+        Until 0.56.0 it named `$SCRATCH/pr-<N>` — a worktree that does not exist
+        on three of the paths Phase 3 runs on, where the export fell through to the
+        checkout (#165). It names the ref now, and `pipaudit.py` reads it there.
+        """
+        self.assertRegex(
             self.material(3),
-            "Phase 3 must name the tree it audits; run in the user's checkout it "
-            "reports on the currently installed set, which is not the one under audit",
+            r'pipaudit\.py"?\s*\\?\s*--scratch "\$SCRATCH" --ref "pr-<N>" --base "\$BASE_SHA"',
+            "Phase 3 must name the ref it audits; run in the user's checkout it "
+            "reports on the pre-bump set, which is not the one under audit",
         )
 
 
@@ -5955,6 +6092,10 @@ class TestPhase3ExportsTheSetTheRowClaims(SkillHarness):
     narrowing config through a second command and carried none of it. So the
     guard is not "the flag is present" alone — a flag answers one config, and
     the next `default-groups` is not anticipated by any flag.
+
+    Since 0.56.0 the command is `pipaudit.py`'s, so these read its source through
+    `reachable(3)`, and `tests/test_pipaudit.py` holds the behaviour: the argv it
+    runs, and a pre-bump export that must not read clean (#165).
     """
 
     def test_the_export_is_not_narrowed_by_the_audited_repos_config(self):
@@ -5965,13 +6106,16 @@ class TestPhase3ExportsTheSetTheRowClaims(SkillHarness):
         docstring records, which is why this reads executable material and pins
         the flag to the command it has to be on.
         """
-        self.assertRegex(
-            self.reachable(3),
-            r"uv export[^\n]*--all-groups",
-            "the export takes the default groups, so a repo that narrows "
-            "`tool.uv.default-groups` decides what this row covers. `pip-audit` "
-            "then reports clean about a set that can exclude the entire bump",
-        )
+        code = self.reachable(3)
+        self.assertIn("pipaudit.py", code, "Phase 3 no longer runs the script that owns the export")
+        for flag in ("--all-groups", "--all-extras", "--no-config"):
+            self.assertRegex(
+                code,
+                rf"EXPORT = \[[^\]]*'{flag}'",
+                f"the export lost {flag}, so the audited repo's config — or an extra — "
+                "decides what this row covers. `pip-audit` then reports clean about a "
+                "set that can exclude the entire bump",
+            )
 
     def test_the_export_is_reconciled_against_the_packages_that_moved(self):
         """The flag answers one config; the reconcile answers the class.
@@ -5982,10 +6126,10 @@ class TestPhase3ExportsTheSetTheRowClaims(SkillHarness):
         """
         self.assertRegex(
             self.reachable(3),
-            r"grep[^\n]*Phase 1 named[^\n]*requirements",
-            "nothing checks the exported set against the packages under audit. "
-            "That is the one check a narrowed export cannot pass, and it is what "
-            "caught the observed case",
+            r"missing = \[\(n, v\) for n, v in new if v not in pins\.get\(n, set\(\)\)\]",
+            "nothing checks the exported set against the versions the PR introduces. "
+            "That is the one check a narrowed export cannot pass, and by version, "
+            "not name: the name check it replaced passed on the pre-bump export",
         )
 
     def test_the_corroborating_half_is_scoped_against_the_lockfile_half(self):
@@ -5998,14 +6142,14 @@ class TestPhase3ExportsTheSetTheRowClaims(SkillHarness):
         """
         flat = self.flat(3)
         self.assertIn(
-            "the two halves of this row can disagree about scope",
+            "the two halves cover different sets",
             flat,
             "Phase 3 pairs an OSV batch over the lockfile with a `pip-audit` over "
             "the export. Nothing says those are different sets when the export is "
             "narrowed, so the row reads as corroborated when it is not",
         )
         self.assertIn(
-            "which packages the row covers",
+            "quote its coverage line in the row",
             flat,
             "the report has no instruction to state the scope it actually audited",
         )
@@ -6146,7 +6290,8 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
             3,
             "the export must not bury the pip-audit verdict under itself (#128)",
             "runs",
-            r"uv export -q",
+            # `pipaudit.py`'s argv (0.56.0), as `reachable()`'s AST round-trip renders it.
+            r"EXPORT = \['export', '-q',",
         ),
         (
             5,

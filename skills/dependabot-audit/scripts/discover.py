@@ -34,12 +34,19 @@ Exit codes follow the other scripts here:
         an account that cannot merge, or an output that could not be derived
     2   could not run
 
-    python3 discover.py --repo OWNER/NAME --number N [--json]
+    python3 discover.py --repo OWNER/NAME --number N [--json] [--handoff FILE]
+
+`--handoff FILE` writes the `--shell` output to FILE from the same read that
+prints the report, so the two cannot disagree. Phase 0 used to run the script
+twice for them, and on `fpga-board-sim` #438 a read that failed once made the
+report say `$BASE_SHA (underivable)` while the handoff held a derived value.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import re
@@ -129,6 +136,12 @@ def fail(what: str) -> NoReturn:
     raise SystemExit(2)
 
 
+# Why each failed `gh` call failed, keyed by its arguments: stderr's first line.
+# `_gh()` returns the code and stdout, and the code is the signal; this keeps the
+# reason, which a report of `underivable` otherwise cannot give (#168).
+FAILED: dict[str, str] = {}
+
+
 def _gh(args: list[str]) -> tuple[int, str]:
     """Run `gh`; return (exit code, stdout). The code is the signal.
 
@@ -137,6 +150,10 @@ def _gh(args: list[str]) -> tuple[int, str]:
     something false. That is how a 404 once became "no required checks", and how
     a failed permissions call reads as a `pull`-only account. Every caller below
     gates on the code.
+
+    A failure's stderr goes to `FAILED`, because it is the only place `gh` says
+    *why* — a 502, a rate limit, an expired token — and those need different
+    responses from the reader.
     """
     try:
         proc = subprocess.run(  # noqa: S603
@@ -150,7 +167,23 @@ def _gh(args: list[str]) -> tuple[int, str]:
         fail("`gh` is not on PATH; this phase is entirely GitHub API calls")
     except subprocess.TimeoutExpired:
         fail(f"`gh {' '.join(args[:2])}` exceeded {TIMEOUT}s")
+    if proc.returncode != 0:
+        FAILED[" ".join(args)] = _first_line(proc.stderr) or f"exit {proc.returncode}, no stderr"
     return proc.returncode, proc.stdout
+
+
+def _first_line(text: str | None) -> str:
+    """The first non-blank line, trimmed — it goes into a `#` comment in the handoff,
+    so it must never carry a newline that would end the comment."""
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()[:240]
+    return ""
+
+
+def why_failed(args: list[str]) -> str:
+    """What `gh` said on stderr when this call failed, or an empty string."""
+    return FAILED.get(" ".join(args), "")
 
 
 def _json_or_none(args: list[str]) -> Any | None:
@@ -168,7 +201,11 @@ def _required(args: list[str], what: str) -> Any:
     """For the calls with no useful audit without them."""
     got = _json_or_none(args)
     if got is None:
-        fail(f"could not read {what} — `gh {' '.join(args[:2])}` failed")
+        reason = why_failed(args)
+        fail(
+            f"could not read {what} — `gh {' '.join(args[:2])}` failed"
+            + (f": {reason}" if reason else "")
+        )
     return got
 
 
@@ -596,6 +633,7 @@ def scope(files: list[dict[str, Any]] | None, source: str) -> dict[str, Any]:
 
 
 def discover(owner: str, name: str, number: int) -> dict[str, Any]:
+    FAILED.clear()
     repo = _required(["api", f"repos/{owner}/{name}"], f"{owner}/{name}")
     pull = _required(["api", f"repos/{owner}/{name}/pulls/{number}"], f"PR #{number}")
 
@@ -605,12 +643,19 @@ def discover(owner: str, name: str, number: int) -> dict[str, Any]:
     # GitHub's own merge base, which is right whether or not the PR has landed.
     # `git merge-base "$DEFAULT" pr-<N>` is not: once a PR merges, its head is an
     # ancestor of the default branch and the merge base of the two is the head.
-    compare = (
-        _json_or_none(["api", f"repos/{owner}/{name}/compare/{base_ref}...{head_sha}"])
-        if base_ref and head_sha
-        else None
-    )
+    compare_args = ["api", f"repos/{owner}/{name}/compare/{base_ref}...{head_sha}"]
+    compare = _json_or_none(compare_args) if base_ref and head_sha else None
     base_sha = ((compare or {}).get("merge_base_commit") or {}).get("sha") if compare else None
+    # Why an output is underivable, where the answer is known. Keyed by the
+    # handoff's variable name, and read by the report, its findings and the handoff.
+    reasons: dict[str, str] = {}
+    if not base_sha:
+        if not (base_ref and head_sha):
+            reasons["BASE_SHA"] = "the pull request carries no base or head SHA"
+        elif compare is None:
+            reasons["BASE_SHA"] = "compare failed: " + (why_failed(compare_args) or "no reason")
+        else:
+            reasons["BASE_SHA"] = "compare answered without a merge_base_commit"
 
     commits = _json_or_none([
         "api", f"repos/{owner}/{name}/pulls/{number}/commits", "--paginate",
@@ -652,6 +697,10 @@ def discover(owner: str, name: str, number: int) -> dict[str, Any]:
         "classification": classification,
         "branch_point": bp,
         "scope": scope(files, source),
+        "reasons": reasons,
+        # Every failed call, in order, with what `gh` said — the reasons above are
+        # the ones tied to an output; this is all of them.
+        "gh_failures": [f"gh {call}: {why}" for call, why in FAILED.items()],
     }
 
 
@@ -669,10 +718,13 @@ def render(report: dict[str, Any]) -> None:
         ("$OWNER/$NAME", f"{report['owner']}/{report['name']}"),
         ("createdAt", report["created_at"]),
     ]
+    reasons = report.get("reasons", {})
     for label, value in rows:
         tag = state(value)
         mark = "OK " if tag == DERIVED else ("-- " if tag == ABSENT else "!! ")
         print(f"  {mark}{label:14} {value if value else f'({tag})':<44} {tag}")
+        if tag != DERIVED and reasons.get(label.lstrip("$")):
+            print(f"     why: {reasons[label.lstrip('$')]}")
 
     perms = report["perms"]
     if perms is None:
@@ -748,6 +800,11 @@ def render(report: dict[str, Any]) -> None:
         print("    Those phases run code from the PR. Say in the report that they")
         print("    did not run, and what running them would have added.")
 
+    if report.get("gh_failures"):
+        print("\n=== gh failed on these calls, and said why on stderr:")
+        for line in report["gh_failures"]:
+            print(f"    {line}")
+
     findings = report["findings"]
     print(f"\nRESULT: {'NEEDS REVIEW' if findings else 'ORDINARY'} — {len(findings)} finding(s)")
     for f in findings:
@@ -765,7 +822,11 @@ def analyse(report: dict[str, Any]) -> dict[str, Any]:
         ("$BASE_SHA", report["base_sha"]),
     ):
         if state(value) != DERIVED:
-            findings.append(f"{label} is {state(value)} — no later phase may consume it")
+            why = report.get("reasons", {}).get(label.lstrip("$"))
+            findings.append(
+                f"{label} is {state(value)}{f' ({why})' if why else ''}"
+                " — no later phase may consume it"
+            )
     if report["perms"] is None:
         findings.append("$PERMS underivable")
     if bp["verdict"] == "rewritten":
@@ -832,12 +893,15 @@ def shell(report: dict[str, Any]) -> None:
     # from the running file cannot name a version other than the one running.
     print(f"SCRIPTS={os.path.dirname(os.path.realpath(__file__))}")
 
+    reasons = report.get("reasons", {})
     for key, value in pairs:
         if state(value) == DERIVED:
             print(f"{key}={value}")
         else:
             print(f"# {key} is {state(value)} — deliberately unset, so a later")
             print("#   phase fails on an empty value rather than a plausible one")
+            if reasons.get(key):
+                print(f"#   why: {_first_line(reasons[key])}")
     bp, cls, sc = report["branch_point"], report["classification"], report["scope"]
     print(f"BRANCH_POINT={bp['verdict']}")
     print(f"MAY_EXECUTE={'yes' if cls['execute'] else 'no'}")
@@ -879,13 +943,34 @@ def main() -> int:
     parser.add_argument(
         "--shell", action="store_true", help="emit NAME=value for sourcing, instead of a report"
     )
+    parser.add_argument(
+        "--handoff",
+        metavar="FILE",
+        help="also write the --shell output to FILE, from the same read as the report",
+    )
     args = parser.parse_args()
+
+    # Emptied before anything can fail, which is what the shell redirect this
+    # replaces did: a run that cannot finish leaves nothing to source, never the
+    # last run's values — a stale $HEAD_SHA is plausible, and an empty one is loud.
+    if args.handoff:
+        try:
+            with open(args.handoff, "w", encoding="utf-8"):
+                pass
+        except OSError as exc:
+            fail(f"cannot write the handoff to {args.handoff}: {exc}")
 
     if "/" not in args.repo:
         fail(f"--repo takes OWNER/NAME, got {args.repo!r}")
     owner, _, name = args.repo.partition("/")
 
     report = analyse(discover(owner, name, args.number))
+    if args.handoff:
+        written = io.StringIO()
+        with contextlib.redirect_stdout(written):
+            shell(report)
+        with open(args.handoff, "w", encoding="utf-8") as handle:
+            handle.write(written.getvalue())
     if args.json:
         print(json.dumps(report, indent=2))
     elif args.shell:

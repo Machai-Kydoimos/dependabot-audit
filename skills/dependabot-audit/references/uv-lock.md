@@ -194,8 +194,8 @@ looked for — the range is fetched either way, because gating the *call* on tha
 judgement asks the auditor to be right about write mode before it has the
 evidence.
 
-**Read the exit code; do not chain on it.** `0` the prose names every fix in the
-range, `1` it does not and the unreconciled commits are listed, `2` could not
+**Read the exit code; do not chain on it.** `0` the prose names every fix and
+bump, `1` it does not and the unreconciled commits are listed, `2` could not
 run. `1` is a finding, so `&&` swallows exactly the case the call is for. Use
 `--repo-slug owner/repo` instead of `--package` where the project is not on PyPI
 or its metadata carries no GitHub link.
@@ -569,118 +569,34 @@ Two ruff traps sit behind that, both measured on 0.16.7 and both quiet:
 
 ## Phase 3 — Known vulnerabilities
 
-Batch-query OSV across the whole locked set, then corroborate with the
-ecosystem's own auditor. **The OSV half is already done** — the Phase 1 script ran
-it — so read that result instead of issuing a second query. What remains is the
-auditor.
-
-**Audit the lockfile, not an environment**, and write the export *outside* the
-worktree — it is not the PR's file, and an untracked file in `$SCRATCH/pr-<N>` is
-residue Phase 7 then has to account for.
+The OSV half is **already done**: the Phase 1 script queried the whole lockfile
+at `pr-<N>`, so read that result rather than issuing a second query. What remains
+is the ecosystem's own auditor, and `pipaudit.py` runs it over the PR's lockfile
+**at its ref** — so it needs no worktree, runs on every path this phase does, and
+puts no file the PR ships on disk to run:
 
 ```bash
 # Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
-cd "$SCRATCH/pr-<N>"                          # the PR's tree — the set under audit
-uv export -q --frozen --format requirements.txt --no-emit-project --all-groups \
-  -o "$SCRATCH/pr-<N>-requirements.txt"       # --all-packages for a workspace
-uvx pip-audit -r "$SCRATCH/pr-<N>-requirements.txt" --no-deps --disable-pip
-
-# The export has to contain what the PR changed, or the row is about another set.
-grep -nE '^(<the packages Phase 1 named>)==' "$SCRATCH/pr-<N>-requirements.txt"
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/pipaudit.py" \
+  --scratch "$SCRATCH" --ref "pr-<N>" --base "$BASE_SHA"
 ```
 
-**Three of those flags are this phase's contract, not tidiness.** `--no-deps` and
-`--disable-pip` together mean no resolution and no `pip` at all, so nothing is
-installed and no build backend runs; `--frozen` reads the lockfile rather than
-updating it. Measured on uv 0.12.8: the audited tree's `setup.py` does not run and
-no `.venv` appears. **Phase 3 runs under `--no-execute`**, where this procedure has
-promised the PR's code will not run — so the flags are what make that promise
-true. Default service is PyPI's advisory DB; `-s osv` selects OSV.
+**Exit 0** means `pip-audit` answered for every pin the export carries — every
+package, group, extra and fork — including every version the PR introduces, and
+found nothing. **Exit 1** means it found something: an advisory, or a version the
+PR introduces that the export lacks or the auditor skipped, and the output names
+which. **Exit 2** means it could not run, and the row is `underivable`, never
+clean.
 
-**`-q` is there because `-o FILE` does not mean *instead of stdout*.** uv writes
-the export to the file **and** prints the whole thing again, so the `pip-audit`
-verdict this row exists for arrives underneath it. Measured on uv 0.12.15: a
-five-package fixture printed 4,024 bytes to stdout with the flag absent and **0**
-with it present, the two files byte-identical apart from the header line that
-echoes the command; nothing moves to stderr, and a failing export still exits 2.
-On a real bump it was 60.6 KB — and `--all-groups` above, which is the flag that
-makes this row *correct*, is also what tripled it.
-
-**`--all-groups` is the fourth flag, and its job is scope rather than safety.**
-Without it the export covers the *default* groups — and `tool.uv.default-groups`
-is a setting the audited repo controls, so the audited repo decides what this row
-is about. Measured on uv 0.12.15:
-
-| `[tool.uv]` | plain export | `--all-groups` |
-|---|---|---|
-| absent, so `default-groups` is `["dev"]` | runtime + `dev` | **+ every other group** |
-| `default-groups = []` | runtime only | **every group** |
-| no groups declared at all | runtime | runtime — exit 0, not an error |
-
-Observed on `fpga-board-sim` #437, which sets `default-groups = []`: the plain
-export carried **12** packages where `--all-groups` carries 38, and **neither of
-the two packages the PR bumped**. `pip-audit` then reported *"No known
-vulnerabilities found"* — true of a set that excluded the whole bump, at exit 0,
-well-formed, in the phase whose entire job is to not do that.
-
-**Phase 5's answer is deliberately not this phase's answer.** There the rule is
-*reconcile, never memorise a flag*, because `uv sync` builds one environment and
-`--group dev` is a no-op in one direction and wrong in the other. Here nothing is
-installed and nothing runs, so breadth is free: `--all-groups` only ever widens,
-and it exits 0 where there are no groups to add. Take the whole lockfile.
-
-**Then check that you got it.** The flag answers this config; the `grep` in the
-block above answers the class, because no flag anticipates the next
-`default-groups`. Every name Phase 1 listed must come back from it, at the
-version the PR proposes. It is Phase 5's reconcile pointed at a file instead of
-an environment, and it is what caught the case above (`grep -c … → 0`). `grep`
-**exits 1 when it matches nothing**, so a `&&` chain silently drops whatever came
-next — read the output, not the status.
-
-**The two halves of this row can disagree about scope, and only one of them can
-be narrowed.** `audit.py`'s OSV batch reads the *lockfile*, which is universal: a
-group excluded from every export is still pinned in `uv.lock` and still queried.
-`pip-audit` reads the export. So a narrowed export does not leave the row half
-empty — it leaves the corroborating half quietly about a smaller set than the
-half it corroborates, which is worse, because the row still shows two sources
-agreeing. Say which packages the row covers.
-
-**Verified in both directions**, because an auditor that cannot report dirty is
-worse than none: a clean export exits 0 with *"No known vulnerabilities found"*,
-and `jinja2==2.11.3` through the same command exits **1** with four advisories and
-their fix versions.
-
-**The export covers every fork; a synced environment covers one.** `uv export`
-emits a pinned line per fork, each carrying its marker:
-
-```
-rpds-py==0.27.1   ; python_full_version <  '3.10'
-rpds-py==2026.6.3 ; python_full_version >= '3.11'
-```
-
-So the audit sees the 3.9 fork's older release even though this interpreter will
-never install it — the scope `uv sync --locked` asserts and the install does not,
-which is the whole reason this phase reads the lockfile. **Do not flatten the
-markers.** Both pins in one file with the markers stripped is `ResolutionImpossible`,
-and de-duplicating to one pin per name silently drops the forks it removed.
-
-**The auditor trap, for the case where you audit an environment anyway.**
-`pip-audit` audits the environment of the interpreter it runs under. Activating a
-virtualenv does **not** redirect a `pip-audit` installed elsewhere — it will
-happily audit the system Python and report on distro packages. Symptom: package
-names in the output the project never depended on. Running it inside the project
-environment fixes that, and `uv run --with pip-audit pip-audit --skip-editable` is
-the form — **but `uv run` syncs the project first**, installing it editable and
-building any sdist in the resolution. That executes the PR's code, so it belongs
-behind `MAY_EXECUTE` with Phases 4 and 5, not here. `--skip-editable` suppresses
-the *reporting* of the editable install, not the install; `--strict` re-escalates
-that skip into a fatal error — do not combine them.
-
-`pip-audit --locked` does not necessarily parse `uv.lock`, which is why the export
-is the path rather than pointing `pip-audit` at the lockfile directly.
+**Quote its coverage line in the row.** The two halves cover different sets —
+OSV the whole lockfile, the auditor what the export carries, which leaves out
+workspace members, local paths and git sources and names them — and a row showing
+two sources agreeing has to say what each was about. Do not improvise the auditor
+instead: each flag the script passes answers a failure measured on a real PR, and
+its docstring says which.
 
 ## Phase 4 — Behavior change
 
@@ -974,7 +890,7 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 [ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
 
-cd "$SCRATCH/pr-<N>"
+cd "$SCRATCH/pr-<N>" || exit 2
 # No --group here, by design: the reconcile below decides it, and a failed one
 # re-runs these two lines with --group <name> appended.
 uv sync --locked --no-build --no-install-project   # every dep resolved to a wheel
@@ -1086,7 +1002,7 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 [ "${MAY_EXECUTE:-}" = yes ] || { echo "MAY_EXECUTE='${MAY_EXECUTE:-unset}' — this block runs the PR's code; not authorised" >&2; exit 2; }
 
-cd "$SCRATCH/pr-<N>"
+cd "$SCRATCH/pr-<N>" || exit 2
 mapfile -t ROWS < <(python3 - uv.lock <<'PY'
 import sys, tomllib
 LOCAL = {"editable", "virtual", "directory"}   # the project and its path deps

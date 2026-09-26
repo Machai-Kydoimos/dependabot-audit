@@ -122,10 +122,10 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner) \
 # OUTSIDE the repo, and the SAME directory on every later call — derived, not remembered
 SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"; mkdir -p "$SCRATCH"
 
-python3 "$D" --repo "$REPO" --number <N>                              # the report
-# `-le 1`, not `||`: exit 1 means Phase 0 found something, the common case. Only
-# 2 is "could not run", and it writes an empty file the `.` below would source.
-python3 "$D" --repo "$REPO" --number <N> --shell > "$SCRATCH/phase0.env"; RC=$?
+# The report, and the handoff from the same read. `-le 1`, not `||`: exit 1 means
+# Phase 0 found something, the common case. 2 is "could not run", and it leaves
+# the handoff empty, which the `.` below would source.
+python3 "$D" --repo "$REPO" --number <N> --handoff "$SCRATCH/phase0.env"; RC=$?
 [ "$RC" -le 1 ] || { echo "discover.py could not run ($RC) — no handoff written" >&2; exit 2; }
 . "$SCRATCH/phase0.env"
 ```

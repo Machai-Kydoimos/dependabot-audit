@@ -18,7 +18,9 @@ import contextlib
 import io
 import json
 import pathlib
+import subprocess
 import sys
+import tempfile
 import unittest
 from typing import Any
 from unittest import mock
@@ -1004,3 +1006,96 @@ class TestTheForcePushScanAssertsItsOwnPrecondition(DiscoverHarness):
         """The other control: the guard must not eat the feature."""
         fake, _ = self._fake(force_pushes=1)
         self.assertEqual(self._json(fake)["branch_point"]["verdict"], "rewritten")
+
+
+class TestOnePassWritesTheReportAndItsHandoff(DiscoverHarness):
+    """#168: Phase 0 ran this script twice, and the two runs disagreed.
+
+    The report run on `fpga-board-sim` #438 printed `$BASE_SHA (underivable)` and
+    `RESULT: NEEDS REVIEW` at exit 1; the `--shell` run seconds later wrote a
+    derived `BASE_SHA` at exit 0. The phases read only the handoff, so the audit
+    was safe, and the report it quoted asserted something the audit never used.
+    `_gh()` had dropped stderr, so the run wrote *"I don't know what caused the
+    failed read"* and nobody else could say either.
+
+    `--handoff FILE` prints the report and writes the handoff from one read, and
+    a failed read keeps `gh`'s own reason.
+    """
+
+    def test_the_report_and_the_handoff_come_from_one_read(self):
+        fake, calls = self._fake()
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = pathlib.Path(tmp, "phase0.env")
+            code, out, _ = self._run(fake, ["--handoff", str(handoff)])
+            written = handoff.read_text(encoding="utf-8")
+        self.assertEqual(code, 0)
+        self.assertIn("RESULT: ORDINARY", out)
+        self.assertRegex(written, rf"(?m)^HEAD_SHA={HEAD}$")
+        self.assertNotIn("RESULT", written)
+        self.assertEqual(sum("/compare/" in c for c in calls), 1)
+
+    def test_a_read_that_fails_once_cannot_make_them_disagree(self):
+        """The #438 shape: `compare` fails on the first call and not the second."""
+        fake, _ = self._fake()
+        compares: list[str] = []
+
+        def flaky(args: list[str]) -> tuple[int, str]:
+            if any("/compare/" in a for a in args):
+                compares.append(" ".join(args))
+                if len(compares) == 1:
+                    return 1, json.dumps({"message": "Server Error"})
+            code, out = fake(args)
+            return code, out
+
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = pathlib.Path(tmp, "phase0.env")
+            code, out, _ = self._run(flaky, ["--handoff", str(handoff)])
+            written = handoff.read_text(encoding="utf-8")
+        self.assertEqual(len(compares), 1)
+        self.assertEqual(code, 1)
+        self.assertIn("$BASE_SHA is underivable", out)
+        self.assertNotRegex(written, r"(?m)^BASE_SHA=")
+        self.assertRegex(written, r"(?m)^# BASE_SHA is underivable")
+
+    def test_a_run_that_cannot_complete_leaves_no_stale_handoff(self):
+        """The redirect this replaces truncated the file before the script ran,
+        so a failed run left it empty and every later block's `.` set nothing. A
+        file written only on success would keep the last run's values instead —
+        a plausible, stale `$HEAD_SHA`, which is worse than none."""
+        fake, _ = self._fake(fails=("/pulls/1",))
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = pathlib.Path(tmp, "phase0.env")
+            handoff.write_text(f"HEAD_SHA={'s' * 40}\n", encoding="utf-8")
+            code, _, _ = self._run(fake, ["--handoff", str(handoff)])
+            left = handoff.read_text(encoding="utf-8")
+        self.assertEqual(code, 2)
+        self.assertEqual(left, "")
+
+    def test_gh_s_own_reason_reaches_the_report_and_the_handoff(self):
+        """The real `_gh()` runs here; only `subprocess.run` is replaced."""
+        fake, _ = self._fake(fails=("/compare/",))
+        reason = "HTTP 502: Bad Gateway (https://api.github.com/repos/o/r/compare/b...h)"
+
+        def run(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+            code, out = fake(argv[1:])
+            return subprocess.CompletedProcess(argv, code, out, f"{reason}\n" if code else "")
+
+        argv = ["discover.py", "--repo", "o/r", "--number", "1"]
+        with tempfile.TemporaryDirectory() as tmp:
+            handoff = pathlib.Path(tmp, "phase0.env")
+            out = io.StringIO()
+            with (
+                mock.patch("discover.subprocess.run", run),
+                mock.patch.object(sys, "argv", [*argv, "--handoff", str(handoff)]),
+                contextlib.redirect_stdout(out),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                code = main()
+            written = handoff.read_text(encoding="utf-8")
+        self.assertEqual(code, 1)
+        self.assertIn(reason, out.getvalue())
+        self.assertIn(reason, written)
+        self.assertTrue(
+            all(line.startswith("#") for line in written.splitlines() if reason in line),
+            "a reason must never become an assignment",
+        )
