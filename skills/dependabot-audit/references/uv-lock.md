@@ -254,9 +254,10 @@ any given project is a measurement:
   file's `0.2.61` section at `v0.2.73`. Where that holds, rungs 1 and 2 agreeing
   is *the same text twice* rather than corroboration. Where a project writes its
   release notes by hand, or generates them from PR titles rather than from the
-  changelog, they are genuinely two sources. **Check before treating them as
-  independent** — `rumdl` says which it does in one paragraph of its
-  `CONTRIBUTING.md`, and most projects that automate this say so somewhere.
+  changelog, they are genuinely two sources. `changelog.py` says so where a
+  release body carries the section verbatim. Where it does not,
+  **check before treating them as independent**: a converted copy is one
+  source.
 
 Both questions are cheap and neither needs to be answered in the abstract, which
 is why the script measures instead of assuming: it reads the changelog at both

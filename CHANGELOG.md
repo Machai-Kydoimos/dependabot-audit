@@ -13,6 +13,55 @@ patch.
 
 ## [0.57.0] — 2026-09-26
 
+### The evidence file says where each part is, and what in it looks like security (#173)
+
+`uv-lock.md` requires reading `changelog.py`'s evidence file for `Security`
+entries. On `fpga-board-sim` #438 the run read two of ruff's at once, 19,939 and
+18,337 bytes, overran its output, and cut its own `awk` slices by heading. On its
+own, ruff 0.16.7...0.16.8's file is 300 lines and fits in one read. What was
+missing was a way to find the right part of it.
+
+`changelog.py` now prints the file's index beside its path: each section's first
+and last line, and its heading. It splits only on the headings it writes itself,
+so a release body's own `## Install ruff 0.16.8` does not break a rung in two. It
+also scans the file for what the read is sent to find, prints each hit with its
+line number and the section it sits in, and still asks for the read: a fix
+written as a plain bullet carries no id, no heading and no keyword. The scan
+looks for three things:
+- advisory ids: CVE, GHSA, RUSTSEC, PYSEC;
+- headings that name security;
+- the words.
+
+Measured over ten ranges before it went in (ruff twice, uv, rumdl, pytest, mypy,
+requests, urllib3, jinja2, cryptography), it found every advisory the prose
+names:
+- uv's GHSA-2cv4-cqwr-gwf7, in both rungs;
+- requests' CVE-2024-47081 under `**Security**`;
+- urllib3's two CVEs under `# Security issues`;
+- jinja2's GHSA.
+
+Words alone added at most eleven lines to uv's 1,314, mostly commit subjects
+like "Sync the Ruff security mirror", which their section label shows for what
+they are.
+
+It also says when a release body carries its changelog section verbatim, the one
+check `uv-lock.md` left to the reader. The comparison runs line by line, without
+the section's version heading, against the section at the tag and at the default
+branch. It finds that ruff's, uv's and rumdl's release notes are one text read
+twice. rumdl v0.2.77, whose body was edited after release, matches the
+default-branch section. Where nothing matches the script says nothing, because
+pytest's notes, which differ from its changelog in form, are not a second source
+either.
+
+The first cut split the index on every `##` line and printed nine sections for
+ruff's four. The test file's urllib3 fixture first carried a GHSA id typed from
+memory. The id was right, but it had not been recorded, so the fixture is now the
+release body byte for byte, CRLF included.
+
+Eight tests and ten mutations, each caught by the test aimed at it. One prose
+sentence changes to point at the script, and the references stay one byte under
+their budget.
+
 ### What a compiled wheel ships is read in Phase 3, not behind a pointer (#171)
 
 0.56.0 made `changelog.py` surface a dependency bump the notes never named, and
