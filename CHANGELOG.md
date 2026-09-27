@@ -11,7 +11,28 @@ patch.
 
 ## [Unreleased]
 
-## [0.57.0] — 2026-09-26
+## [0.57.0] — 2026-09-27
+
+This version takes up the three follow-ups 0.56.0's replay filed (#171–#173),
+and the two gaps that measuring them turned up (#175, #176). Each was measured
+before it was fixed, and each is fixed in a script wherever a script can decide
+it.
+
+Two new scripts take over what the prose asked a run to do by hand:
+- `vendored.py` reads the crates a compiled wheel ships;
+- `exercised.py` reads whether CI's runs exercised the change.
+
+Two existing scripts grow:
+- `runners.py` reads every workflow trigger, and the YAML it used to refuse;
+- `changelog.py` indexes its own evidence file.
+
+One finding changes the evidence a verdict rested on. ruff 0.16.9 fixed a
+use-after-free in a crate it ships, and its release notes never say so; the
+0.56.0 replay of `fpga-board-sim` #438 called those notes *"nothing
+security-shaped"*.
+
+`SKILL.md` goes from 124,389 bytes to 120,607, and the references from 134,938
+to 133,427.
 
 ### The evidence file says where each part is, and what in it looks like security (#173)
 
