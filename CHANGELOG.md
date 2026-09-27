@@ -249,7 +249,7 @@ first run of that harness launched from the wrong directory, so the test module
 never imported, and it printed `CAUGHT` for all thirteen. It now names that
 failure as a harness error, not a catch.
 
-## [0.56.0] — 2026-09-25
+## [0.56.0] — 2026-09-26
 
 The five follow-ups 0.55.0's replay filed under the stopping rule (#165–#169), each
 measured before it was fixed, and fixed in a script wherever a script could decide
