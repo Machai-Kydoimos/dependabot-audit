@@ -254,9 +254,10 @@ any given project is a measurement:
   file's `0.2.61` section at `v0.2.73`. Where that holds, rungs 1 and 2 agreeing
   is *the same text twice* rather than corroboration. Where a project writes its
   release notes by hand, or generates them from PR titles rather than from the
-  changelog, they are genuinely two sources. **Check before treating them as
-  independent** — `rumdl` says which it does in one paragraph of its
-  `CONTRIBUTING.md`, and most projects that automate this say so somewhere.
+  changelog, they are genuinely two sources. `changelog.py` says so where a
+  release body carries the section verbatim. Where it does not,
+  **check before treating them as independent**: a converted copy is one
+  source.
 
 Both questions are cheap and neither needs to be answered in the abstract, which
 is why the script measures instead of assuming: it reads the changelog at both
@@ -342,68 +343,19 @@ no CVE, and no count in the script's output substitutes for seeing one.
 
 A compiled Python package vendors another ecosystem's dependency graph into its
 wheel — `ruff`, `uv`, `rumdl` and `pydantic-core` are Rust — and its changelog
-says so in the terms of *that* ecosystem. Two consequences, and the second is the
-one that bites:
+names a crate in that ecosystem's terms, when it names it at all. No Python-side
+scanner sees an advisory filed against a crate, and no grep of this repo's
+config answers it, because the crate was never in that config. The question is
+whether the crate is in the binary this repo installs.
 
-- **No Python-side scanner can see the advisory.** It is filed against a crate on
-  crates.io. `pip-audit` reporting clean under both `-s pypi` and `-s osv` is
-  correct and means nothing here.
-- **Grepping this repo's config answers nothing**, because the crate was never in
-  this repo's config. The question is whether it is in the binary this repo
-  installs.
-
-**Read the shipped set out of the wheel.** PEP 770 wheels carry their own SBOM:
-
-```bash
-python3 - "<pkg>" "<version>" <<'EOF'
-import io, json, sys, urllib.request, zipfile
-pkg, version = sys.argv[1], sys.argv[2]
-req = urllib.request.Request(f"https://pypi.org/simple/{pkg}/",
-                             headers={"Accept": "application/vnd.pypi.simple.v1+json"})
-files = json.load(urllib.request.urlopen(req, timeout=60))["files"]
-# Any wheel for the release: the vendored set is the same across platforms.
-name = f"{pkg}-{version}-"
-wheels = [f for f in files
-          if f["filename"].startswith(name) and f["filename"].endswith(".whl")]
-if not wheels:
-    sys.exit(f"no wheel for {pkg} {version} — sdist-only, or a version that is not there")
-wheel = wheels[0]
-zf = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen(wheel["url"], timeout=180).read()))
-found = [n for n in zf.namelist() if "/sboms/" in n]
-if not found:
-    sys.exit(f"{wheel['filename']} carries no SBOM — exposure is UNDERIVABLE, not clean")
-for name in found:
-    doc = json.loads(zf.read(name))
-    print(name, doc.get("bomFormat"), doc.get("specVersion"),
-          len(doc.get("components", [])), "components")
-    print(sorted(c["name"] for c in doc.get("components", [])))
-EOF
-```
-
-Measured on the case this section came from. `rumdl` 0.2.60's release notes carry
-one line — `deps: update h2 to 0.4.16`, under **Fixed**, with no `Security`
-heading — and that is RUSTSEC-2026-0258, *h2 unbounded empty DATA frames*:
-
-| Question | Answer |
-|---|---|
-| `rumdl-0.2.60-py3-none-manylinux_2_28_x86_64.whl` | `dist-info/sboms/rumdl.cyclonedx.json`, CycloneDX 1.5, 178 components |
-| `h2` among them | **no** — nor `reqwest`, `hyper`, `jsonschema` |
-| `tokio` among them | yes, so the SBOM is the real shipped set and not a stub |
-
-Not exposed, established rather than assumed.
-
-**`Cargo.lock` would have said the opposite, and that is the trap.** It records
-`[dev-dependencies]`, which are built for the project's own tests and are not in
-the binary anyone installs. `rumdl`'s `Cargo.toml` at `v0.2.60` has
-`jsonschema = "0.46"` under exactly that heading, and `jsonschema` is what pulls
-`reqwest` → `h2`. Reaching for the lockfile finds the crate and calls it
-exposure. The SBOM is the shipped set.
-
-**A wheel with no SBOM is `underivable`, never clean.** PEP 770 is recent and
-coverage is partial, so absence of the file says nothing about absence of the
-crate. Report it the way Phase 0 reports an output it could not derive — the
-distinction this plugin preserves everywhere else — and say which of the two the
-row is.
+**`vendored.py` answers it, in Phase 3's block**, for every package the PR moves.
+It reads each wheel's own PEP 770 SBOM (`.dist-info/sboms/`) at the current pin,
+the proposed one and the latest, and queries OSV for every crate the wheel ships.
+It does not read `Cargo.lock`, which records dev-dependencies that no wheel
+ships: rumdl 0.2.76 moved `rustls` there, and no rumdl wheel contains it. It
+reads every wheel, not just the first, because each platform ships a different
+set. A wheel with no SBOM is `underivable`, never clean. Quote its row for the
+crate the entry names.
 
 ### When the entry names a rule this repo disables, or never enables
 
@@ -581,7 +533,11 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
 python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/pipaudit.py" \
-  --scratch "$SCRATCH" --ref "pr-<N>" --base "$BASE_SHA"
+  --scratch "$SCRATCH" --ref "pr-<N>" --base "$BASE_SHA"; echo "pipaudit exit: $?"
+
+# The crates a compiled wheel ships, which no Python-side auditor reads.
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/vendored.py" \
+  --ref "pr-<N>" --base "$BASE_SHA"; echo "vendored exit: $?"
 ```
 
 **Exit 0** means `pip-audit` answered for every pin the export carries — every
@@ -590,6 +546,13 @@ found nothing. **Exit 1** means it found something: an advisory, or a version th
 PR introduces that the export lacks or the auditor skipped, and the output names
 which. **Exit 2** means it could not run, and the row is `underivable`, never
 clean.
+
+**`vendored.py`'s 0** means nothing that any wheel the PR moves ships carries an
+advisory, at the current, proposed or latest version. Its **1** names each
+advisory's place: fixed by this PR, fixed above it, introduced by it, or
+standing. A wheel with no SBOM is the fifth place, `underivable`. Fixed above is
+a follow-up whose release notes may never name it: ruff 0.16.9 fixed salsa's
+RUSTSEC-2026-0308 and said nothing.
 
 **Quote its coverage line in the row.** The two halves cover different sets —
 OSV the whole lockfile, the auditor what the export carries, which leaves out

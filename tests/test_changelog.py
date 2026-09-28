@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import itertools
 import json
 import pathlib
 import subprocess
@@ -377,6 +378,181 @@ class ChangelogHarness(unittest.TestCase):
             files={"CHANGELOG.md": MYPY_CHANGELOG},
             commits=MYPY_30_31,
         )
+
+
+# Recorded 2026-09-27 from rvben/rumdl v0.2.74...v0.2.75, trimmed: the release body
+# is the changelog's section with its version heading dropped, then a download table
+# (one row of seven kept). The release workflow cuts one from the other, so the two
+# agreeing is one text read twice.
+RUMDL_75_SECTION = """\
+### Added
+
+- **md093**: add opt-in rule for inline formatting in headings ([ed627ef](https://github.com/rvben/rumdl/commit/ed627ef25d2040e309fe4e28833d935c8834f681))
+
+### Fixed
+
+- **md013**: add opt-in link text wrapping ([effdb6a](https://github.com/rvben/rumdl/commit/effdb6a7ba0d9fc3cfa52cf17eefc62282026ddc))
+- **MD013**: protect opt-in bracket display math during reflow ([e2c7fe8](https://github.com/rvben/rumdl/commit/e2c7fe87965f16c9d77e029d5d086f4e0f069a45))
+- **MD044**: add opt-in whole-word matching for identifiers ([013621e](https://github.com/rvben/rumdl/commit/013621e8d469f16dd05d63610f3e76db1545b012))
+"""
+
+RUMDL_75_NOTES = (
+    RUMDL_75_SECTION
+    + """
+
+## Downloads
+
+| File | Platform | Checksum |
+|------|----------|----------|
+| [rumdl-v0.2.75-x86_64-unknown-linux-gnu.tar.gz](https://github.com/rvben/rumdl/releases/download/v0.2.75/rumdl-v0.2.75-x86_64-unknown-linux-gnu.tar.gz) | Linux x86_64 | [checksum](https://github.com/rvben/rumdl/releases/download/v0.2.75/rumdl-v0.2.75-x86_64-unknown-linux-gnu.tar.gz.sha256) |
+"""
+)
+
+RUMDL_75_CHANGELOG = (
+    "# Changelog\n\n"
+    "## [0.2.75](https://github.com/rvben/rumdl/compare/v0.2.74...v0.2.75) - 2026-09-20\n\n"
+    + RUMDL_75_SECTION
+    + "\n## [0.2.74](https://github.com/rvben/rumdl/compare/v0.2.73...v0.2.74) - 2026-09-18\n\n"
+    "### Fixed\n\n- **MD092**: allow scoped suppression of documented conflicts\n"
+)
+
+RUMDL_74_75 = [
+    "ci(release): handle Cargo index rejection on publish retries",
+    "fix(MD044): add opt-in whole-word matching for identifiers",
+    "fix(MD013): protect opt-in bracket display math during reflow",
+    "feat(md093): add opt-in rule for inline formatting in headings",
+    "fix(md013): add opt-in link text wrapping",
+    "chore: bump version to v0.2.75",
+]
+
+
+class TestTheEvidenceFileSaysWhereEachPartIs(ChangelogHarness):
+    """#173. ruff's evidence file is 299 lines, and a run that printed two of them
+    at once spilled past its output and cut its own `awk` slices by heading. The
+    index is printed beside the path, and a release body's own `##` headings --
+    ruff's carries `## Install ruff 0.16.8` -- are not sections of it."""
+
+    def repo(self, notes: str = RUMDL_75_NOTES) -> Repo:
+        return Repo(
+            "rvben/rumdl",
+            releases=[("v0.2.75", notes), ("v0.2.74", "### Fixed\n\n- **MD092**: allow\n")],
+            files={"CHANGELOG.md": RUMDL_75_CHANGELOG, "Cargo.toml": ""},
+            commits=RUMDL_74_75,
+        )
+
+    def test_each_section_is_listed_with_the_lines_it_spans(self):
+        _, out, text = self.run_main(self.repo(), "--from", "0.2.74", "--to", "0.2.75")
+        lines = text.split("\n")
+        index = [ln for ln in out.splitlines() if ln.startswith("  lines ")]
+        self.assertEqual(len(index), 2, out)
+        spans = []
+        for row in index:
+            start, end = (int(n) for n in row.split()[1].split("-"))
+            label = row.split(None, 2)[2]
+            self.assertEqual(lines[start - 1], f"## {label}")
+            spans.append((start, end))
+        # The sections tile the file from the first heading to the last line.
+        for (_, end), (start, _) in itertools.pairwise(spans):
+            self.assertEqual(end + 1, start)
+        self.assertEqual(spans[-1][1], len(lines))
+        self.assertIn(f"{len(lines)} lines:", out)
+
+    def test_a_heading_inside_a_release_body_is_not_a_section(self):
+        _, out, _ = self.run_main(self.repo(), "--from", "0.2.74", "--to", "0.2.75")
+        self.assertNotIn(
+            "Downloads", "\n".join(ln for ln in out.splitlines() if ln.startswith("  lines "))
+        )
+
+
+class TestSecurityShapedLinesAreNamedWithTheirSection(ChangelogHarness):
+    """The scan the read is sent to do, with line numbers. The read stays required,
+    because checkout@v7's security change was a plain bullet with none of this."""
+
+    # Recorded 2026-09-27 from urllib3 2.5.0's release body, trimmed to its security
+    # section and kept byte for byte -- CRLF included, which is how GitHub stored it.
+    URLLIB3 = (
+        "# Security issues\r\n\r\nurllib3 2.5.0 fixes two moderate security issues:\r\n"
+        "- Pool managers now properly control redirects when `retries` is passed "
+        "— CVE-2025-50181 reported by @sandumjacob (5.3 Medium, GHSA-pq67-6m6q-mj2v)\r\n"
+        "- Redirects are now controlled by urllib3 in the Node.js runtime "
+        "— CVE-2025-50182 (5.3 Medium, GHSA-48p4-8xcf-vxj5)\r\n"
+    )
+
+    def test_an_advisory_and_a_heading_are_listed_where_they_sit(self):
+        repo = Repo(
+            "urllib3/urllib3",
+            releases=[("2.5.0", self.URLLIB3), ("2.4.0", "old\n")],
+            commits=["Release 2.5.0"],
+        )
+        _, out, text = self.run_main(repo, "--from", "2.4.0", "--to", "2.5.0")
+        flat = " ".join(out.split())
+        self.assertIn("heading [rung 1 -- release notes, 2.5.0", flat)
+        self.assertIn("CVE-2025-50181 [rung 1 -- release notes, 2.5.0", flat)
+        self.assertIn("CVE-2025-50182 [rung 1 -- release notes, 2.5.0", flat)
+        self.assertNotIn("Written by `changelog.py`", out, "the file's own header is not a hit")
+        cve = next(ln for ln in out.splitlines() if "CVE-2025-50181" in ln)
+        number = int(cve.split()[1])
+        self.assertIn("CVE-2025-50181", text.split("\n")[number - 1])
+
+    def test_lines_with_only_the_words_are_counted_past_the_first_ten(self):
+        """Synthetic: ruff 0.16.9's range lists "Sync the Ruff security mirror" and its
+        kin as commit subjects; a range with many such lines shows ten and counts the rest."""
+        subjects = [f"Harden the security review step {n}" for n in range(14)]
+        repo = Repo("example/wordy", releases=[("1.1", "x\n"), ("1.0", "y\n")], commits=subjects)
+        _, out, _ = self.run_main(repo, "--from", "1.0", "--to", "1.1")
+        shown = [ln for ln in out.splitlines() if "  word  [" in ln]
+        self.assertEqual(len(shown), 10, out)
+        self.assertIn("... and 4 more with the words alone, in the file", out)
+
+    def test_none_is_said_and_the_read_is_still_asked_for(self):
+        _, out, _ = self.run_main(
+            Repo("example/quiet", releases=[("1.1", "- faster\n"), ("1.0", "x\n")], commits=[]),
+            "--from",
+            "1.0",
+            "--to",
+            "1.1",
+        )
+        flat = " ".join(out.split())
+        self.assertIn("security-shaped lines: none", flat)
+        self.assertIn("for `Security` entries all the same", flat)
+
+
+class TestOneTextReadTwiceIsNotTwoSources(ChangelogHarness):
+    """uv-lock.md asked the reader to check whether rung 1 is produced from rung 2
+    before counting their agreement. Where the release body carries the section
+    verbatim, the script says so; where it does not, it says nothing, because a
+    reformatted copy is not an independent source either."""
+
+    def test_rumdls_release_body_is_its_changelog_section(self):
+        _, out, _ = self.run_main(
+            TestTheEvidenceFileSaysWhereEachPartIs().repo(), "--from", "0.2.74", "--to", "0.2.75"
+        )
+        self.assertIn("rung 1 carries rung 2's section verbatim for v0.2.75", out)
+
+    def test_a_reworded_body_is_not_called_one_source(self):
+        """Synthetic: the same entries as bullets reworded, as pytest's converted notes are."""
+        reworded = RUMDL_75_NOTES.replace("add opt-in link text wrapping", "wrap link text")
+        _, out, _ = self.run_main(
+            TestTheEvidenceFileSaysWhereEachPartIs().repo(reworded),
+            "--from",
+            "0.2.74",
+            "--to",
+            "0.2.75",
+        )
+        self.assertNotIn("verbatim", out)
+
+    def test_an_edited_body_can_match_the_section_at_the_default_branch(self):
+        """rumdl v0.2.77: its body was rewritten after release, from a changelog the
+        next release regenerated -- the tag's section no longer matches, the default
+        branch's does."""
+        regenerated = RUMDL_75_CHANGELOG.replace(
+            "### Added\n", "### Added\n\n- **docs**: note the rule\n", 1
+        )
+        notes = RUMDL_75_NOTES.replace("### Added\n", "### Added\n\n- **docs**: note the rule\n", 1)
+        repo = TestTheEvidenceFileSaysWhereEachPartIs().repo(notes)
+        repo._files_at_head = {"CHANGELOG.md": regenerated, "Cargo.toml": ""}
+        _, out, _ = self.run_main(repo, "--from", "0.2.74", "--to", "0.2.75")
+        self.assertIn("rung 1 carries rung 2's section verbatim for v0.2.75", out)
 
 
 class TestTheRungThatAnsweredIsNotTheWholeAnswer(ChangelogHarness):

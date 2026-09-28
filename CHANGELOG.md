@@ -11,7 +11,266 @@ patch.
 
 ## [Unreleased]
 
-## [0.56.0] — 2026-09-25
+## [0.57.0] — 2026-09-28
+
+This version takes up the three follow-ups 0.56.0's replay filed (#171–#173),
+and the two gaps that measuring them turned up (#175, #176). Each was measured
+before it was fixed, and each is fixed in a script wherever a script can decide
+it.
+
+Two new scripts take over what the prose asked a run to do by hand:
+- `vendored.py` reads the crates a compiled wheel ships;
+- `exercised.py` reads whether CI's runs exercised the change.
+
+Two existing scripts grow:
+- `runners.py` reads every workflow trigger, and the YAML it used to refuse;
+- `changelog.py` indexes its own evidence file.
+
+One finding changes the evidence a verdict rested on. ruff 0.16.9 fixed a
+use-after-free in a crate it ships, and its release notes never say so; the
+0.56.0 replay of `fpga-board-sim` #438 called those notes *"nothing
+security-shaped"*.
+
+`SKILL.md` goes from 124,389 bytes to 120,607, and the references from 134,938
+to 133,427.
+
+### The evidence file says where each part is, and what in it looks like security (#173)
+
+`uv-lock.md` requires reading `changelog.py`'s evidence file for `Security`
+entries. On `fpga-board-sim` #438 the run read two of ruff's at once, 19,939 and
+18,337 bytes, overran its output, and cut its own `awk` slices by heading. On its
+own, ruff 0.16.7...0.16.8's file is 300 lines and fits in one read. What was
+missing was a way to find the right part of it.
+
+`changelog.py` now prints the file's index beside its path: each section's first
+and last line, and its heading. It splits only on the headings it writes itself,
+so a release body's own `## Install ruff 0.16.8` does not break a rung in two. It
+also scans the file for what the read is sent to find, prints each hit with its
+line number and the section it sits in, and still asks for the read: a fix
+written as a plain bullet carries no id, no heading and no keyword. The scan
+looks for three things:
+- advisory ids: CVE, GHSA, RUSTSEC, PYSEC;
+- headings that name security;
+- the words.
+
+Measured over ten ranges before it went in (ruff twice, uv, rumdl, pytest, mypy,
+requests, urllib3, jinja2, cryptography), it found every advisory the prose
+names:
+- uv's GHSA-2cv4-cqwr-gwf7, in both rungs;
+- requests' CVE-2024-47081 under `**Security**`;
+- urllib3's two CVEs under `# Security issues`;
+- jinja2's GHSA.
+
+Words alone added at most eleven lines to uv's 1,314, mostly commit subjects
+like "Sync the Ruff security mirror", which their section label shows for what
+they are.
+
+It also says when a release body carries its changelog section verbatim, the one
+check `uv-lock.md` left to the reader. The comparison runs line by line, without
+the section's version heading, against the section at the tag and at the default
+branch. It finds that ruff's, uv's and rumdl's release notes are one text read
+twice. rumdl v0.2.77, whose body was edited after release, matches the
+default-branch section. Where nothing matches the script says nothing, because
+pytest's notes, which differ from its changelog in form, are not a second source
+either.
+
+The first cut split the index on every `##` line and printed nine sections for
+ruff's four. The test file's urllib3 fixture first carried a GHSA id typed from
+memory. The id was right, but it had not been recorded, so the fixture is now the
+release body byte for byte, CRLF included.
+
+Eight tests and ten mutations, each caught by the test aimed at it. One prose
+sentence changes to point at the script, and the references stay one byte under
+their budget.
+
+### What a compiled wheel ships is read in Phase 3, not behind a pointer (#171)
+
+0.56.0 made `changelog.py` surface a dependency bump the notes never named, and
+its note sent the reader to `uv-lock.md`'s SBOM method. On `fpga-board-sim` #438
+the reader stopped at the note. The issue called that below the bar, because both
+cases measured so far had turned out to be dev-only crates. Measured again for
+this version, it was not below the bar. ruff 0.16.9, released 2026-09-24, ships
+`salsa` 0.28.5, which fixes RUSTSEC-2026-0308 (GHSA-xc3w-55vh-cw3w), a
+use-after-free that OSV marks `unsound`. ruff 0.16.7 and 0.16.8 ship `salsa`
+0.28.2 in all 17 of their wheels. The advisory was published eight hours before
+the release, and the release notes name none of it. The #438 replay reported
+those notes as *"nothing security-shaped … nothing to hand-land"*: true of the
+notes, wrong about the release, and a currency conclusion rested on it.
+
+The issue's proposed fix was wrong in two places, and measuring found both.
+- It started from `Cargo.lock`, which records dev-dependencies. rumdl 0.2.76's
+  `rustls` fix is there, and no rumdl wheel ships `rustls`.
+- `uv-lock.md`'s reader took `wheels[0]` on the claim that *"the vendored set
+  is the same across platforms"*. rumdl 0.2.76's seven wheels list 214 to 219
+  components: `inotify` on Linux, `fsevent-sys` on macOS, `mimalloc` and
+  `windows-sys` on Windows.
+
+`scripts/vendored.py` reads the wheels, every one of them. It takes the PEP 770
+SBOM out of each wheel by HTTP range, without downloading the wheel: ruff 0.16.8's
+17 wheels are 175 MB, and their SBOMs read in 4 s. It leaves out components
+scoped `excluded`, which are build-time crates. It queries OSV by purl for every
+crate shipped at the current pin, the proposed one and the registry's latest, and
+places each advisory in one of these:
+- fixed by this PR;
+- fixed above it;
+- introduced by it;
+- standing;
+- `underivable`, where a release was not read in full.
+
+A wheel with no SBOM is `underivable`. So is a release: pydantic-core 2.41.5 has
+no SBOM in any of its 120 wheels. The script stops after three such wheels and
+says so, instead of reading them all. An `unmaintained` notice is listed, and on
+its own is not a finding.
+
+It runs in Phase 3's own block, beside `pipaudit.py`, for every package `uv.lock`
+moves. Pre-commit's Phase 3 runs it for the package the hook installs, and
+`changelog.py`'s note now names the script. The inline SBOM reader and its table
+are gone.
+
+Live, on #438's lockfile, both known answers come out right. ruff shows
+RUSTSEC-2026-0308 **fixed above this PR**, *"latest 0.16.9: not shipped, ships
+salsa 0.28.5"*, and RUSTSEC-2026-0204 in `crossbeam-epoch` as standing. rumdl is
+clean at every version read. In about 15 s.
+
+Building it found a defect of its own. pydantic-core 2.49.0 does carry SBOMs, and
+the first draft labelled its `lru` advisory `standing`, printing *"not shipped"*
+for 2.41.x. Those releases were never read, so the answer for them is unknown. A
+release not read in full now clears nothing, and the row says it is underivable
+at the proposed pin, and that the latest ships the crate.
+
+Eighteen tests, over real wheels built in memory and served by byte range, and
+three live ones. Fifteen mutations on the script and three on the prose guards,
+each caught by the test aimed at it.
+
+### Phase 6 reads the runs that happened, not the triggers (#176)
+
+Phase 6's second question is whether the green came from a run that exercised
+the change. The procedure answered it by **prediction**: a loose grep for install
+steps, then `sed -n '/^on:/,/^[a-z]/p'` over each workflow the grep named, read
+for a `pull_request` trigger. Nothing in `SKILL.md` or the references mentioned
+`paths:` or `paths-ignore:`. Across the workflows of 12 repositories, 25 of 52
+`pull_request` triggers carry one, `fpga-board-sim`'s own `install-docs.yml`
+among them. A workflow filtered that way never runs on a PR that changes only
+`uv.lock`, but the trigger read said it would. The jobs came later and by hand.
+A job-level `if:` read that way was visible, but a step-level one was not: a job
+can finish `success` with its install step `skipped`, as fpga-board-sim's
+Windows job does with `Install GHDL`.
+
+`scripts/exercised.py` observes instead. It lists the runs GitHub made on
+`$HEAD_SHA`. It reads the workflow files at that commit through `runners.py`'s
+parser, in one GraphQL call. Then it follows each changed file to the step that
+exercises it:
+- `uv.lock` and `pyproject.toml`: a `uv sync` or `uv run`;
+- the hook config: a `pre-commit run` or `prek run`, or their action;
+- a workflow file: the `uses:` its patch bumps, or the step that sets a value
+  its patch changes. Renovate's `version: "0.12.18"` under ruff's setup-uv
+  steps bumps no action.
+
+It matches each step against the job's step list by the name GitHub shows: the
+step's own `name:`, or else `Run <uses>` or `Run <first line of run>`. A called
+workflow runs as `caller / callee` under its caller's path, including ruff's
+cargo-dist calls spelled `$/`. When two jobs fit one name equally, the script
+says so instead of guessing. A workflow that did not run is listed with what
+starts it. `pre-commit.ci`'s status counts for the hook config. Exit 0 means
+every changed file was exercised. Exit 1 names each that was not.
+
+Measured live before it went in, on seven merged PRs:
+- fpga-board-sim #438 and #436: exercised, by 30 jobs each.
+- cli/cli #14486: `codeql.yml` was exercised. Its group also bumped
+  `upload-sarif` in `govulncheck.yml`, which starts on `schedule` and
+  `workflow_dispatch` only, so nothing on the PR ran it.
+- ruff#28880: 4 of 11 workflow files exercised.
+- pytest #15027: exercised through `pre-commit.ci`.
+- pytest #15070 and ruff#28807: exercised.
+
+Phase 6's trigger read, its three-case table, the two paragraphs on reading it
+and the hand-run jobs block are gone. `SKILL.md` is 3,782 bytes shorter, and its
+budget drops to match.
+
+Twenty-four tests, plus two live ones against #438 and #14486. Twenty-two
+mutations: twenty on the script and two on the Phase 6 prose guards, each caught by
+the test aimed at it. Two more survived, and both marked dead code, since removed:
+- a comment filter the key pattern already enforced;
+- a `docker://` exclusion that was also wrong, since an image digest is a
+  matchable step.
+
+Writing the live test surfaced a defect of its own. A head SHA typed from memory
+had its tail wrong, and the script reported no runs and empty rows, which reads
+as "nothing ran". It now checks `--head-sha` against the PR's head, as
+`ci_state.py` does, and says when it is not.
+
+Two guards changed with the prose. The `--no-execute` guard fired on
+`exercised.py`'s rule labels, which name `uv sync` without running it, so each
+label and its match are now built from one list of verbs. The stdlib-only layout
+test now admits a sibling script, which `python3 "$SCRIPTS/x.py"` puts first on
+`sys.path`.
+
+### Row 1 lists every trigger instead of grepping for three (#172)
+
+`actions.md`'s Row 1 asks whether this repo uses a trigger the release restricts.
+It was two greps: an alternation of `pull_request_target`, `workflow_run` and
+`release`, and a `tags:` key within two lines of `push:`. On `fpga-board-sim`
+#436, setup-uv v10.2.0 stops saving its cache in merge queues, and a merge queue
+fires `merge_group`, which was in neither grep. The run answered it by hand.
+
+The issue proposed adding `merge_group` to the alternation. Measuring the second
+grep showed the closed list was the defect. A `push:` with no `branches:` or
+`tags:` runs on every tag push, and a `tags:` below a `branches:` list sits more
+than two lines down. Across 304 workflows from 22 repositories, 36 run on tag
+pushes. The grep missed 17 of them in six repositories: all 10 bare pushes, and
+7 that nest their tags, pydantic's `ci.yml` among them.
+
+`runners.py` already loads every workflow at `pr-<N>` for Row 3, so it now also
+prints each workflow's `on:`: every event, with the filters GitHub applies, and
+an index of events across files. A `push` always says which refs it runs on:
+`every branch and tag`, or branch filters marked `no tag pushes`, or the tag
+filters as written. An unreadable file's triggers are unknown, not none, and the
+index says an event missing from it may still start that file. Row 1 and Row 3
+are one call, the two greps are gone, and `actions.md` is 628 bytes shorter.
+
+Seven tests on recorded `on:` blocks from Homebrew/brew (a merge queue) and
+pydantic (tags three lines down). Nine mutations on the listing and three on the
+prose guards, each caught by the test aimed at it. The old prose guard only
+asserted that `tags:` appeared somewhere in Phase 4. After the rewrite a
+paragraph about #363 still satisfied it, so it was rewritten to read Row 1's own
+table row and block.
+
+### A value on the line after its key is read, not refused (#175)
+
+`runners.py`'s YAML reader took a scalar only on its key's line, and a quoted one
+only if it closed there. Both are ordinary YAML, and the reader refused them:
+9 of psf/black's 13 workflows were unreadable, because their `if:` expressions
+run onto the lines below. On black, Row 3 answered `NOT ALL HOSTED -- 0 job(s)
+on another runner, 9 unresolved, of 15`, so an environment variable's silence
+could never be `inert here` there. The same refusal hit `action.yml` in
+astral-sh/setup-uv, whose `description:` value sits on the next line, and in
+actions/download-artifact, whose description is quoted across three lines.
+Found while prototyping #172's trigger reader, which is built on this parser.
+
+A value that starts on a line of its own is now read as a collection when it is
+one, and as a scalar otherwise. Continued lines fold the way YAML folds them:
+a line break becomes a space, and each blank line a newline. Inside quotes the
+reader keeps a `#` as text, and in double quotes a trailing backslash joins two
+lines. Double-quoted escapes now decode, so `\n` is a newline rather than `n`.
+On black, 24 of 25 jobs now resolve. The 25th builds its matrix with
+`fromJson`, and it now says so: the old loop walked the expression's characters
+and reported `matrix.os` missing from the matrix.
+
+The check against PyYAML's `BaseLoader` was rerun on whole documents: 304
+workflows from 22 repositories, plus 33 `action.yml` files. Before the fix,
+319 agreed and 18 were unreadable, every one of them this failure. After it,
+all 337 agree, except block scalars, which stay raw by design. Three kinds of
+text that PyYAML refuses are still refused here: a comment inside a plain
+scalar, a quote that never closes, and text after the closing quote. One that
+PyYAML reads is refused on purpose: a quoted scalar whose next line sits at its
+key's own indent, which reads as the next key.
+
+Eight tests, and thirteen mutations each caught by the test aimed at it. The
+first run of that harness launched from the wrong directory, so the test module
+never imported, and it printed `CAUGHT` for all thirteen. It now names that
+failure as a harness error, not a catch.
+
+## [0.56.0] — 2026-09-26
 
 The five follow-ups 0.55.0's replay filed under the stopping rule (#165–#169), each
 measured before it was fixed, and fixed in a script wherever a script could decide
@@ -6915,7 +7174,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.57.0...HEAD
+[0.57.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.53.0...v0.54.0

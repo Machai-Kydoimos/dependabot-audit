@@ -192,6 +192,30 @@ DEPENDENCY_BUMP = re.compile(
 # heading on is schedule, rebase and automerge settings: on the #438 replay, two
 # bodies grew ruff 0.16.7...0.16.8's evidence file by 23%, most of it that tail.
 BOT_SETTINGS = re.compile(r"^#{2,3} Configuration\b", re.MULTILINE)
+
+# What the evidence file is scanned for, so a `Security` heading or an advisory id
+# is a line number in the output rather than something a reader has to find. The
+# read stays required: a security fix can be a plain bullet with no heading and no
+# id, as actions/checkout@v7's was. Measured over ten ranges (ruff, uv, rumdl,
+# pytest, mypy, requests, urllib3, jinja2, cryptography): every advisory the prose
+# names is found -- uv's GHSA-2cv4-cqwr-gwf7, requests' CVE-2024-47081 under
+# `**Security**`, urllib3's two CVEs, jinja2's GHSA -- and the words alone add at
+# most eleven lines to uv's 1,314, mostly commit subjects such as "Sync the Ruff
+# security mirror", which the section label beside each line makes plain.
+ADVISORY_ID = re.compile(
+    r"\b(?:CVE-\d{4}-\d{4,}|GHSA(?:-[0-9a-z]{4}){3}|RUSTSEC-\d{4}-\d{4}|PYSEC-\d{4}-\d+)\b",
+    re.IGNORECASE,
+)
+SECURITY_HEADING = re.compile(r"^\s*(?:#{1,6}\s|\*\*)[^\n]*\bsecurity\b", re.IGNORECASE)
+SECURITY_WORD = re.compile(r"\b(?:security|vulnerab\w*|exploit\w*|CVSS)\b", re.IGNORECASE)
+
+# The section headings `write_evidence` writes, and nothing a release body carries.
+SECTION = re.compile(
+    r"^## (?:rung [12]\b|unreconciled --|destructive-fix shape --|dependency bumps --)"
+)
+
+# Security-word lines printed before the rest are counted rather than shown.
+SHOWN_WORDS = 10
 BUMP_BODY_LINES = 40
 
 # The ranking's tiers, named for the line that says what the cap cut.
@@ -923,7 +947,7 @@ def write_evidence(
     blocks: list[str],
     missing: list[str],
     bodies: dict[str, str],
-) -> Path:
+) -> tuple[Path, list[tuple[int, int, str]], list[str]]:
     """Save both halves of the comparison, so reading them is not a second fetch.
 
     Phase 2 reads the prose for `Security` sections, which no count in this
@@ -946,6 +970,12 @@ def write_evidence(
     Only the marked rows, because these are the ones Phase 7 takes the verdict
     from, and the dependency bumps that carry a body; a body for all 266 of
     ruff's would be the wall this file exists to replace.
+
+    **It returns the file's index as well**: each section's first and last line
+    and its heading (#173). ruff's 0.16.7...0.16.8 file is 300 lines, and a run
+    that read two such files in one command spilled past its output and cut its
+    own slices with `awk`. With the index printed beside the path, the slice is
+    supplied. The file's lines come back too, for the security scan.
     """
     out = scratch / f"changelog-{slug.replace('/', '-')}-{from_tag}-{to_tag}.md"
     header = [
@@ -994,8 +1024,58 @@ def write_evidence(
         ]
         for subject in bumps:
             tail += ["", f"### {subject}", "", "```", bump_body(bodies[subject]), "```"]
-    out.write_text("\n".join(header + blocks + tail), encoding="utf-8")
-    return out
+    lines = "\n".join(header + blocks + tail).split("\n")
+    out.write_text("\n".join(lines), encoding="utf-8")
+    # Only the headings this function writes: a release body carries `##` lines
+    # of its own -- ruff's has `## Install ruff 0.16.8` -- and they are not sections.
+    starts = [n for n, line in enumerate(lines) if SECTION.match(line)]
+    index = [
+        (start + 1, (starts[k + 1] if k + 1 < len(starts) else len(lines)), lines[start][3:])
+        for k, start in enumerate(starts)
+    ]
+    return out, index, lines
+
+
+def one_source(section: str, body: str) -> bool:
+    """Does a release body carry a changelog section verbatim?
+
+    Line by line, whitespace collapsed, with the section's own version heading left
+    out -- rumdl's release workflow drops `## [0.2.75](...) - 2026-09-20` and keeps
+    the rest, then appends its download table. Measured over the ranges the scan
+    above names: ruff's, uv's, rumdl's and requests 2.32.5's release notes all carry
+    their changelog section, so the two agreeing is one text read twice. A body that
+    does not carry it says nothing either way: pytest's notes differ from its
+    changelog in form, and a reformatted copy is not independence.
+    """
+
+    def lines_of(text: str) -> list[str]:
+        return [" ".join(line.split()) for line in text.splitlines() if line.strip()]
+
+    wanted = lines_of(section)
+    if wanted and wanted[0].startswith("#"):
+        wanted = wanted[1:]
+    return bool(wanted) and "\n".join(wanted) in "\n".join(lines_of(body))
+
+
+def security_lines(
+    lines: list[str], index: list[tuple[int, int, str]]
+) -> list[tuple[int, str, str]]:
+    """(line, why, text) for every line of the evidence file that looks like security:
+    an advisory id, a heading naming security, or the words. The file's own header,
+    which tells the reader to look for exactly this, is left out."""
+    first = index[0][0] if index else len(lines) + 1
+    found = []
+    for number, line in enumerate(lines, start=1):
+        if number < first:
+            continue
+        ident = ADVISORY_ID.search(line)
+        if ident:
+            found.append((number, ident.group(0), line))
+        elif SECURITY_HEADING.search(line):
+            found.append((number, "heading", line))
+        elif SECURITY_WORD.search(line):
+            found.append((number, "word", line))
+    return found
 
 
 def main() -> int:
@@ -1040,6 +1120,8 @@ def main() -> int:
     window, why = gap(published, from_tag, to_tag)
     blocks: list[str] = []
     edits: list[str] = []
+    released = {row["tag"]: row["body"] for row in window}
+    verbatim: list[str] = []
     for row in window:
         mark = edited_since_published(row)
         header = f"## rung 1 -- release notes, {row['tag']} ({row['at']})"
@@ -1067,6 +1149,9 @@ def main() -> int:
                 sections += 1
                 blocks.append(f"## rung 2 -- {name}, {row['tag']}\n\n{body}")
             head_body = section_for(head_text, version) if head_text else ""
+            notes = released.get(row["tag"], "")
+            if notes and (one_source(body, notes) or one_source(head_body, notes)):
+                verbatim.append(row["tag"])
             if head_body and head_body.strip() != body.strip():
                 regenerated.append(row["tag"])
                 blocks.append(
@@ -1084,6 +1169,11 @@ def main() -> int:
         for tag in regenerated:
             print(f"         {tag}: the section at the default branch DIFFERS")
             print(f"                 from the one at {to_tag} -- both are in the evidence file")
+        if verbatim:
+            # uv-lock.md asked the reader to check this by hand, from the project's
+            # release procedure. Where the text says it outright, it is said here.
+            print(f"         rung 1 carries rung 2's section verbatim for {', '.join(verbatim)}:")
+            print("         one text read twice, so the two agreeing is not corroboration")
     else:
         print("rung 2 -- no changelog file at this tag")
 
@@ -1118,9 +1208,26 @@ def main() -> int:
     missing = sorted(
         (s for s in subjects if not reconciled(description_of(s), prose_lines)), key=rank
     )
-    saved = write_evidence(scratch, slug, from_tag, to_tag, blocks, missing, bodies)
-    print(f"evidence saved to {saved}")
-    print("Read it for `Security` sections -- no count here substitutes for that.")
+    saved, index, lines = write_evidence(scratch, slug, from_tag, to_tag, blocks, missing, bodies)
+    print(f"evidence saved to {saved}, {len(lines)} lines:")
+    for start, end, label in index:
+        print(f"  lines {start:>4}-{end:<4} {label}")
+    hits = security_lines(lines, index)
+    where = {n: label for start, end, label in index for n in range(start, end + 1)}
+    marked = [h for h in hits if h[1] != "word"]
+    words = [h for h in hits if h[1] == "word"]
+    if hits:
+        print("security-shaped lines, with the section each sits in:")
+        for number, why, line in marked + words[:SHOWN_WORDS]:
+            print(f"  line {number:>4}  {why}  [{where.get(number, '')}]  {line.strip()[:90]}")
+        if len(words) > SHOWN_WORDS:
+            print(f"  ... and {len(words) - SHOWN_WORDS} more with the words alone, in the file")
+    else:
+        print("security-shaped lines: none -- no advisory id, heading or word in the file.")
+    prose = [(s, e) for s, e, label in index if label.startswith("rung ")]
+    span = f"lines {prose[0][0]}-{prose[-1][1]}" if prose else "the prose rungs"
+    print(f"Read rungs 1 and 2 ({span}) for `Security` entries all the same: the scan finds")
+    print("ids, headings and words, and a fix written as a plain bullet has none of them.")
     print()
 
     noun = "commit(s)"
@@ -1180,8 +1287,8 @@ def main() -> int:
         print(
             f"{len(bumps)} of them bump{'s' if len(bumps) == 1 else ''} a dependency. "
             "One compiled into the wheel can carry\n"
-            "a fix no Python-side scanner sees, and the notes need not name it: see\n"
-            "uv-lock.md § When the changelog entry names a dependency."
+            "a fix no Python-side scanner sees, and the notes need not name it:\n"
+            "vendored.py in Phase 3 reads whether a wheel ships it."
         )
         print()
     if destructive:
