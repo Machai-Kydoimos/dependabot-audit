@@ -11,7 +11,7 @@ patch.
 
 ## [Unreleased]
 
-## [0.57.0] — 2026-09-27
+## [0.57.0] — 2026-09-28
 
 This version takes up the three follow-ups 0.56.0's replay filed (#171–#173),
 and the two gaps that measuring them turned up (#175, #176). Each was measured
