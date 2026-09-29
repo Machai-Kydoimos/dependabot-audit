@@ -50,6 +50,7 @@ sys.path.insert(
 
 from changelog import (
     DESTRUCTIVE,
+    INLINE_BYTES,
     SHOWN,
     _gh,
     _gh_hard,
@@ -62,6 +63,7 @@ from changelog import (
     github_slug,
     headings,
     is_dependency_bump,
+    is_rst,
     labelled,
     main,
     match_tag,
@@ -514,7 +516,8 @@ class TestSecurityShapedLinesAreNamedWithTheirSection(ChangelogHarness):
         )
         flat = " ".join(out.split())
         self.assertIn("security-shaped lines: none", flat)
-        self.assertIn("for `Security` entries all the same", flat)
+        self.assertIn("Read it for `Security` entries", flat)
+        self.assertIn("| - faster", out)
 
 
 class TestOneTextReadTwiceIsNotTwoSources(ChangelogHarness):
@@ -1071,6 +1074,369 @@ class TestAStubIsFollowedOnceAndNeverReportedAsNone(ChangelogHarness):
         _, out, _ = self.run_main(repo, "--from", "4.6.1", "--to", "4.6.2")
         self.assertIn("rung 2 -- CHANGELOG.md: 1 section(s)", out)
         self.assertNotIn("via the pointer", out)
+
+
+# --- recorded 2026-09-29: reStructuredText read by its own rules (#177) -------
+#
+# Verbatim excerpts of each project's changelog at its default branch, cut at a
+# blank line; where bullets were dropped, the headings and rules around them are
+# as written. Measured over 53 packages' changelogs, 4 of the 36 `.rst` files
+# could not be read by Markdown's rules, and these are two of them plus the shapes
+# that constrained the fix.
+
+# `pyca/cryptography`: the title, then 46.0.2 through 46.0.0. Versions over `~`,
+# each under the hyperlink target that names it.
+CRYPTOGRAPHY_CHANGELOG = """\
+Changelog
+=========
+
+.. _v46-0-2:
+
+46.0.2 - 2025-09-30
+~~~~~~~~~~~~~~~~~~~
+
+* Updated Windows, macOS, and Linux wheels to be compiled with OpenSSL 3.5.4.
+
+.. _v46-0-1:
+
+46.0.1 - 2025-09-16
+~~~~~~~~~~~~~~~~~~~
+
+* Fixed an issue where users installing via ``pip`` on Python 3.14 development
+  versions would not properly install a dependency.
+* Fixed an issue building the free-threaded macOS 3.14 wheels.
+
+.. _v46-0-0:
+
+46.0.0 - 2025-09-16
+~~~~~~~~~~~~~~~~~~~
+
+* **BACKWARDS INCOMPATIBLE:** Support for Python 3.7 has been removed.
+"""
+
+# `python-babel/babel`: 2.17.0 and 2.16.0, one bullet kept per subsection.
+# Subsections over `~`. Read as Markdown, the 29-character rule under
+# "Deprecation and compatibility" opened a fence that no shorter one closed, so
+# 2.16.0's heading sat inside it and its entries were read as 2.17.0's.
+BABEL_CHANGES = """\
+Babel Changelog
+===============
+
+Version 2.17.0
+--------------
+
+Features
+~~~~~~~~
+
+* CLDR: Babel now uses CLDR 46, by @tomasr8 in :gh:`1145`
+
+Bugfixes
+~~~~~~~~
+
+* Dates: Make seconds optional in `parse_time` time formats by @tomasr8 in :gh:`1141`
+
+Deprecation and compatibility
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* Dates: Fix deprecation warnings for `datetime.utcnow()` by @tomasr8 in :gh:`1119`
+
+Infrastructure
+~~~~~~~~~~~~~~
+
+* Add tzdata as dev dependency and sync with tox.ini by @wandrew004 in :gh:`1159`
+
+Version 2.16.0
+--------------
+
+Features
+~~~~~~~~
+
+* CLDR: Upgrade to CLDR 45 by @tomasr8 in :gh:`1077`
+
+Bugfixes
+~~~~~~~~
+
+* CLDR: Do not allow substituting alternates or drafts in derived locales by @akx in :gh:`1113`
+
+Infrastructure
+~~~~~~~~~~~~~~
+
+* Replace deprecated `ast.Str` with `ast.Constant` by @tomasr8 in :gh:`1083`
+
+Documentation
+~~~~~~~~~~~~~
+
+* Add a mention to the docs that `format_skeleton(..., fuzzy=True)` may raise by @tomasr8 in :gh:`1106`
+"""
+
+# `pyca/pyopenssl`: versions over `-`, subsections over `^`, one bullet kept per
+# subsection. A ranking by character would put both at level 2.
+PYOPENSSL_CHANGELOG = """\
+Changelog
+=========
+
+24.3.0 (2024-11-27)
+-------------------
+
+Backward-incompatible changes:
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Removed the deprecated ``OpenSSL.crypto.CRL``, ``OpenSSL.crypto.Revoked``, ``OpenSSL.crypto.dump_crl``, and ``OpenSSL.crypto.load_crl``. ``cryptography.x509``'s CRL functionality should be used instead.
+
+Deprecations:
+^^^^^^^^^^^^^
+
+- Deprecated ``OpenSSL.rand`` - callers should use ``os.urandom()`` instead.
+
+Changes:
+^^^^^^^^
+
+* ``cryptography`` maximum version has been increased to 44.0.x.
+
+
+24.2.1 (2024-07-20)
+-------------------
+
+Backward-incompatible changes:
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+"""
+
+# `pyparsing/pyparsing` `CHANGES`, no extension: an indented line over a rule is
+# prose, not a title. Read as Markdown it was a level-1 heading naming 3.0.0, so
+# the section for 3.0.0 started there and ran to the end of the file.
+PYPARSING_CHANGES = """\
+Version 3.3.0 - December, 2025
+------------------------------
+===========================================================================================
+ The version 3.3.0 release will begin emitting `DeprecationWarnings` for pyparsing methods
+
+ Here is an example that converts all the files in the pyparsing `/examples` directory:
+
+      python -m pyparsing.tools.cvt_pyparsing_pep8_names -u examples/*.py
+
+ The new names are compatible with pyparsing versions 3.0.0 and later.
+===========================================================================================
+
+- Used performance benchmarking to identify and revert an inefficient utility method used in
+  `transform_string` (introduced in pyparsing 3.2.0b2).
+
+
+Version 3.2.5 - September, 2025
+-------------------------------
+- JINX! Well, 3.2.4 had a bug for `Word` expressions that include a space
+
+Version 3.0.0 - October, 2021
+-----------------------------
+- A consolidated list of all the changes in the 3.0.0 release can be found in
+  `docs/whats_new_in_3_0_0.rst`.
+  (https://github.com/pyparsing/pyparsing/blob/master/docs/whats_new_in_3_0_0.rst)
+"""
+
+# `jaraco/keyring` NEWS.rst: a bullet of a lone `-`, which is not a rule.
+KEYRING_NEWS = """\
+v24.0.1
+=======
+
+Misc
+----
+
+-
+
+
+v24.0.0
+=======
+"""
+
+
+def cryptography_46() -> Repo:
+    """pyca/cryptography 46.0.1...46.0.2 as recorded: no releases, one commit."""
+    return Repo(
+        "pyca/cryptography",
+        releases=[],
+        tags=["46.0.2", "46.0.1"],
+        files={"CHANGELOG.rst": CRYPTOGRAPHY_CHANGELOG},
+        commits=["bump version for 46.0.2 (#13531)"],
+    )
+
+
+class TestReStructuredTextIsReadByItsOwnRules(ChangelogHarness):
+    """#177. Every changelog was read by Markdown's rules, and in
+    reStructuredText a `~` rule defeats them both ways. On 2026-09-29, 4 of the 36
+    `.rst` files among 53 packages' changelogs could not be read: cryptography's
+    and packaging's versions sit over `~` and none was found, and babel's and
+    twisted's subsections do, and the versions after them were read as part of
+    the section above. Each fixture is a verbatim excerpt."""
+
+    def test_the_syntax_comes_from_the_name(self):
+        self.assertFalse(is_rst("CHANGELOG.md"))
+        for name in ("CHANGES.rst", "CHANGES.txt", "CHANGES", "doc/en/changelog.rst"):
+            self.assertTrue(is_rst(name), name)
+
+    def test_a_version_over_a_tilde_rule_is_found(self):
+        section = section_for(CRYPTOGRAPHY_CHANGELOG, "46.0.2", rst=True)
+        self.assertIn("compiled with OpenSSL 3.5.4", section)
+        self.assertNotIn("46.0.1", section, "the section ran into the next version")
+
+    def test_the_markdown_reader_found_no_version_in_it(self):
+        """What 0.57.0 did with the same text, which rung 2 called a stub."""
+        self.assertEqual(version_headings(CRYPTOGRAPHY_CHANGELOG), 0)
+        self.assertEqual(version_headings(CRYPTOGRAPHY_CHANGELOG, rst=True), 3)
+
+    def test_the_target_naming_the_next_title_is_left_off(self):
+        section = section_for(CRYPTOGRAPHY_CHANGELOG, "46.0.2", rst=True)
+        self.assertTrue(section.endswith("OpenSSL 3.5.4."), section)
+
+    def test_a_tilde_subsection_is_not_a_code_fence(self):
+        later = section_for(BABEL_CHANGES, "2.17.0", rst=True)
+        self.assertIn("Add tzdata as dev dependency", later, "a subsection ended the version")
+        self.assertNotIn("CLDR 45", later, "2.16.0's entries were read as 2.17.0's")
+        self.assertIn("CLDR 45", section_for(BABEL_CHANGES, "2.16.0", rst=True))
+
+    def test_the_markdown_reader_read_babel_2_16_0_as_2_17_0(self):
+        """The defect, pinned in the old reader so the fixture stays one that shows it."""
+        self.assertEqual(section_for(BABEL_CHANGES, "2.16.0"), "")
+        self.assertIn("CLDR 45", section_for(BABEL_CHANGES, "2.17.0"))
+
+    def test_levels_follow_the_order_the_styles_appear(self):
+        section = section_for(PYOPENSSL_CHANGELOG, "24.3.0", rst=True)
+        for kept in ("Deprecations:", "maximum version has been increased to 44.0.x"):
+            self.assertIn(kept, section, "a `^` subsection ended the version")
+        self.assertNotIn("24.2.1", section)
+
+    def test_an_indented_line_over_a_rule_is_prose(self):
+        section = section_for(PYPARSING_CHANGES, "3.0.0", rst=True)
+        self.assertTrue(section.startswith("Version 3.0.0 - October, 2021"), section)
+        self.assertIn(
+            "revert an inefficient utility method",
+            section_for(PYPARSING_CHANGES, "3.3.0", rst=True),
+        )
+
+    def test_a_bullet_of_a_lone_dash_is_kept(self):
+        self.assertTrue(section_for(KEYRING_NEWS, "24.0.1", rst=True).endswith("\n-"))
+
+    def test_a_short_rule_under_longer_text_is_prose(self):
+        """Synthetic, and no instance of it among the 53: docutils' own rule, kept
+        so a paragraph line over a lone `-` bullet is never read as a title."""
+        text = "v1.0\n====\n\nMisc changes\n-\n\n- the entry\n"
+        self.assertEqual(
+            [title for _, title in headings(text.splitlines(), rst=True).values()], ["v1.0"]
+        )
+
+    def test_a_changelog_that_mentions_a_path_is_not_redirected(self):
+        """The signpost test reads the file in its own syntax. Read as Markdown,
+        cryptography's changelog has no versions, so a path it mentions was a
+        pointer to follow away from a real changelog."""
+        repo = Repo(
+            "pyca/cryptography",
+            releases=[],
+            tags=["46.0.2", "46.0.1"],
+            files={
+                "CHANGELOG.rst": CRYPTOGRAPHY_CHANGELOG + "\nSee also docs/changelog.rst.\n",
+                "docs/changelog.rst": PYTEST_REAL,
+            },
+            commits=["bump version for 46.0.2 (#13531)"],
+        )
+        _, out, _ = self.run_main(repo, "--from", "46.0.1", "--to", "46.0.2")
+        self.assertNotIn("via the pointer", out)
+        self.assertIn("rung 2 -- CHANGELOG.rst: 1 section(s)", out)
+
+    def test_a_pointer_is_followed_into_restructuredtext_and_read_as_it(self):
+        """Synthetic pairing: pytest's signpost, and cryptography's text where it
+        points. The target's syntax comes from its own path, not the signpost's."""
+        repo = Repo(
+            "pyca/cryptography",
+            releases=[],
+            tags=["46.0.2", "46.0.1"],
+            files={
+                "CHANGELOG.rst": PYTEST_STUB.replace("pytest-dev/pytest", "pyca/cryptography"),
+                "doc/en/changelog.rst": CRYPTOGRAPHY_CHANGELOG,
+            },
+            commits=["bump version for 46.0.2 (#13531)"],
+        )
+        _, out, _ = self.run_main(repo, "--from", "46.0.1", "--to", "46.0.2")
+        self.assertIn("doc/en/changelog.rst (via the pointer in CHANGELOG.rst): 1 section(s)", out)
+
+    def test_the_default_branch_is_read_in_its_syntax_too(self):
+        """The second read, at the default branch, is compared against the first.
+        Read by the other syntax, babel's same file would differ from itself."""
+        repo = Repo(
+            "python-babel/babel",
+            releases=[("v2.17.0", "notes"), ("v2.16.0", "older notes")],
+            files={"CHANGES.rst": BABEL_CHANGES},
+            commits=["Prepare for 2.17.0 (#1182)"],
+        )
+        _, out, _ = self.run_main(repo, "--from", "v2.16.0", "--to", "v2.17.0")
+        self.assertIn("rung 2 -- CHANGES.rst: 1 section(s)", out)
+        self.assertNotIn("DIFFERS", out)
+
+    def test_the_run_finds_the_section(self):
+        _, out, evidence = self.run_main(cryptography_46(), "--from", "46.0.1", "--to", "46.0.2")
+        self.assertIn("rung 2 -- CHANGELOG.rst: 1 section(s)", out)
+        self.assertNotIn("a pointer or a stub", out)
+        self.assertIn("compiled with OpenSSL 3.5.4", evidence)
+
+
+class TestShortProseIsPrintedWhereItCannotBeSkipped(ChangelogHarness):
+    """#178. The file is where the prose lives, and a pointer to a file is a read
+    a run can skip: the #438 replay under 0.57.0 never opened ruff 0.16.9's."""
+
+    def rumdl(self, notes: str = RUMDL_75_NOTES) -> Repo:
+        return Repo(
+            "rvben/rumdl",
+            releases=[("v0.2.75", notes), ("v0.2.74", "### Fixed\n\n- **MD092**: allow\n")],
+            files={"CHANGELOG.md": RUMDL_75_CHANGELOG, "Cargo.toml": ""},
+            commits=RUMDL_74_75,
+        )
+
+    def printed(self, out: str) -> str:
+        return "\n".join(line[4:] for line in out.splitlines() if line.startswith("  |"))
+
+    def test_cryptographys_whole_entry_is_printed(self):
+        """#177's case: one bullet, which the scan cannot see."""
+        _, out, _ = self.run_main(cryptography_46(), "--from", "46.0.1", "--to", "46.0.2")
+        self.assertIn("security-shaped lines: none", out)
+        self.assertIn(
+            "* Updated Windows, macOS, and Linux wheels to be compiled with OpenSSL 3.5.4.",
+            self.printed(out),
+        )
+
+    def test_the_changelog_section_is_printed(self):
+        _, out, _ = self.run_main(self.rumdl(), "--from", "v0.2.74", "--to", "v0.2.75")
+        self.assertIn("add opt-in rule for inline formatting in headings", self.printed(out))
+        self.assertIn("The prose is short, so here it is", out)
+
+    def test_release_notes_that_repeat_it_are_not_printed_twice(self):
+        _, out, _ = self.run_main(self.rumdl(), "--from", "v0.2.74", "--to", "v0.2.75")
+        self.assertNotIn("## Downloads", self.printed(out))
+        self.assertEqual(self.printed(out).count("add opt-in rule for inline formatting"), 1)
+
+    def test_prose_over_the_budget_keeps_the_pointer(self):
+        """Synthetic: the size is the property under test, not the words."""
+        long = "## 1.1\n\n" + "".join(
+            f"- change number {n}, described at length\n" for n in range(120)
+        )
+        repo = Repo(
+            "example/long", releases=[("1.1", ""), ("1.0", "")], files={"CHANGELOG.md": long}
+        )
+        self.assertGreater(len(long), INLINE_BYTES)
+        _, out, _ = self.run_main(repo, "--from", "1.0", "--to", "1.1")
+        self.assertEqual(self.printed(out), "")
+        flat = " ".join(out.split())
+        self.assertIn("for `Security` entries all the same", flat)
+        self.assertIn(f"over the {INLINE_BYTES} bytes this prints", flat)
+
+    def test_notes_that_say_something_else_are_named_when_they_do_not_fit(self):
+        """Synthetic: rung 2 fits alone and the notes do not fit beside it."""
+        notes = "".join(f"- merged pull request number {n}\n" for n in range(150))
+        repo = Repo(
+            "example/two",
+            releases=[("1.1", notes), ("1.0", "")],
+            files={"CHANGELOG.md": "## 1.1\n\n- the one change\n"},
+        )
+        _, out, _ = self.run_main(repo, "--from", "1.0", "--to", "1.1")
+        self.assertIn("- the one change", self.printed(out))
+        self.assertNotIn("merged pull request number", self.printed(out))
+        self.assertRegex(out, r"Rung 1 says something else in lines \d+-\d+")
 
 
 class TestTheReconciliationCanAlsoSayYes(ChangelogHarness):

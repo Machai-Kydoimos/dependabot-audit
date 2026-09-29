@@ -121,7 +121,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NamedTuple, NoReturn
 
 TIMEOUT = 60
 
@@ -237,6 +237,19 @@ TIERS = ("destructive-shaped", "fix-worded", "dependency bump(s)", "other")
 # multi-product note rather than a marker.
 SHOWN = 40
 
+# How much of the prose `main()` prints on the terminal, in bytes, rather than
+# leaving it only in the evidence file (#178). A pointer to a file is a read a run
+# can skip, and one did: the #438 replay under 0.57.0 read three of its four
+# evidence files and never opened ruff 0.16.9's, whose notes were two kilobytes.
+# Measured over sixteen ranges on 2026-09-29, every single-release one fits:
+# ruff 0.16.8's changelog section is 2,536 bytes and babel 2.17.0's 2,876. The
+# multi-release gaps do not, and are not meant to: rumdl's four releases are
+# 9,674 and uv's nine 15,664. The cap exists because a run batches its calls,
+# and #438's four came back as one 13,658-character tool result. Claude Code
+# spills a result to a file somewhere between 29,000 characters, which came back
+# whole, and 56,900, which did not.
+INLINE_BYTES = 4000
+
 # `fix(scope): description` / `fix!: description` / `fix: description`.
 CONVENTIONAL = re.compile(
     r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]*)\))?(?P<bang>!)?:\s*(?P<rest>.+)$"
@@ -255,13 +268,18 @@ CHANGELOG_NAME = re.compile(
 # link target carries the *previous* version.
 HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 # A setext heading is a line of text with a rule of `=` (level 1) or `-` (level 2)
-# under it. `pre-commit/pre-commit` heads every version this way, and so does
-# `pytest`'s reStructuredText changelog, which uses the same two characters.
+# under it. `pre-commit/pre-commit` heads every version this way in Markdown.
 SETEXT_RULE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 # Lines that cannot be the text of a setext heading: list items, blockquotes,
 # tables, HTML. A `-` rule under a list item is a thematic break, not a heading.
 NOT_PARAGRAPH = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s|>|\||<)")
 FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# A reStructuredText title's rule: any one punctuation character, repeated. docutils
+# takes every non-alphanumeric printable ASCII character, and projects use more than
+# `=` and `-`: `pyca/cryptography` and `pypa/packaging` head versions over `~`.
+RST_RULE = re.compile(r"^([!-/:-@\[-`{-~])\1*[ \t]*$")
+# `.. _v46-0-1:` names the title below it, so it belongs to the next section.
+RST_TARGET = re.compile(r"^\.\. _[^:]*:\s*$")
 VERSION_TOKEN = re.compile(r"\d+\.\d+")
 # A repo-relative path to something named like a changelog, bare or inside a
 # `github.com/<owner>/<repo>/blob/<ref>/` URL. Only ever followed from a file
@@ -580,8 +598,31 @@ def gap(
     return published[top:bottom], ""
 
 
-def changelog_at(slug: str, tag: str | None) -> tuple[str, str] | None:
-    """(filename, text) for the repo's changelog at `tag`, or None if it keeps none.
+class Changelog(NamedTuple):
+    """A changelog as read: what the output calls it, its text, and its syntax."""
+
+    name: str
+    text: str
+    # Read by reStructuredText's rules rather than Markdown's -- see `is_rst`.
+    rst: bool
+
+
+def is_rst(path: str) -> bool:
+    """Is the file at `path` reStructuredText, going by its name?
+
+    **Everything but `.md`.** The names matched here end in `.md`, `.rst`, `.txt`
+    or nothing, and measured over the changelogs of 53 packages on 2026-09-29, the
+    `.txt` and extensionless ones are reStructuredText too: `lxml`'s
+    `CHANGES.txt` heads its versions over `=`, and `six`'s and `pyparsing`'s
+    `CHANGES` over `-`. The syntax has to be known before a line is read, because
+    one line means two things: `~~~~` opens a code fence in Markdown and underlines
+    a title in reStructuredText.
+    """
+    return not path.lower().endswith(".md")
+
+
+def changelog_at(slug: str, tag: str | None) -> Changelog | None:
+    """The repo's changelog at `tag`, or None if it keeps none.
 
     Two calls and no guessing: list the root at that ref, match a name, fetch it
     raw. A constructed `CHANGELOG.md` 404s on a project that spells it
@@ -602,11 +643,11 @@ def changelog_at(slug: str, tag: str | None) -> tuple[str, str] | None:
         return None
     name = sorted(names)[0]
     text = _raw(slug, name, ref)
-    if text and not version_headings(text):
+    if text and not version_headings(text, is_rst(name)):
         followed = _follow_pointer(slug, name, text, ref)
         if followed:
             return followed
-    return (name, text) if text else None
+    return Changelog(name, text, is_rst(name)) if text else None
 
 
 def _raw(slug: str, path: str, ref: str) -> str | None:
@@ -615,7 +656,7 @@ def _raw(slug: str, path: str, ref: str) -> str | None:
     )
 
 
-def version_headings(text: str) -> int:
+def version_headings(text: str, rst: bool = False) -> int:
     """How many headings in `text` carry a version-shaped token.
 
     Zero is the signature of a changelog that is not one -- a signpost. A real
@@ -623,11 +664,11 @@ def version_headings(text: str) -> int:
     word *Changelog* and says where to look.
     """
     return sum(
-        1 for _, title in headings(text.splitlines()).values() if VERSION_TOKEN.search(title)
+        1 for _, title in headings(text.splitlines(), rst).values() if VERSION_TOKEN.search(title)
     )
 
 
-def _follow_pointer(slug: str, name: str, text: str, ref: str) -> tuple[str, str] | None:
+def _follow_pointer(slug: str, name: str, text: str, ref: str) -> Changelog | None:
     """One hop out of a stub, to a path in the same repository, at the same ref.
 
     **A matched name is not a changelog.** `pytest-dev/pytest` keeps a root
@@ -650,21 +691,21 @@ def _follow_pointer(slug: str, name: str, text: str, ref: str) -> tuple[str, str
             continue
         path = match.group("path")
         target = _raw(slug, path, ref)
-        if target and version_headings(target):
-            return (f"{path} (via the pointer in {name})", target)
+        if target and version_headings(target, is_rst(path)):
+            return Changelog(f"{path} (via the pointer in {name})", target, is_rst(path))
     return None
 
 
-def headings(lines: list[str]) -> dict[int, tuple[int, str]]:
+def headings(lines: list[str], rst: bool = False) -> dict[int, tuple[int, str]]:
     """Line index -> (level, title) for every heading, ATX and setext alike.
+
+    `rst` reads the lines as reStructuredText instead -- see `rst_headings`.
 
     **Setext, because the `pre-commit` ecosystem's own repository uses it.**
     `pre-commit/pre-commit` writes `4.6.2 - 2026-08-10` over a rule of `=`, and
     an ATX-only reader walks all 72,898 bytes of that file and finds no version
     at all -- a successful read that parses to nothing, reported as "no section"
-    (#133). `pytest`'s changelog is reStructuredText and underlines its versions
-    with `=` and its subsections with `-`, which is the same two-level scheme, so
-    the one rule covers both.
+    (#133).
 
     **Code fences are skipped**, and not as a nicety. `python/mypy` heads its
     versions at `##` and puts Python in its examples, so a `# comment` inside a
@@ -679,6 +720,8 @@ def headings(lines: list[str]) -> dict[int, tuple[int, str]]:
     YAML front matter is skipped for the same reason -- its closing `---` sits
     under a `key: value` line.
     """
+    if rst:
+        return rst_headings(lines)
     found: dict[int, tuple[int, str]] = {}
     start = 0
     if lines and lines[0].strip() == "---":
@@ -715,7 +758,60 @@ def headings(lines: list[str]) -> dict[int, tuple[int, str]]:
     return found
 
 
-def section_for(text: str, version: str) -> str:
+def rst_headings(lines: list[str]) -> dict[int, tuple[int, str]]:
+    """Line index -> (level, title) for every reStructuredText section title.
+
+    A title is a line of text over a rule of one punctuation character, repeated,
+    with the same rule above it or not. Until 0.58.0 the Markdown reader read these
+    files too, and a `~` rule defeated it both ways (#177). Measured over 53
+    packages' changelogs on 2026-09-29:
+
+    - `pyca/cryptography` (161 versions) and `pypa/packaging` (54) head their
+      versions over `~`, and the Markdown reader found none: rung 2 called each
+      file "a pointer or a stub".
+    - `python-babel/babel` and `twisted/twisted` put `~` under their subsections,
+      and the Markdown reader took each `~~~~` for a code fence. Every heading
+      between two of them was skipped, so a version's entries were read as the
+      section above it: babel's 2.16.0 came back inside 2.17.0's section, and 20
+      of its 47 versions had none.
+
+    So there are no fences here, because reStructuredText has none, and no ATX
+    headings. A title starts in the first column, since an indented block is a
+    quote or a code sample, which is where a `#` or a rule inside code sits. Its
+    rule is at least as long as the title or at least four characters, which is
+    where docutils stops reading a short rule as text.
+
+    **Levels come from the order the styles first appear**, which is docutils'
+    own rule, and not from the character. `pyca/pyopenssl` heads versions over
+    `-` and their subsections over `^`. A fixed ranking that put every rule other
+    than `=` at level 2 would end each version at its first subsection.
+    """
+    found: dict[int, tuple[int, str]] = {}
+    styles: list[tuple[str, bool]] = []
+    for index in range(len(lines) - 1):
+        line, under = lines[index], lines[index + 1]
+        rule = RST_RULE.match(under)
+        title = line.strip()
+        if not rule or not title or RST_RULE.match(line) or NOT_PARAGRAPH.match(line):
+            continue
+        before = lines[index - 1] if index else ""
+        overlined = before.rstrip() == under.rstrip()
+        if line[0].isspace() and not overlined:
+            continue
+        # A blank line above it, an overline, or the hyperlink target that names it.
+        if before.strip() and not overlined and not before.startswith(".. "):
+            continue
+        width = len(under.rstrip())
+        if width < len(title) and width < 4:
+            continue
+        style = (rule.group(1), overlined)
+        if style not in styles:
+            styles.append(style)
+        found[index] = (styles.index(style) + 1, title)
+    return found
+
+
+def section_for(text: str, version: str, rst: bool = False) -> str:
     """The changelog section for exactly `version`, or "".
 
     **The link target is removed before the heading is read.** A generated
@@ -729,9 +825,14 @@ def section_for(text: str, version: str) -> str:
     Then any token, not the first, because projects head their sections
     differently: `## [0.2.62](...) - 2026-08-27` and `## Mypy 2.3` both have to
     answer, and only one of them leads with the number.
+
+    In reStructuredText the lines just above the next title belong to it, or to
+    no section: its overline, the `.. _v46-0-1:` target that names it, and a
+    `----` transition. They are left off. A rule is four characters or more, as a
+    transition is, because `keyring` writes a bullet of a lone `-`.
     """
     lines = text.splitlines()
-    found = headings(lines)
+    found = headings(lines, rst)
     wanted = {version, f"v{version}"}
     for index, (level, title) in sorted(found.items()):
         label = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", title)
@@ -744,6 +845,16 @@ def section_for(text: str, version: str) -> str:
             if nxt and nxt[0] <= level:
                 break
             body.append(lines[position])
+        while (
+            rst
+            and len(body) > 2
+            and (
+                not body[-1].strip()
+                or RST_TARGET.match(body[-1])
+                or (RST_RULE.match(body[-1]) and len(body[-1].strip()) >= 4)
+            )
+        ):
+            body.pop()
         return "\n".join(body).rstrip()
     return ""
 
@@ -1036,6 +1147,50 @@ def write_evidence(
     return out, index, lines
 
 
+def inline_prose(
+    lines: list[str], index: list[tuple[int, int, str]], verbatim: list[str]
+) -> tuple[list[str], list[tuple[int, int]]]:
+    """(the prose to print, the spans of it left in the file), or nothing to print.
+
+    **The scan cannot stand in for the read, so the read is made unskippable
+    where it is short.** cryptography 46.0.2's whole entry is one bullet,
+    `Updated Windows, macOS, and Linux wheels to be compiled with OpenSSL 3.5.4.`,
+    and OpenSSL 3.5.4 is the release that fixed CVE-2025-9230. It carries no id,
+    no heading and no word, so the scan says *none*, and the only thing between
+    that and the report was a line asking for a read (#177).
+
+    Rung 2 is the changelog and goes first. Rung 1 is left out where it carries
+    rung 2 verbatim, because it adds nothing then but the download table (#173).
+    A rung 1 that says something else goes in as well if both fit, and otherwise
+    stays in the file with its lines named. Where there is no rung 2, rung 1 is the
+    prose. Over `INLINE_BYTES` nothing is printed, and the pointer stays.
+    """
+
+    def text_of(start: int, end: int) -> list[str]:
+        chunk = lines[start - 1 : end]
+        while chunk and not chunk[-1].strip():
+            chunk.pop()
+        return chunk
+
+    def size(spans: list[tuple[int, int]]) -> int:
+        return sum(len(line) + 1 for start, end in spans for line in text_of(start, end))
+
+    rung2 = [(start, end) for start, end, label in index if label.startswith("rung 2")]
+    rung1 = [
+        (start, end)
+        for start, end, label in index
+        if label.startswith("rung 1")
+        and label.removeprefix("rung 1 -- release notes, ").split(" (")[0] not in verbatim
+    ]
+    for chosen, left in (
+        (sorted(rung2 + rung1), []),
+        (rung2, rung1),
+    ):
+        if chosen and size(chosen) <= INLINE_BYTES:
+            return [line for start, end in chosen for line in [*text_of(start, end), ""]], left
+    return [], []
+
+
 def one_source(section: str, body: str) -> bool:
     """Does a release body carry a changelog section verbatim?
 
@@ -1140,15 +1295,15 @@ def main() -> int:
     sections = 0
     regenerated: list[str] = []
     if found:
-        name, text = found
-        head_text = later[1] if later else ""
+        name, text, rst = found
+        head_text, head_rst = (later.text, later.rst) if later else ("", rst)
         for row in window or [{"tag": to_tag}]:
             version = row["tag"].removeprefix("v")
-            body = section_for(text, version)
+            body = section_for(text, version, rst)
             if body:
                 sections += 1
                 blocks.append(f"## rung 2 -- {name}, {row['tag']}\n\n{body}")
-            head_body = section_for(head_text, version) if head_text else ""
+            head_body = section_for(head_text, version, head_rst) if head_text else ""
             notes = released.get(row["tag"], "")
             if notes and (one_source(body, notes) or one_source(head_body, notes)):
                 verbatim.append(row["tag"])
@@ -1160,7 +1315,7 @@ def main() -> int:
                     f"changelog is rewritten in full at every release, so the entry for one\n"
                     f"version is a function of the ref you read it at.\n\n{head_body}"
                 )
-        if version_headings(text):
+        if version_headings(text, rst):
             print(f"rung 2 -- {name}: {sections} section(s) for the versions in the gap")
         else:
             print(f"rung 2 -- {name} carries no version headings at all ({len(text)} bytes)")
@@ -1226,8 +1381,22 @@ def main() -> int:
         print("security-shaped lines: none -- no advisory id, heading or word in the file.")
     prose = [(s, e) for s, e, label in index if label.startswith("rung ")]
     span = f"lines {prose[0][0]}-{prose[-1][1]}" if prose else "the prose rungs"
-    print(f"Read rungs 1 and 2 ({span}) for `Security` entries all the same: the scan finds")
-    print("ids, headings and words, and a fix written as a plain bullet has none of them.")
+    shown, left = inline_prose(lines, index, verbatim)
+    if shown:
+        print("The scan finds ids, headings and words, and a fix written as a plain bullet")
+        print("has none of them. The prose is short, so here it is. Read it for `Security`")
+        print("entries and for what changed:")
+        print()
+        for line in shown:
+            print(f"  | {line}".rstrip())
+        for start, end in left:
+            print(f"Rung 1 says something else in lines {start}-{end}, over what this prints.")
+            print("Read it there.")
+    else:
+        print(f"Read rungs 1 and 2 ({span}) for `Security` entries all the same: the scan finds")
+        print("ids, headings and words, and a fix written as a plain bullet has none of them.")
+        if prose:
+            print(f"(Not printed here: the prose is over the {INLINE_BYTES} bytes this prints.)")
     print()
 
     noun = "commit(s)"
