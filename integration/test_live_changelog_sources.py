@@ -23,7 +23,10 @@ import json
 import os
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 
 live = unittest.skipUnless(
@@ -283,3 +286,50 @@ class TestARungThatAnsweredCanStillBeIncomplete(unittest.TestCase):
             [s for s in subjects if "Fix" in s],
             "the range no longer carries the fixes the unlabelled example rests on",
         )
+
+
+@live
+class TestTheOnlyProseCanBeReStructuredTextOverTilde(unittest.TestCase):
+    """#177. pyca/cryptography publishes no GitHub releases, so its changelog is
+    the only prose there is, and it heads each version over `~`. Until 0.58.0 the
+    reader found no version in it and called it a stub. 46.0.2's whole entry is
+    that its wheels moved to OpenSSL 3.5.4."""
+
+    SCRIPT = Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts/changelog.py"
+
+    def test_cryptography_still_publishes_no_github_releases(self):
+        self.assertEqual(
+            gh_json("repos/pyca/cryptography/releases", "length"),
+            0,
+            "pyca/cryptography now publishes releases -- the changelog is no longer its only prose",
+        )
+
+    def test_its_changelog_still_heads_the_version_over_tilde(self):
+        text = gh_text(
+            "repos/pyca/cryptography/contents/CHANGELOG.rst?ref=46.0.2",
+            accept="application/vnd.github.raw",
+        )
+        self.assertRegex(text, r"(?m)^46\.0\.2 - 2025-09-30\n~{19}$")
+
+    def test_the_script_finds_the_entry(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            run = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.SCRIPT),
+                    "--scratch",
+                    scratch,
+                    "--package",
+                    "cryptography",
+                    "--from",
+                    "46.0.1",
+                    "--to",
+                    "46.0.2",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("rung 2 -- CHANGELOG.rst: 1 section(s)", run.stdout)

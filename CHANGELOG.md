@@ -11,6 +11,54 @@ patch.
 
 ## [Unreleased]
 
+## [0.58.0] — 2026-09-29
+
+### A reStructuredText changelog is read by its own rules (#177)
+
+`changelog.py` read every changelog by Markdown's rules. reStructuredText
+underlines a title with any punctuation character, and a `~` rule defeated the
+Markdown reader in two ways. Measured over the changelogs of 53 packages on
+2026-09-29, 4 of the 36 `.rst` files could not be read:
+- `pyca/cryptography` (161 versions) and `pypa/packaging` (54) head their
+  versions over `~`. No version was found in either, and rung 2 called each file
+  "a pointer or a stub".
+- `python-babel/babel` and `twisted/twisted` put `~` under their subsections, and
+  the Markdown reader took each `~~~~` for a code fence. A fence closed only on a
+  rule at least as long as the one that opened it, so every heading after a long
+  subsection rule went unread. babel's 2.16.0 had no section, and its entries
+  were read as 2.17.0's. Twisted's 26.4.0 section ran 621 lines, through 25.5.0.
+
+The issue proposed accepting `~` as an underline. Simulated before it was built,
+that found 18 of cryptography's 161 versions, and each section ran on into the
+next version's, because the same underline still opened a fence. So the syntax
+now comes from the file's name. `.md` is read exactly as before. `.rst`, `.txt`
+and extensionless files are read as reStructuredText, which is what lxml's
+`CHANGES.txt` and six's and pyparsing's `CHANGES` turned out to be. A title
+there is:
+- text over a rule of one punctuation character, repeated, with or without the
+  same rule above it;
+- in the first column, because an indented line is a quote or code. pyparsing
+  has an indented line naming 3.0.0 over a rule. The Markdown reader took it for
+  a level-1 heading, so the section for 3.0.0 started there and ran 4,578 lines;
+- ranked by the order its style first appears, which is docutils' rule, and not
+  by its character. pyOpenSSL heads versions over `-` and subsections over `^`,
+  and a ranking by character would end each version at its first subsection.
+
+A section leaves off the next title's hyperlink target, overline or transition.
+keyring's bullet of a lone `-` stays, because a rule is four characters or more.
+
+Diffed against 0.57.0 over all 53 changelogs:
+- no version lost its section;
+- 257 sections were found where there were none;
+- the 10 that had swallowed a later version now end at it;
+- pyparsing's 3.0.0 and 3.3.0 are corrected;
+- 498 lost only a trailing target, rule or blank line;
+- no Markdown file changed.
+
+Fourteen tests, and three live ones. Six of the first ten fail against 0.57.0's
+script, and so does the live one that runs it end to end. Twelve mutations of the
+reader, each caught by the test aimed at it.
+
 ## [0.57.0] — 2026-09-28
 
 This version takes up the three follow-ups 0.56.0's replay filed (#171–#173),
@@ -7174,7 +7222,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.57.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.58.0...HEAD
+[0.58.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.54.0...v0.55.0
