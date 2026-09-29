@@ -4664,6 +4664,22 @@ class TestARungThatAnsweredCanStillBeIncomplete(SkillHarness):
             "Phase 2 must say the compare range is read regardless of write mode",
         )
 
+    def test_the_supplied_call_is_read_whole(self):
+        """#178. The 0.58.0 replay of #438 wrote its own loop over four ranges and
+        piped each call through `tail -25`, which cut the prose the script prints
+        mid-output, on ruff 0.16.9, the range the print was for. So the block
+        supplies the loop, and no command in it pipes the script's output."""
+        found = re.search(r"```bash\n(?:(?!```).)*?changelog\.py.*?```", self._section(), re.S)
+        self.assertIsNotNone(found, "the changelog.py block is gone")
+        block = found.group(0) if found else ""
+        self.assertRegex(block, r"(?m)^for r in ", "the block no longer supplies the loop")
+        piped = [
+            line
+            for line in block.splitlines()
+            if not line.lstrip().startswith("#") and re.search(r"(?<!\|)\|(?!\|)", line)
+        ]
+        self.assertEqual(piped, [], "a pipe cuts the scan and the prose")
+
     def test_the_write_mode_flag_is_documented_where_it_is_passed(self):
         self.assertIn("--write-mode", self.reachable(2))
         self.assertRegex(

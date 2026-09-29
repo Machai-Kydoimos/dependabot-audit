@@ -50,6 +50,7 @@ sys.path.insert(
 
 from changelog import (
     DESTRUCTIVE,
+    INLINE_BYTES,
     SHOWN,
     _gh,
     _gh_hard,
@@ -515,7 +516,8 @@ class TestSecurityShapedLinesAreNamedWithTheirSection(ChangelogHarness):
         )
         flat = " ".join(out.split())
         self.assertIn("security-shaped lines: none", flat)
-        self.assertIn("for `Security` entries all the same", flat)
+        self.assertIn("Read it for `Security` entries", flat)
+        self.assertIn("| - faster", out)
 
 
 class TestOneTextReadTwiceIsNotTwoSources(ChangelogHarness):
@@ -1372,6 +1374,69 @@ class TestReStructuredTextIsReadByItsOwnRules(ChangelogHarness):
         self.assertIn("rung 2 -- CHANGELOG.rst: 1 section(s)", out)
         self.assertNotIn("a pointer or a stub", out)
         self.assertIn("compiled with OpenSSL 3.5.4", evidence)
+
+
+class TestShortProseIsPrintedWhereItCannotBeSkipped(ChangelogHarness):
+    """#178. The file is where the prose lives, and a pointer to a file is a read
+    a run can skip: the #438 replay under 0.57.0 never opened ruff 0.16.9's."""
+
+    def rumdl(self, notes: str = RUMDL_75_NOTES) -> Repo:
+        return Repo(
+            "rvben/rumdl",
+            releases=[("v0.2.75", notes), ("v0.2.74", "### Fixed\n\n- **MD092**: allow\n")],
+            files={"CHANGELOG.md": RUMDL_75_CHANGELOG, "Cargo.toml": ""},
+            commits=RUMDL_74_75,
+        )
+
+    def printed(self, out: str) -> str:
+        return "\n".join(line[4:] for line in out.splitlines() if line.startswith("  |"))
+
+    def test_cryptographys_whole_entry_is_printed(self):
+        """#177's case: one bullet, which the scan cannot see."""
+        _, out, _ = self.run_main(cryptography_46(), "--from", "46.0.1", "--to", "46.0.2")
+        self.assertIn("security-shaped lines: none", out)
+        self.assertIn(
+            "* Updated Windows, macOS, and Linux wheels to be compiled with OpenSSL 3.5.4.",
+            self.printed(out),
+        )
+
+    def test_the_changelog_section_is_printed(self):
+        _, out, _ = self.run_main(self.rumdl(), "--from", "v0.2.74", "--to", "v0.2.75")
+        self.assertIn("add opt-in rule for inline formatting in headings", self.printed(out))
+        self.assertIn("The prose is short, so here it is", out)
+
+    def test_release_notes_that_repeat_it_are_not_printed_twice(self):
+        _, out, _ = self.run_main(self.rumdl(), "--from", "v0.2.74", "--to", "v0.2.75")
+        self.assertNotIn("## Downloads", self.printed(out))
+        self.assertEqual(self.printed(out).count("add opt-in rule for inline formatting"), 1)
+
+    def test_prose_over_the_budget_keeps_the_pointer(self):
+        """Synthetic: the size is the property under test, not the words."""
+        long = "## 1.1\n\n" + "".join(
+            f"- change number {n}, described at length\n" for n in range(120)
+        )
+        repo = Repo(
+            "example/long", releases=[("1.1", ""), ("1.0", "")], files={"CHANGELOG.md": long}
+        )
+        self.assertGreater(len(long), INLINE_BYTES)
+        _, out, _ = self.run_main(repo, "--from", "1.0", "--to", "1.1")
+        self.assertEqual(self.printed(out), "")
+        flat = " ".join(out.split())
+        self.assertIn("for `Security` entries all the same", flat)
+        self.assertIn(f"over the {INLINE_BYTES} bytes this prints", flat)
+
+    def test_notes_that_say_something_else_are_named_when_they_do_not_fit(self):
+        """Synthetic: rung 2 fits alone and the notes do not fit beside it."""
+        notes = "".join(f"- merged pull request number {n}\n" for n in range(150))
+        repo = Repo(
+            "example/two",
+            releases=[("1.1", notes), ("1.0", "")],
+            files={"CHANGELOG.md": "## 1.1\n\n- the one change\n"},
+        )
+        _, out, _ = self.run_main(repo, "--from", "1.0", "--to", "1.1")
+        self.assertIn("- the one change", self.printed(out))
+        self.assertNotIn("merged pull request number", self.printed(out))
+        self.assertRegex(out, r"Rung 1 says something else in lines \d+-\d+")
 
 
 class TestTheReconciliationCanAlsoSayYes(ChangelogHarness):

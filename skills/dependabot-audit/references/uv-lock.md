@@ -183,16 +183,17 @@ absence, for a version whose notes are right there.
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
-python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/changelog.py" \
-  --scratch "$SCRATCH" --package <pkg> --from <locked> --to <proposed>
-echo "changelog exit: $?"
+# One call per range, read whole: a `| tail` cuts the scan and the prose.
+for r in "<pkg> <locked> <proposed>"; do set -- $r
+  python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/changelog.py" \
+    --scratch "$SCRATCH" --package "$1" --from "$2" --to "$3"
+  echo "changelog exit: $?"
+done
 ```
 
 Add `--write-mode` when this repo runs the tool with `--fix`, `--write` or `-i`.
-It escalates how a destructive fix is reported and changes nothing about what is
-looked for — the range is fetched either way, because gating the *call* on that
-judgement asks the auditor to be right about write mode before it has the
-evidence.
+It changes nothing about what is looked for, only how a destructive fix is
+reported.
 
 **Read the exit code; do not chain on it.** `0` the prose names every fix and
 bump, `1` it does not and the unreconciled commits are listed, `2` could not

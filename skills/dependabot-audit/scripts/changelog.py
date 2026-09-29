@@ -237,6 +237,19 @@ TIERS = ("destructive-shaped", "fix-worded", "dependency bump(s)", "other")
 # multi-product note rather than a marker.
 SHOWN = 40
 
+# How much of the prose `main()` prints on the terminal, in bytes, rather than
+# leaving it only in the evidence file (#178). A pointer to a file is a read a run
+# can skip, and one did: the #438 replay under 0.57.0 read three of its four
+# evidence files and never opened ruff 0.16.9's, whose notes were two kilobytes.
+# Measured over sixteen ranges on 2026-09-29, every single-release one fits:
+# ruff 0.16.8's changelog section is 2,536 bytes and babel 2.17.0's 2,876. The
+# multi-release gaps do not, and are not meant to: rumdl's four releases are
+# 9,674 and uv's nine 15,664. The cap exists because a run batches its calls,
+# and #438's four came back as one 13,658-character tool result. Claude Code
+# spills a result to a file somewhere between 29,000 characters, which came back
+# whole, and 56,900, which did not.
+INLINE_BYTES = 4000
+
 # `fix(scope): description` / `fix!: description` / `fix: description`.
 CONVENTIONAL = re.compile(
     r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]*)\))?(?P<bang>!)?:\s*(?P<rest>.+)$"
@@ -1134,6 +1147,50 @@ def write_evidence(
     return out, index, lines
 
 
+def inline_prose(
+    lines: list[str], index: list[tuple[int, int, str]], verbatim: list[str]
+) -> tuple[list[str], list[tuple[int, int]]]:
+    """(the prose to print, the spans of it left in the file), or nothing to print.
+
+    **The scan cannot stand in for the read, so the read is made unskippable
+    where it is short.** cryptography 46.0.2's whole entry is one bullet,
+    `Updated Windows, macOS, and Linux wheels to be compiled with OpenSSL 3.5.4.`,
+    and OpenSSL 3.5.4 is the release that fixed CVE-2025-9230. It carries no id,
+    no heading and no word, so the scan says *none*, and the only thing between
+    that and the report was a line asking for a read (#177).
+
+    Rung 2 is the changelog and goes first. Rung 1 is left out where it carries
+    rung 2 verbatim, because it adds nothing then but the download table (#173).
+    A rung 1 that says something else goes in as well if both fit, and otherwise
+    stays in the file with its lines named. Where there is no rung 2, rung 1 is the
+    prose. Over `INLINE_BYTES` nothing is printed, and the pointer stays.
+    """
+
+    def text_of(start: int, end: int) -> list[str]:
+        chunk = lines[start - 1 : end]
+        while chunk and not chunk[-1].strip():
+            chunk.pop()
+        return chunk
+
+    def size(spans: list[tuple[int, int]]) -> int:
+        return sum(len(line) + 1 for start, end in spans for line in text_of(start, end))
+
+    rung2 = [(start, end) for start, end, label in index if label.startswith("rung 2")]
+    rung1 = [
+        (start, end)
+        for start, end, label in index
+        if label.startswith("rung 1")
+        and label.removeprefix("rung 1 -- release notes, ").split(" (")[0] not in verbatim
+    ]
+    for chosen, left in (
+        (sorted(rung2 + rung1), []),
+        (rung2, rung1),
+    ):
+        if chosen and size(chosen) <= INLINE_BYTES:
+            return [line for start, end in chosen for line in [*text_of(start, end), ""]], left
+    return [], []
+
+
 def one_source(section: str, body: str) -> bool:
     """Does a release body carry a changelog section verbatim?
 
@@ -1324,8 +1381,22 @@ def main() -> int:
         print("security-shaped lines: none -- no advisory id, heading or word in the file.")
     prose = [(s, e) for s, e, label in index if label.startswith("rung ")]
     span = f"lines {prose[0][0]}-{prose[-1][1]}" if prose else "the prose rungs"
-    print(f"Read rungs 1 and 2 ({span}) for `Security` entries all the same: the scan finds")
-    print("ids, headings and words, and a fix written as a plain bullet has none of them.")
+    shown, left = inline_prose(lines, index, verbatim)
+    if shown:
+        print("The scan finds ids, headings and words, and a fix written as a plain bullet")
+        print("has none of them. The prose is short, so here it is. Read it for `Security`")
+        print("entries and for what changed:")
+        print()
+        for line in shown:
+            print(f"  | {line}".rstrip())
+        for start, end in left:
+            print(f"Rung 1 says something else in lines {start}-{end}, over what this prints.")
+            print("Read it there.")
+    else:
+        print(f"Read rungs 1 and 2 ({span}) for `Security` entries all the same: the scan finds")
+        print("ids, headings and words, and a fix written as a plain bullet has none of them.")
+        if prose:
+            print(f"(Not printed here: the prose is over the {INLINE_BYTES} bytes this prints.)")
     print()
 
     noun = "commit(s)"

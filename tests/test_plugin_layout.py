@@ -308,7 +308,10 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # `actions.md` (#166), and by the current-pin command Phase 2 named and never
     # supplied (#167), out of the 5,041 the Phase 3 move took out. Both numbers are
     # the 0.56.0 corpus as measured: `SKILL.md` is 27 bytes lighter for #168.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_607, "references": 133_427}
+    # v0.58.0, 2026-09-29 — `uv-lock.md` supplies `changelog.py`'s loop, with no
+    # pipe (#178), paid for by a clause of reasoning that the script's docstring
+    # already carries. The references come out 37 bytes lighter.
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_607, "references": 133_390}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

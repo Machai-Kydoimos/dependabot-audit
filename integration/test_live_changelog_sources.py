@@ -311,7 +311,7 @@ class TestTheOnlyProseCanBeReStructuredTextOverTilde(unittest.TestCase):
         )
         self.assertRegex(text, r"(?m)^46\.0\.2 - 2025-09-30\n~{19}$")
 
-    def test_the_script_finds_the_entry(self):
+    def test_the_script_finds_the_entry_and_prints_it(self):
         with tempfile.TemporaryDirectory() as scratch:
             run = subprocess.run(
                 [
@@ -333,3 +333,7 @@ class TestTheOnlyProseCanBeReStructuredTextOverTilde(unittest.TestCase):
             )
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("rung 2 -- CHANGELOG.rst: 1 section(s)", run.stdout)
+        self.assertIn(
+            "  | * Updated Windows, macOS, and Linux wheels to be compiled with OpenSSL 3.5.4.",
+            run.stdout,
+        )

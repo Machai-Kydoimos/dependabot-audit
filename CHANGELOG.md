@@ -13,6 +13,23 @@ patch.
 
 ## [0.58.0] — 2026-09-29
 
+This version fixes how `changelog.py` reads a reStructuredText changelog (#177),
+and prints the prose where a run cannot skip it (#178). Both fixes are in the
+script. `uv-lock.md` also supplies the call's loop, because a run's own loop cut
+what the script printed. `SKILL.md` stays at 120,607 bytes, and the references go
+from 133,427 to 133,390.
+
+One finding changes the evidence a verdict rests on. cryptography 46.0.1 → 46.0.2
+moved its wheels to OpenSSL 3.5.4, and OSV lists 3.5.3 as affected by
+CVE-2025-9230 and 3.5.4 as not. 0.57.0 reported that range `RECONCILED`, with a
+five-line evidence file:
+- it read the 113,257-byte changelog as "a pointer or a stub";
+- the 46.0.x wheels carry no SBOM;
+- pyca publishes no GitHub releases.
+
+The first package-level advisory to cover 46.0.1, GHSA-537c-gmf6-5ccf, came
+eight and a half months later.
+
 ### A reStructuredText changelog is read by its own rules (#177)
 
 `changelog.py` read every changelog by Markdown's rules. reStructuredText
@@ -58,6 +75,75 @@ Diffed against 0.57.0 over all 53 changelogs:
 Fourteen tests, and three live ones. Six of the first ten fail against 0.57.0's
 script, and so does the live one that runs it end to end. Twelve mutations of the
 reader, each caught by the test aimed at it.
+
+### Short prose is printed, not left behind a pointer (#178)
+
+The evidence file is where the prose lives, and a pointer to a file asks for a
+read that a run can skip. The #438 replay under 0.57.0 read three of its four
+evidence files and never opened ruff 0.16.9's, whose notes were two kilobytes.
+#177's fix runs into the same pointer. cryptography 46.0.2's whole entry is
+`Updated Windows, macOS, and Linux wheels to be compiled with OpenSSL 3.5.4.`,
+which carries no advisory id, heading or word, so the scan says *none*.
+
+`changelog.py` now prints the prose after the scan when it is 4,000 bytes or
+less. Rung 2 comes first. Rung 1 is left out where it carries rung 2 verbatim,
+because it then adds only a download table. A rung 1 that says something else
+is printed too if both fit, and has its lines named if they do not.
+
+Measured over 16 ranges, every single-release range fits; the largest is babel
+2.17.0 at 2,876 bytes. The multi-release gaps do not fit, and are not meant to:
+rumdl's four releases are 9,674 bytes, packaging's four 5,913 and uv's nine
+15,664. Those keep the pointer and say why. The cap exists because a run batches
+its calls. #438's four came back as one 13,658-character result, and Claude Code
+spills a result to a file somewhere between 29,000 characters, which came back
+whole, and 56,900, which did not.
+
+Six tests. The four written first fail against 0.57.0's script. Six mutations,
+four of the script and two of the block `uv-lock.md` supplies below, each caught
+by the test aimed at it.
+
+### Replayed
+
+Against `fpga-board-sim` #438 under `--no-execute`, from the clone 0.57.0's replay
+used, planted at the PR's base. There were two runs, because the first found a
+defect in this version's fix.
+
+**Run 1** ($1.48, 14 turns, 0 denials) wrote its own loop over the four ranges and
+piped each call through `tail -25`. For both ruff ranges the tail kept only the end
+of the unreconciled list and cut the prose printed above it. That included ruff
+0.16.9's, the case #178 is about. The run disclosed the pipe and classed it
+`correct`, since it kept `PIPESTATUS`; it could not see what the pipe had cut. It
+read 0.16.9's notes anyway, with an `awk` of its own.
+
+So `uv-lock.md` now supplies the loop, with no pipe and one line of why. It is
+paid for by a clause of reasoning that the script's docstring already carries. A
+new guard fails if the block stops supplying the loop, or if any command in it
+pipes. Both mutations were caught.
+
+**Run 2** ($0.92, 15 turns, 0 denials) copied the loop verbatim and added
+`--write-mode`. The four calls came back as one result of 19,590 characters. The
+prose was printed for all three single-release ranges, ruff 0.16.8 → 0.16.9 among
+them. rumdl's five-release gap said it was over the budget, and the run read that
+file itself. The report's currency conclusion now rests on a read that happened:
+0.16.9 *"fixes it without mentioning it in the release notes"*, of RUSTSEC-2026-0308.
+
+#177's reStructuredText path was not replayed. No PR in a repository this project
+controls bumps a package whose changelog uses `~`, and a third-party repository
+was not used. The live test in `integration/test_live_changelog_sources.py` checks
+it instead, against pyca/cryptography. It fails on 0.57.0, with the output "a
+pointer or a stub".
+
+### Filed under the stopping rule
+
+- #183: `resolve_repo()` takes a GitHub Sponsors link for the repository, and exits
+  2 on attrs, pydantic and virtualenv.
+- #184: exceptiongroup marks its versions in bold, and its changelog is called "a
+  pointer or a stub".
+- #185: a destructive fix that the prose names is never marked, and a long gap's
+  prose is triaged by hand. Both replays raised it.
+
+Run 2 also wrote *inert here* for MD013 from its config line alone. Under
+`--no-execute` the procedure calls that underivable, which is #181's case.
 
 ## [0.57.0] — 2026-09-28
 
