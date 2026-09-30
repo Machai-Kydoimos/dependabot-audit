@@ -11,6 +11,36 @@ patch.
 
 ## [Unreleased]
 
+## [0.59.0] — 2026-09-30
+
+This version moves the follow-up's inputs out of the run's judgement and into the
+scripts. It is ordered by what it changes for `fpga-board-sim`, this plugin's
+primary user: ruff or rumdl is in 17 of its 19 `uv` PRs, and setup-uv in 8 of its
+13 actions PRs. Every audit of its PRs since 0.54.0 said merge. What varied was
+the follow-up, on rules that had not changed:
+- #436's replays on 0.56.0 and 0.57.0 split between "merge as-is" and "merge as-is,
+  then follow up to v10.2.0";
+- #438's two 0.58.0 replays, run the same day, split on rumdl. One gave it "real
+  urgency", and the other never weighed the list-structure `--fix` fixes.
+
+Replayed twice each on this version, both pairs agree on the verdict row and the
+follow-up target. `SKILL.md` goes from 120,607 to 120,447 bytes, and the
+references from 133,390 to 132,140.
+
+### A GitHub route is not a repository (#183)
+
+`resolve_repo` took the first GitHub link in `project_urls`, and a `Funding` link
+comes first often enough to matter. Measured 2026-09-30 over 44 packages'
+metadata (`fpga-board-sim`'s 37 registry packages and seven more), six resolved to
+`sponsors/<user>`:
+- attrs, jsonschema-specifications, referencing, rpds-py and virtualenv, all in
+  that lockfile;
+- pydantic, where #183 saw the script exit 2 on `gh api repos/sponsors/…`.
+
+A GitHub route that sits where an owner would (`sponsors`, `orgs`, `users`,
+`apps`, `marketplace`, `advisories`) is no longer taken as an owner. All six now
+resolve to their repositories. The host comparison is as strict as it was.
+
 ## [0.58.0] — 2026-09-29
 
 This version fixes how `changelog.py` reads a reStructuredText changelog (#177),
@@ -7308,7 +7338,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.58.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.59.0...HEAD
+[0.59.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...v0.56.0

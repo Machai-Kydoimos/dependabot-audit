@@ -301,6 +301,14 @@ MATCH_RATIO = 0.82
 # `..` walks out of `repos/` into a different endpoint.
 SEGMENT = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$")
 
+# GitHub routes that sit where an owner would. GitHub reserves them as account
+# names, so none of them owns a repository (#183). Measured 2026-09-30 over 44
+# packages' PyPI metadata: six resolved to `sponsors/<user>`, because their
+# `Funding` link comes before the repository, and five of those six are in
+# `fpga-board-sim`'s lockfile. The other routes are the same shape, one link
+# type over: an organisation's discussions, a user's projects, an advisory.
+NOT_AN_OWNER = frozenset({"sponsors", "orgs", "users", "apps", "marketplace", "advisories"})
+
 
 def fail(what: str) -> NoReturn:
     """Exit 2 -- could not run. Never 1, which means the prose came up short."""
@@ -389,7 +397,9 @@ def github_slug(url: str) -> str | None:
     repository answers for it can choose its own Phase 2 finding.
 
     Segments are validated too, which is what rejects `..` -- a name may not be
-    `.` or `..`, and may hold only the characters GitHub actually allows.
+    `.` or `..`, and may hold only the characters GitHub actually allows. And an
+    owner that is a GitHub route, `sponsors` above all, is not a repository at
+    all (#183): see `NOT_AN_OWNER`.
     """
     if not url:
         return None
@@ -406,7 +416,7 @@ def github_slug(url: str) -> str | None:
     if len(parts) < 2:
         return None
     owner, repo = parts[0], parts[1].removesuffix(".git")
-    if not (SEGMENT.match(owner) and SEGMENT.match(repo)):
+    if not (SEGMENT.match(owner) and SEGMENT.match(repo)) or owner.lower() in NOT_AN_OWNER:
         return None
     return f"{owner}/{repo}"
 

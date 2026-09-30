@@ -1768,6 +1768,17 @@ class TestItRefusesRatherThanGuessing(ChangelogHarness):
         self.assertIn("This is a bug, not a finding", err.getvalue())
 
 
+# attrs 26.1.0's `project_urls`, recorded from https://pypi.org/pypi/attrs/json on
+# 2026-09-30, in the order PyPI serves them. `Funding` comes before `GitHub`.
+ATTRS_PROJECT_URLS = {
+    "Changelog": "https://www.attrs.org/en/stable/changelog.html",
+    "Documentation": "https://www.attrs.org/",
+    "Funding": "https://github.com/sponsors/hynek",
+    "GitHub": "https://github.com/python-attrs/attrs",
+    "Tidelift": "https://tidelift.com/subscription/pkg/pypi-attrs?utm_source=pypi-attrs&utm_medium=pypi",
+}
+
+
 class TestThePackageCannotChooseWhichRepositoryAnswersForIt(unittest.TestCase):
     """`project_urls` is written by the package author.
 
@@ -1848,6 +1859,37 @@ class TestThePackageCannotChooseWhichRepositoryAnswersForIt(unittest.TestCase):
         with mock.patch("changelog.urllib.request.urlopen") as opened:
             opened.return_value.__enter__.return_value = io.StringIO(json.dumps(payload))
             self.assertEqual(resolve_repo("rumdl"), "rvben/rumdl")
+
+    def test_a_github_route_is_not_an_account(self):
+        """#183. `github.com/sponsors/<user>` is a page, not a repository.
+
+        Measured 2026-09-30 over 44 packages' PyPI metadata -- `fpga-board-sim`'s
+        37 registry packages and seven more: six resolved to a Sponsors page,
+        because their `Funding` link comes before the repository. Five are in
+        that lockfile: attrs, jsonschema-specifications, referencing, rpds-py and
+        virtualenv. On pydantic 2.11.9 -> 2.11.10, #183 saw the script exit 2 on
+        `gh api repos/sponsors/...`. The other routes have the same shape, one
+        link type over.
+        """
+        for url in (
+            "https://github.com/sponsors/hynek",
+            "https://github.com/Sponsors/hynek",
+            "https://github.com/orgs/pydantic/discussions",
+            "https://github.com/users/octocat/projects/1",
+            "https://github.com/apps/dependabot",
+            "https://github.com/marketplace/actions/setup-uv",
+            "https://github.com/advisories/GHSA-xc3w-55vh-cw3w",
+        ):
+            self.assertIsNone(github_slug(url), f"{url} resolved to a repository")
+        self.assertEqual(github_slug("https://github.com/python-attrs/attrs"), "python-attrs/attrs")
+
+    def test_a_funding_link_listed_first_does_not_answer_for_the_repo(self):
+        """attrs 26.1.0's `project_urls`, recorded from PyPI's JSON on
+        2026-09-30 in the order it serves them. 0.58.0 answered `sponsors/hynek`."""
+        payload = {"info": {"project_urls": ATTRS_PROJECT_URLS, "home_page": None}}
+        with mock.patch("changelog.urllib.request.urlopen") as opened:
+            opened.return_value.__enter__.return_value = io.StringIO(json.dumps(payload))
+            self.assertEqual(resolve_repo("attrs"), "python-attrs/attrs")
 
     def test_a_package_naming_only_a_lookalike_fails_rather_than_guessing(self):
         payload = {"info": {"project_urls": {"Homepage": "https://evil.invalid/github.com/a/b"}}}
