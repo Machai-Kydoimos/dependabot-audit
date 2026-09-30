@@ -311,7 +311,9 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # v0.58.0, 2026-09-29 — `uv-lock.md` supplies `changelog.py`'s loop, with no
     # pipe (#178), paid for by a clause of reasoning that the script's docstring
     # already carries. The references come out 37 bytes lighter.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_607, "references": 133_390}
+    # v0.59.0 — raised by the sentence that says a release with no wheel is
+    # `underivable` in `vendored.py`'s exit meanings (#188).
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_607, "references": 133_419}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

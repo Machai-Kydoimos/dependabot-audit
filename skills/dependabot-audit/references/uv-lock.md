@@ -551,7 +551,8 @@ clean.
 **`vendored.py`'s 0** means nothing that any wheel the PR moves ships carries an
 advisory, at the current, proposed or latest version. Its **1** names each
 advisory's place: fixed by this PR, fixed above it, introduced by it, or
-standing. A wheel with no SBOM is the fifth place, `underivable`. Fixed above is
+standing. A wheel with no SBOM, or a release with no wheel, is the fifth place,
+`underivable`. Fixed above is
 a follow-up whose release notes may never name it: ruff 0.16.9 fixed salsa's
 RUSTSEC-2026-0308 and said nothing.
 

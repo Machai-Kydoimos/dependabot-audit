@@ -27,6 +27,21 @@ Replayed twice each on this version, both pairs agree on the verdict row and the
 follow-up target. `SKILL.md` goes from 120,607 to 120,447 bytes, and the
 references from 133,390 to 132,140.
 
+### A release with no wheel is underivable (#188)
+
+On `fpga-board-sim` #444, `vendored.py` printed `NOTHING VENDORED -- none of 1
+moved package(s) is compiled` and exited 0. actionlint-py 1.7.12.25 publishes one
+12,438-byte sdist and no wheel, and its build downloads the compiled actionlint Go
+binary, checked against a sha256 in `checksums.cfg`. The skip could not tell a
+pure-Python wheel from no wheel at all. A release with no wheel is now
+`underivable`: it is built from source at install, and its build decides what it
+ships. The verdict on #444 does not move, because the binary stays at 1.7.12.
+
+Reading that path found a second instance. When PyPI would not serve the one moved
+package's release, the loop printed `UNDERIVABLE` and never counted the package as
+read. The script then ended `RESULT: NOTHING VENDORED`, exit 0, two lines below its
+own `UNDERIVABLE`. A finding now outranks *nothing read*.
+
 ### A GitHub route is not a repository (#183)
 
 `resolve_repo` took the first GitHub link in `project_urls`, and a `Funding` link

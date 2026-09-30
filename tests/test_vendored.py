@@ -305,6 +305,31 @@ class TestWhatCannotBeReadIsNotClean(Harness):
         self.assertEqual(code, 0, out)
         self.assertIn("RESULT: NOTHING VENDORED", out)
 
+    def test_a_package_with_no_wheel_is_underivable_not_pure_python(self):
+        """#188. actionlint-py publishes one sdist and no wheel, and its build fetches
+        the compiled actionlint Go binary. 0.58.0 printed `NOTHING VENDORED -- none
+        of 1 moved package(s) is compiled` and exited 0 on `fpga-board-sim` #444."""
+        self.world.release("actionlint-py", "1.7.12.24", {})
+        self.world.release("actionlint-py", "1.7.12.25", {})
+        self.world.latest["actionlint-py"] = "1.7.12.25"
+        code, out, _ = self.run_main(
+            ["--package", "actionlint-py", "--current", "1.7.12.24", "--proposed", "1.7.12.25"]
+        )
+        self.assertEqual(code, 1, out)
+        self.assertIn("actionlint-py 1.7.12.25: UNDERIVABLE -- no wheel", out)
+        self.assertNotIn("NOTHING VENDORED", out)
+
+    def test_a_release_the_registry_cannot_serve_is_not_nothing_vendored(self):
+        """Found reading #188's path: the one moved package's release JSON fails, the
+        loop prints UNDERIVABLE and never counts it read, and 0.58.0 then ended
+        `RESULT: NOTHING VENDORED`, exit 0, two lines below its own UNDERIVABLE."""
+        self.world.release("t", "1.1", {p: [crate("regex", "1.12.0")] for p in PLATFORMS})
+        self.world.latest["t"] = "1.1"
+        code, out, _ = self.run_main(["--package", "t", "--current", "1.0", "--proposed", "1.1"])
+        self.assertEqual(code, 1, out)
+        self.assertIn("t: UNDERIVABLE", out)
+        self.assertNotIn("NOTHING VENDORED", out)
+
     def test_an_unmaintained_notice_alone_is_not_a_finding(self):
         """ruff ships two, `paste` and `proc-macro-error2`, both compile-time."""
         for version in ("1.0", "1.1"):
