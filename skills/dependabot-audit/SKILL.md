@@ -889,10 +889,10 @@ adopted. Look for two things, in this order:
 
 - **`Security` sections.** These outrank every vulnerability database. A privately
   disclosed fix ships with no CVE, and scanners will report clean.
-- **Destructive-fix bugs.** Entries like "stop deleting…" or "no longer removes…"
-  in a tool the repo runs in **write mode** (`--fix`, `--write`, `-i`) are
-  data-loss bugs in a mode that runs automatically. They never appear in a
-  security feed.
+- **Destructive-fix bugs.** Entries like "stop deleting…", "no longer removes…" or
+  "keep … when fixing" in a tool the repo runs in **write mode** (`--fix`,
+  `--write`, `-i`) are data-loss bugs in a mode that runs automatically. They never
+  appear in a security feed. `changelog.py --write-mode` lists them by line.
 
 **Then ask whether this repo is in the change's scope**, for either kind. Phase 7
 takes the verdict from that answer, so it is a finding and not a footnote: read
@@ -1665,6 +1665,8 @@ did not run** — `--no-execute`, `$MAY_EXECUTE=no`, or an ecosystem that cannot
 run the tool — the answer is **underivable**, and it takes neither the Hold row
 nor the follow-up row by default. It is not decided here, because deciding it
 means running the code under audit, and this phase runs under `--no-execute`.
+**The fixed version is the target either way**: both rows end there and differ
+only in whether this PR merges first, and `changelog.py --gap` names it.
 
 Where an advisory exists the answer is stronger and mechanical: run `audit.py`
 against the **base branch's** lockfile as well as the PR's, and compare the two

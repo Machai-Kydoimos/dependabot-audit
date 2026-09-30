@@ -312,8 +312,9 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # pipe (#178), paid for by a clause of reasoning that the script's docstring
     # already carries. The references come out 37 bytes lighter.
     # v0.59.0 — raised by the sentence that says a release with no wheel is
-    # `underivable` in `vendored.py`'s exit meanings (#188).
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_607, "references": 133_419}
+    # `underivable` in `vendored.py`'s exit meanings (#188), then by #185's: the
+    # write-mode listing, and Phase 7's "the fixed version is the target either way".
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_831, "references": 133_500}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

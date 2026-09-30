@@ -27,6 +27,48 @@ Replayed twice each on this version, both pairs agree on the verdict row and the
 follow-up target. `SKILL.md` goes from 120,607 to 120,447 bytes, and the
 references from 133,390 to 132,140.
 
+### The prose's fix-mode lines are listed, and a gap names the follow-up's target (#185)
+
+`DESTRUCTIVE` reads `stop …` and `no longer …`, in commits only. rumdl writes the
+same bug the other way round, as what the fix now keeps: *"keep each line's ending
+when fixing a file with mixed line endings"*, *"withhold blank lines that would
+change how the lists parse"*. On #443's gap, v0.2.76…v0.2.78, 0.58.0 printed
+`security-shaped lines: none` and `RECONCILED`, and did not print the 9 KB of prose
+at all. Its closing line, *"None carries the destructive-fix shape"*, was about
+the unreconciled commits, and a replay read it as covering the prose.
+
+In write mode, `changelog.py` now lists the prose's fix-mode lines: the negation,
+the preservation (`keep`, `preserve`, `withhold`, `leave … alone`), and a write
+named outright (`when fixing`, `autofix`, `the fix`). Each is listed at its first
+line, with the rule ids the lines name. Without `--write-mode` they are counted,
+not listed. Measured in write mode, 34 of 46 listed lines were fixes to what a fix
+or a format writes:
+
+| Range | Listed | Fix-mode |
+|---|---|---|
+| rumdl v0.2.76…v0.2.78 | 23 | 20 |
+| ruff 0.16.0…0.16.9 | 10 | 6 |
+| ruff 0.15.20…0.16.0 | 7 | 3, one of them `ISC003` autofix stripping `+` from comments |
+| black 25.9.0…26.3.1 | 6 | 5 |
+
+The rest are CLI help text, `Stop recommending …` and `Document fix safety`. A
+rule's change worded as detection, *"MD077: move a fenced block as a whole"*, is
+not listed; the file has it. The scan reads the prose only: over ruff's commit
+range it would add about 80 `[ty] Preserve …` rows from ty. Only write mode lists
+it: uv's `Keep uv workspace metadata read-only` and pytest's `no longer` entries are
+behaviour, and a repo that does not write with the tool has no fix to lose.
+
+**The first replay pair on this version still split, and the fix is folded in.**
+Both runs listed the 37 fix-mode lines in rumdl's gap. One followed up to 0.2.78;
+the other left rumdl out, reading Phase 7's *"it takes neither the Hold row nor the
+follow-up row by default"* as no target at all. Both rows end at the fixed version,
+and they differ only in whether the PR merges first. So `changelog.py --gap`, on a
+gap range with fix-mode lines in write mode or with a Security heading or advisory
+id, prints that the follow-up's target is the fixed version, cooldown
+notwithstanding. `currency.py` marks gap ranges `--gap`, the supplied loop passes
+the flag on, and Phase 7 gains one sentence saying the same. A guard runs the loop
+as written, with `gh` and `changelog.py` stubbed.
+
 ### A release with no wheel is underivable (#188)
 
 On `fpga-board-sim` #444, `vendored.py` printed `NOTHING VENDORED -- none of 1

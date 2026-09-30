@@ -192,8 +192,8 @@ done
 ```
 
 Add `--write-mode` when this repo runs the tool with `--fix`, `--write` or `-i`.
-It changes nothing about what is looked for, only how a destructive fix is
-reported.
+It changes nothing about what is looked for: it lists the prose's fix-mode lines
+by line, which it otherwise only counts, and reports a destructive fix as data loss.
 
 **Read the exit code; do not chain on it.** `0` the prose names every fix and
 bump, `1` it does not and the unreconciled commits are listed, `2` could not

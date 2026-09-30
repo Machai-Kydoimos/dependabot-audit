@@ -98,7 +98,7 @@ one of them in the evidence file -- and the cut line counts what it cut, by tier
 
 Usage:
     changelog.py --scratch DIR --from VERSION --to VERSION \\
-                 (--package NAME | --repo-slug OWNER/REPO) [--write-mode]
+                 (--package NAME | --repo-slug OWNER/REPO) [--write-mode] [--gap]
 
 Exit status: 0 = the prose names every fix in the range, and every dependency bump.
 1 = it does not, and the unreconciled commits are listed (a Phase 2 finding, not a
@@ -153,6 +153,43 @@ UNSHIPPED_TYPES = ("ci", "docs", "test", "style")
 # unreconciled commit is listed either way, and `FIX_WORDED` below carries the
 # looser family into second place rather than out of the report.
 DESTRUCTIVE = re.compile(r"\b(?:stops?|stopped|stopping|no longer)\b", re.IGNORECASE)
+
+# A line of the *prose* that changes what the tool writes when it fixes (#185).
+# `DESTRUCTIVE` reads the negation, in commits; rumdl writes the same bug the other
+# way round, as what the fix now keeps -- `keep each line's ending when fixing a
+# file with mixed line endings`, `withhold blank lines that would change how the
+# lists parse` -- and on fpga-board-sim #443's gap, v0.2.76...v0.2.78, every one
+# was worded so. That prose is 9 KB, so none of it was printed, and the output said
+# `security-shaped lines: none` and `RECONCILED`. So this reads three shapes: the
+# negation, the preservation (`keep`, `preserve`, `withhold`, `leave ... alone`),
+# and a write named outright (`when fixing`, `autofix`, `unsafe fix`, `the fix`).
+#
+# Measured 2026-09-30 in write mode, one listed line per entry: 34 of 46 were fixes
+# to what a fix or a format writes -- rumdl v0.2.76...v0.2.78 20 of 23, ruff
+# 0.16.0...0.16.9 6 of 10, ruff 0.15.20...0.16.0 3 of 7 (one is `ISC003` autofix
+# stripping `+` from comments), black 25.9.0...26.3.1 5 of 6. The rest are CLI
+# help, `Stop recommending ...`, `Document fix safety`. Not listed: a rule's change
+# worded as detection, `MD077: move a fenced block as a whole` -- the file has it.
+#
+# Read over the prose only. Over ruff's commit range it adds ~80 `[ty] Preserve ...`
+# rows from ty, the second product under ruff's tags. And listed only in write mode:
+# uv's `Keep uv workspace metadata read-only` and pytest's `no longer` entries are
+# about behaviour, and a repo that does not write with the tool has no fix to lose.
+FIX_MODE = re.compile(
+    r"\b(?:stops?|stopped|stopping|no longer)\b"
+    r"|\b(?:keep|keeps|kept|preserv\w*|retain\w*|withh(?:o|e)ld\w*)\b"
+    r"|\bleav(?:e|es|ing)\b.{0,60}?\b(?:alone|as written|intact|unchanged|in place|where it is)\b"
+    r"|\b(?:when|while|during)\s+(?:fix(?:ing)?|formatting|reflow(?:ing)?|rewriting|trimming"
+    r"|wrapping|sorting)\b"
+    r"|--fix\b|\bautofix\w*|\bunsafe\s+fix"
+    r"|\bfix(?:es)?\s+(?:mode|replacements?|safety|it|them)\b"
+    r"|\b(?:list|rule|document|warning|its|their|the|a|an|this)\s+fix(?:es)?\b",
+    re.IGNORECASE,
+)
+# A rule the line names: rumdl's `MD032`, ruff's `UP040`, `SIM109`, `PLR6104`. The
+# config is what says whether this repo runs it.
+RULE_ID = re.compile(r"\b(?:MD\d{3}|[A-Z]{1,4}\d{3,4})\b")
+SHOWN_FIX_MODE = 30
 
 # Second tier of the ranking: subjects that read like a correction without
 # carrying the destructive shape. Only ordering depends on this, so a miss costs
@@ -1222,6 +1259,33 @@ def one_source(section: str, body: str) -> bool:
     return bool(wanted) and "\n".join(wanted) in "\n".join(lines_of(body))
 
 
+def entry_text(line: str) -> str:
+    """A prose line as a reader would quote it: no bullet, bold, link syntax or
+    trailing commit and PR links, which is where most of a rumdl line's bytes are."""
+    text = re.sub(r"\s*\(\[(?:[0-9a-f]{6,}|#\d+)\]\([^)]*\)\)", "", line.strip())
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"^(?:[-*+]|\d+[.)])\s+", "", text).replace("**", "")
+    return re.sub(r"\s+", " ", text.replace("\\[", "[").replace("\\]", "]")).strip()
+
+
+def fix_mode_lines(lines: list[str], index: list[tuple[int, int, str]]) -> list[tuple[int, str]]:
+    """(line, text) for each prose line that reads like a change to what a fix writes,
+    at its first line only: rung 1 so often carries rung 2 verbatim (#185)."""
+    seen: set[str] = set()
+    found = []
+    for start, end, label in index:
+        if not label.startswith("rung "):
+            continue
+        for number in range(start, end + 1):
+            text = entry_text(lines[number - 1])
+            key = normalise(text)
+            if not key or key in seen or not FIX_MODE.search(text):
+                continue
+            seen.add(key)
+            found.append((number, text))
+    return found
+
+
 def security_lines(
     lines: list[str], index: list[tuple[int, int, str]]
 ) -> list[tuple[int, str, str]]:
@@ -1255,6 +1319,11 @@ def main() -> int:
         "--write-mode",
         action="store_true",
         help="this repo runs the tool with --fix/--write/-i, so a destructive fix is data loss",
+    )
+    parser.add_argument(
+        "--gap",
+        action="store_true",
+        help="the range is the gap above the proposal: a fix in it sets the follow-up's target",
     )
     args = parser.parse_args()
 
@@ -1389,6 +1458,41 @@ def main() -> int:
             print(f"  ... and {len(words) - SHOWN_WORDS} more with the words alone, in the file")
     else:
         print("security-shaped lines: none -- no advisory id, heading or word in the file.")
+    fixes = fix_mode_lines(lines, index)
+    if fixes and not args.write_mode:
+        print(
+            f"fix-mode lines in the prose: {len(fixes)}, not listed -- this repo does not "
+            "run the tool\nin write mode (no --write-mode), so no fix of it writes here."
+        )
+    elif fixes:
+        print(
+            "fix-mode lines in the prose -- this repo runs the tool in write mode, so each\n"
+            f"can be a bug in what a fix wrote here ({len(fixes)}, first line of each):"
+        )
+        for number, text in fixes[:SHOWN_FIX_MODE]:
+            print(f"  line {number:>4}  {text[:110]}")
+        if len(fixes) > SHOWN_FIX_MODE:
+            print(f"  ... and {len(fixes) - SHOWN_FIX_MODE} more, in the file")
+        rules = sorted({rule for _, text in fixes for rule in RULE_ID.findall(text)})
+        print(f"rules they name: {', '.join(rules) or 'none'}.")
+        print("A rule this repo's config turns off is inert here; a line that names no rule")
+        print("is the fix engine's own, and runs wherever the tool does.")
+    # A fix above the proposal is Hold if the bump moved into the bug and a follow-up
+    # if it did not. Both rows end at the fixed version, and the #438 replays under
+    # 0.59.0 split on naming it: one took Phase 7's "neither row by default" as no
+    # target at all. So the target is printed here, where the gap's fixes are.
+    shapes = []
+    if args.gap and args.write_mode and fixes:
+        shapes.append(f"{len(fixes)} fix-mode line(s) in a tool this repo runs in write mode")
+    if args.gap and marked:
+        shapes.append(f"{len(marked)} security-shaped line(s), an advisory id or a heading")
+    if shapes:
+        print(
+            f"IN THE GAP: {' and '.join(shapes)}.\n"
+            f"The follow-up's target is {args.new}, cooldown notwithstanding: Phase 7's rows\n"
+            "for a fix above the proposal all end there, and differ only in whether this PR\n"
+            "merges first. That is Phase 4's reproducer question, underivable without it."
+        )
     prose = [(s, e) for s, e, label in index if label.startswith("rung ")]
     span = f"lines {prose[0][0]}-{prose[-1][1]}" if prose else "the prose rungs"
     shown, left = inline_prose(lines, index, verbatim)
@@ -1484,8 +1588,9 @@ def main() -> int:
         )
     else:
         print(
-            "None carries the destructive-fix shape, but the prose still does not name\n"
-            "them. Report the gap and what the commits say -- that is the row."
+            "None of these unreconciled commits carries the destructive-fix shape, but the\n"
+            "prose does not name them. Report the gap and what the commits say -- that is\n"
+            "the row. The prose's own fix-mode lines are the list above, if any."
         )
     return 1
 

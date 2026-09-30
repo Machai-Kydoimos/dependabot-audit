@@ -5156,6 +5156,12 @@ class TestAFixAboveTheProposalIsMeasuredWhereCodeMayRun(SkillHarness):
             "the answer is **underivable**, and it takes neither the hold row nor the follow-up row by default",
             phase7,
         )
+        self.assertIn(
+            "the fixed version is the target either way",
+            phase7,
+            "both rows end at the fixed version; a #438 replay under 0.59.0's first cut "
+            "read 'neither row' as no follow-up at all",
+        )
 
     def test_the_cheap_route_comes_first(self):
         """pre-commit writes "Regressed in 4.6.1" under the entry itself."""
