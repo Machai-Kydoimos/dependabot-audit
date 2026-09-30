@@ -57,10 +57,10 @@ version stands still. There are innocent explanations (a wheel added for a new
 platform, a re-resolution against a different index); confirm which, rather than
 assuming one.
 
-That one invocation covers this phase **plus the mechanical half of Phases 2 and
-3** — it also reports the registry's true latest with publish timestamps, PEP 740
-build provenance where PyPI has it, and the OSV batch across the whole lockfile.
-Read its output there rather than repeating those queries by hand.
+That one invocation covers this phase **plus the OSV half of Phase 3** — it also
+reports the registry's true latest, PEP 740 build provenance where PyPI has it,
+and the OSV batch across the whole lockfile. Its gap dates are first uploads, which
+is not the date the bot reads: Phase 2's `currency.py` dates and labels them.
 
 **`PUBLISHER CHANGED` outranks everything else in the output.** It means the
 release being adopted was built somewhere the previous one was not. Absence of an
@@ -131,9 +131,9 @@ expected to track the registry.
 
 ## Phase 2 — Currency
 
-The mechanical half — the registry's true latest, with publish timestamps — is
-**already done** by the Phase 1 script. What is left is the question `SKILL.md`
-sends here: this repo runs the tool, so is it in the change's scope?
+The mechanical half is `currency.py`, in `SKILL.md` § Phase 2: every release
+above the proposal, dated as the bot dates it. What is left is the question
+`SKILL.md` sends here: this repo runs the tool, so is it in the change's scope?
 
 ### Reaching the changelog at all
 
@@ -184,9 +184,9 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
 # One call per range, read whole: a `| tail` cuts the scan and the prose.
-for r in "<pkg> <locked> <proposed>"; do set -- $r
+for r in <currency.py's changelog.py ranges, adopted and gap>; do set -- $r
   python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/changelog.py" \
-    --scratch "$SCRATCH" --package "$1" --from "$2" --to "$3"
+    --scratch "$SCRATCH" --package "$1" --from "$2" --to "$3" ${4:+"$4"}
   echo "changelog exit: $?"
 done
 ```

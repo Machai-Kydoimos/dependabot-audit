@@ -2753,52 +2753,52 @@ class TestTheCurrentPinIsReadInEveryWorkflowBySubpath(SkillHarness):
     def _phase2(self) -> str:
         return dict(phases((PLUGIN / "references/actions.md").read_text(encoding="utf-8")))[2]
 
-    def test_the_default_branchs_pins_are_found_in_every_workflow_by_subpath(self):
-        lines = "\n".join(bash_blocks(self._phase2())).splitlines()
-        grep = next(
-            (ln for ln in lines if ln.startswith("git grep") and "<owner>/<action>" in ln), None
+    def test_phase_2_asks_currency_for_the_default_branch(self):
+        block = next((b for b in bash_blocks(dict(self.phases)[2]) if "currency.py" in b), "")
+        self.assertIn('--default "origin/$DEFAULT"', block, "the current pin is not asked for")
+        self.assertIn(
+            "`--default` line is **the repo's current pin**",
+            re.sub(r"\s+", " ", self._phase2()),
+            "actions.md no longer says where the current pin comes from",
         )
-        self.assertIsNotNone(grep, "Phase 2 asks for the current pin and supplies no command")
-        assert grep is not None
+
+    def test_the_default_branchs_pins_are_found_in_every_workflow_by_subpath(self):
+        """The fixture #167's `git grep` was run over, now run through
+        `currency.workflow_pins`: a subpath action in two workflows, a comment
+        naming it, and a quoted `uses:`."""
+        import currency
+
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             flows = root / ".github/workflows"
             flows.mkdir(parents=True)
+            a, b = "a" * 40, "b" * 40
             (flows / "codeql.yml").write_text(
                 "jobs:\n  a:\n    steps:\n"
-                "      - uses: github/codeql-action/init@aaaa  # v3.29.0\n"
-                "      - uses: github/codeql-action/analyze@aaaa  # v3.29.0\n",
+                f"      - uses: github/codeql-action/init@{a}  # v3.29.0\n"
+                f"      - uses: github/codeql-action/analyze@{a}  # v3.29.0\n",
                 encoding="utf-8",
             )
             (flows / "scorecard.yml").write_text(
                 "jobs:\n  s:\n    permissions:\n"
                 "      security-events: write  # for github/codeql-action/upload-sarif\n"
-                '    steps:\n      - uses: "github/codeql-action/upload-sarif@bbbb"  # v3.28.0\n',
+                f'    steps:\n      - uses: "github/codeql-action/upload-sarif@{b}"  # v3.28.0\n',
                 encoding="utf-8",
             )
             _commit_as_pr(root, 1)
             _git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
-
-            def run(line: str) -> subprocess.CompletedProcess[str]:
-                return subprocess.run(
-                    ["bash", "-c", line.replace("<owner>/<action>", "github/codeql-action")],
-                    cwd=root,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    env={**os.environ, "DEFAULT": "main"},
-                )
-
-            found = run(grep)
-            self.assertEqual(found.returncode, 0, found.stderr)
-            pins = found.stdout.splitlines()
-            self.assertEqual(len(pins), 3, "three `uses:` lines; the comment is not a pin")
-            self.assertTrue(any("scorecard.yml" in p and "bbbb" in p for p in pins))
-            # The control: the form the issue proposed finds none of them.
-            proposed = run(
-                "git grep -n '<owner>/<action>@' \"origin/$DEFAULT\" -- '.github/workflows/'"
-            )
-            self.assertEqual(proposed.returncode, 1, proposed.stdout)
+            here = os.getcwd()
+            os.chdir(root)
+            try:
+                pins = currency.workflow_pins("origin/main")
+            finally:
+                os.chdir(here)
+        self.assertEqual(set(pins), {"github/codeql-action"}, "the comment is not a pin")
+        self.assertEqual(
+            {currency.version_of(p) for p in pins["github/codeql-action"]},
+            {"v3.29.0", "v3.28.0"},
+            "both workflows, by subpath, and the quoted `uses:`",
+        )
 
 
 def _git(root: pathlib.Path, *args: str) -> None:
@@ -4680,6 +4680,48 @@ class TestARungThatAnsweredCanStillBeIncomplete(SkillHarness):
         ]
         self.assertEqual(piped, [], "a pipe cuts the scan and the prose")
 
+    def test_the_loop_passes_a_gap_ranges_flag_on_and_no_other(self):
+        """0.59.0. `currency.py` marks a gap range `--gap`, and changelog.py names the
+        follow-up's target only when it gets the flag. The block is run as written,
+        with `gh` and changelog.py stubbed, over the ranges line currency.py printed
+        for `fpga-board-sim` #443."""
+        found = re.search(r"```bash\n((?:(?!```).)*?changelog\.py.*?)```", self._section(), re.S)
+        self.assertIsNotNone(found, "the changelog.py block is gone")
+        block = found.group(1) if found else ""
+        placeholder = "<currency.py's changelog.py ranges, adopted and gap>"
+        self.assertIn(placeholder, block, "the loop no longer reads currency.py's ranges")
+        ranges = '"ruff 0.16.8 0.16.9" "rumdl 0.2.75 0.2.76" "rumdl 0.2.76 0.2.78 --gap"'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "bin").mkdir()
+            (root / "bin/gh").write_text("#!/bin/sh\necho o/r\n", encoding="utf-8")
+            (root / "bin/gh").chmod(0o755)
+            (root / "scripts").mkdir()
+            (root / "scripts/changelog.py").write_text(
+                # An empty argument is what argparse refuses, as `"$4"` would pass one.
+                "import sys\nsys.exit(2) if '' in sys.argv[1:] else "
+                "print('ARGS', ' '.join(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            scratch = root / "scratch"
+            scratch.mkdir()
+            (scratch / "phase0.env").write_text(f"SCRIPTS={root / 'scripts'}\n", encoding="utf-8")
+            done = subprocess.run(
+                ["bash", "-c", block.replace(placeholder, ranges)],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
+                    "SCRATCH": str(scratch),
+                },
+            )
+        calls = [ln for ln in done.stdout.splitlines() if ln.startswith("ARGS")]
+        self.assertEqual(len(calls), 3, done.stdout + done.stderr)
+        self.assertNotIn("--gap", calls[0] + calls[1])
+        self.assertTrue(calls[2].endswith("--to 0.2.78 --gap"), calls[2])
+
     def test_the_write_mode_flag_is_documented_where_it_is_passed(self):
         self.assertIn("--write-mode", self.reachable(2))
         self.assertRegex(
@@ -6236,9 +6278,11 @@ class TestPhase2CanAnswerTheCurrencyQuestionItAsks(SkillHarness):
     """
 
     def test_currency_above_the_tag_line_has_a_command(self):
+        """0.59.0 moved the list from `releases/latest`, which named the newest
+        release and left the gap to the run, into `currency.py` (#187)."""
         self.assertRegex(
             self.reachable(2),
-            r"releases/latest",
+            r"currency\.py",
             "Phase 2 requires a newer-release check where the moving major tag is "
             "gone, and supplies no way to list releases. A required row with no "
             "command is filled by improvising or not at all",
@@ -6265,24 +6309,17 @@ class TestPhase2CanAnswerTheCurrencyQuestionItAsks(SkillHarness):
         """404 means "no releases published", not "the pin is current".
 
         Measured on `git/git` and `torvalds/linux`: the endpoint 404s where a repo
-        publishes no releases at all, and `gh` writes the error body to stdout —
-        so a capture succeeds and holds `{"message":"Not Found"…}` while looking
-        like an answer. That is #39's hazard arriving in a new command.
+        publishes no releases at all, and `gh` writes the error body to stdout.
+        Since 0.59.0 `currency.py` makes the read and keys on `gh`'s status
+        (`tests/test_currency.py`); the prose keeps the claim, so a reader of the
+        pointer knows an empty answer is not a current pin.
         """
-        flat = self.flat(2)
         self.assertIn(
-            "a failure here is underivable, not current",
-            flat,
-            "an action that only moves tags publishes no releases, so the call "
-            "fails on exactly the repos the check was added for. Silence there "
+            "is `underivable` there, never current",
+            self.flat(2),
+            "an action that only moves tags publishes no releases, so the list is "
+            "empty on exactly the repos the check was added for. Silence there "
             "reads as confirmation",
-        )
-        self.assertIn(
-            "key on the exit status",
-            flat,
-            "`gh` writes the 404 body to stdout, so a captured result is "
-            "non-empty and wrong — the same shape #39 records for "
-            "`branches/<b>/protection`",
         )
 
 

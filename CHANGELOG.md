@@ -27,6 +27,56 @@ Replayed twice each on this version, both pairs agree on the verdict row and the
 follow-up target. `SKILL.md` goes from 120,607 to 120,447 bytes, and the
 references from 133,390 to 132,140.
 
+### The gap is dated the way the bot dates it (#187, #179)
+
+Phase 2 supplied the cooldown boundary, a `python3 -c` subtraction. Comparing each
+release against it, and picking between Phase 7's two plain-gap rows, was left to
+the run. **The date it compared was not the bot's either.** `audit.py` dates a
+PyPI release by its first file. Dependabot reads pypi.org's JSON API and keeps the
+last file it lists per version (`format_version_releases`,
+`python/lib/dependabot/python/package/package_details_fetcher.rb`, dependabot-core
+`d4120ca`). That is usually the sdist. rumdl 0.2.77's wheels landed at
+2026-09-23T13:25Z and its sdist at 2026-09-26T14:54Z. `fpga-board-sim` #443 opened
+2026-09-28T13:10Z:
+- by the first file, 0.2.77 was outside the window, so the bot was behind;
+- by the bot's date it was inside, and the bot proposed 0.2.76.
+
+Across all 19 of that repository's `uv` PRs, the last-listed rule explains every
+version the bot chose, and the first-file rule is wrong once, on #443. A GitHub
+release is dated by `published_at` (`git_cooldown_date_resolver.rb`). The window
+is `DEFAULT_COOLDOWN_DAYS = 3` unless the config sets one (`updater/lib/dependabot/job.rb`).
+
+`currency.py` now makes the read. For every package and action the PR moves, it:
+- lists every release above the proposal, dated as the bot dates it;
+- labels each one *after the PR opened*, *inside the window*, or *outside it*;
+- names the plain-gap row the labels select, prefixed with the condition that
+  outranks it, a Security entry or a fix-mode fix in the gap;
+- prints what the default branch pins now. Both #438 replays under 0.57.0 had
+  improvised `git show origin/main:uv.lock | grep` for that (#179);
+- prints the `changelog.py` ranges, adopted and gap, for the loop to read.
+
+A pin to a moving major (`# v1`) gains a gap only at a higher major. The window is
+never assumed where it may not hold:
+- `cooldown: default-days: N` alone sets it (cli/cli's shape);
+- anything richer, a Renovate PR, or a config with no entry for the ecosystem
+  makes the labels `underivable`, and the output says why.
+
+The config is read at the merge base, which is the one the bot had and which the
+PR cannot choose. `--created-at` takes `$CREATED_AT` from the handoff and exits 2
+if it is not the PR's, the way `exercised.py` checks `--head-sha`.
+
+What it replaces, and the prose that came out with it:
+- `SKILL.md` Phase 2's boundary block and its two paragraphs;
+- `actions.md`'s `releases/latest` read, which named the newest release and left
+  the gap to the run, and its current-pin `git grep` block;
+- `audit.py`'s hint to *"compare these against $CREATED_AT"*, now *"by first
+  upload; Phase 2's currency.py dates them as the bot does"*.
+
+The #167 guard's fixture now runs through `currency.workflow_pins`, and the
+integration suite re-derives the rule's evidence over the 19 PRs. That check was
+mutation-checked by switching the dating to the first file, and it failed on
+exactly `#443 rumdl 0.2.77`.
+
 ### The prose's fix-mode lines are listed, and a gap names the follow-up's target (#185)
 
 `DESTRUCTIVE` reads `stop …` and `no longer …`, in commits only. rumdl writes the
@@ -97,6 +147,28 @@ metadata (`fpga-board-sim`'s 37 registry packages and seven more), six resolved 
 A GitHub route that sits where an owner would (`sponsors`, `orgs`, `users`,
 `apps`, `marketplace`, `advisories`) is no longer taken as an owner. All six now
 resolve to their repositories. The host comparison is as strict as it was.
+
+### The replays
+
+Each ran from a fresh clone planted at the PR's base, with `claude -p --plugin-dir`
+on this branch, a denylist over every mutating `gh`/`git` command, and a $5 cap.
+Six runs cost $7.04 in total, with 0 permission denials:
+
+| Run | Plugin | Verdict | Follow-up target | Confidence |
+|---|---|---|---|---|
+| #438, 1 | first cut | merge, then follow up | rumdl 0.2.78, ruff 0.16.9 | low |
+| #438, 2 | first cut | merge, then follow up | ruff 0.16.9 only | medium |
+| #438, 3 | final | merge, then follow up | ruff 0.16.9 and rumdl 0.2.78 | low |
+| #438, 4 | final | merge, then follow up | rumdl 0.2.78 and ruff 0.16.9 | medium |
+| #436, 1 | final | merge as-is | none: v10.2.0 postdates the PR, and #442 proposes it | high |
+| #436, 2 | final | merge as-is | none, for the same reason | high |
+
+Every run called `currency.py` once. The two final #438 runs passed `--gap` through
+the supplied loop. No run improvised a `releases/latest` read or
+`git show origin/main:uv.lock`. Each run counted 4 to 8 commands the procedure did
+not specify, where Rick's real #438 audit on 0.54.0 counted 37. The two final #438
+runs still disagree on confidence, low against medium, on the same underivable
+question. That is filed for the next version rather than folded in.
 
 ## [0.58.0] — 2026-09-29
 
