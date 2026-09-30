@@ -63,6 +63,14 @@ class TestThePublishedWheels(unittest.TestCase):
         self.assertIn("proposed 2.41.5: 120 compiled wheel(s), 0 with an SBOM read", out)
         self.assertIn("no SBOM in the first 3 of 120 compiled wheel(s)", out)
 
+    def test_a_release_with_no_wheel_is_underivable(self) -> None:
+        """#188: actionlint-py publishes one sdist, and its build downloads the
+        actionlint Go binary. 0.58.0 called it `NOTHING VENDORED`, exit 0."""
+        code, out = vendored("actionlint-py", "1.7.12.24", "1.7.12.25")
+        self.assertEqual(code, 1, out)
+        self.assertIn("actionlint-py 1.7.12.25: UNDERIVABLE -- no wheel on PyPI", out)
+        self.assertNotIn("NOTHING VENDORED", out)
+
 
 if __name__ == "__main__":
     unittest.main()

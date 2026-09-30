@@ -337,3 +337,24 @@ class TestTheOnlyProseCanBeReStructuredTextOverTilde(unittest.TestCase):
             "  | * Updated Windows, macOS, and Linux wheels to be compiled with OpenSSL 3.5.4.",
             run.stdout,
         )
+
+
+@live
+class TestAFundingLinkIsNotTheRepository(unittest.TestCase):
+    """#183. Measured 2026-09-30: attrs, jsonschema-specifications, pydantic,
+    referencing, rpds-py and virtualenv list a `github.com/sponsors/...` link
+    before their repository, and five are in `fpga-board-sim`'s lockfile."""
+
+    def test_each_resolves_to_its_repository(self):
+        sys.path.insert(
+            0, str(Path(__file__).resolve().parent.parent / "skills/dependabot-audit/scripts")
+        )
+        import changelog
+
+        for package, want in (
+            ("attrs", "python-attrs/attrs"),
+            ("virtualenv", "pypa/virtualenv"),
+            ("pydantic", "pydantic/pydantic"),
+            ("referencing", "python-jsonschema/referencing"),
+        ):
+            self.assertEqual(changelog.resolve_repo(package), want, package)

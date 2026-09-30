@@ -124,9 +124,9 @@ read is two commands rather than one script:
 REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
-# The registry's true latest AND when it was published. Phase 2 compares that
-# against $CREATED_AT, never against now, so the timestamp is not optional —
-# it is what separates "the bot is behind" from "the bot is inside the cooldown".
+# The registry's true latest AND when it was published. currency.py prints the
+# boundary, measured from the PR's opening and never from now; the timestamp is
+# what separates "the bot is behind" from "the bot is inside the cooldown".
 python3 -c 'import json,sys,urllib.request as u; d=json.load(u.urlopen("https://pypi.org/pypi/"+sys.argv[1]+"/json")); v=d["info"]["version"]; f=d["releases"][v][0]; print("latest="+v, "published="+f["upload_time_iso_8601"], "yanked="+str(f["yanked"]))' <pkg>
 
 # The gap's changelog, which IS scripted — `--package`, no lockfile needed.

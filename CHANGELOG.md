@@ -11,6 +11,165 @@ patch.
 
 ## [Unreleased]
 
+## [0.59.0] — 2026-09-30
+
+This version moves the follow-up's inputs out of the run's judgement and into the
+scripts. It is ordered by what it changes for `fpga-board-sim`, this plugin's
+primary user: ruff or rumdl is in 17 of its 19 `uv` PRs, and setup-uv in 8 of its
+13 actions PRs. Every audit of its PRs since 0.54.0 said merge. What varied was
+the follow-up, on rules that had not changed:
+- #436's replays on 0.56.0 and 0.57.0 split between "merge as-is" and "merge as-is,
+  then follow up to v10.2.0";
+- #438's two 0.58.0 replays, run the same day, split on rumdl. One gave it "real
+  urgency", and the other never weighed the list-structure `--fix` fixes.
+
+Replayed twice each on this version, both pairs agree on the verdict row and the
+follow-up target. `SKILL.md` goes from 120,607 to 120,447 bytes, and the
+references from 133,390 to 132,140.
+
+### The gap is dated the way the bot dates it (#187, #179)
+
+Phase 2 supplied the cooldown boundary, a `python3 -c` subtraction. Comparing each
+release against it, and picking between Phase 7's two plain-gap rows, was left to
+the run. **The date it compared was not the bot's either.** `audit.py` dates a
+PyPI release by its first file. Dependabot reads pypi.org's JSON API and keeps the
+last file it lists per version (`format_version_releases`,
+`python/lib/dependabot/python/package/package_details_fetcher.rb`, dependabot-core
+`d4120ca`). That is usually the sdist. rumdl 0.2.77's wheels landed at
+2026-09-23T13:25Z and its sdist at 2026-09-26T14:54Z. `fpga-board-sim` #443 opened
+2026-09-28T13:10Z:
+- by the first file, 0.2.77 was outside the window, so the bot was behind;
+- by the bot's date it was inside, and the bot proposed 0.2.76.
+
+Across all 19 of that repository's `uv` PRs, the last-listed rule explains every
+version the bot chose, and the first-file rule is wrong once, on #443. A GitHub
+release is dated by `published_at` (`git_cooldown_date_resolver.rb`). The window
+is `DEFAULT_COOLDOWN_DAYS = 3` unless the config sets one (`updater/lib/dependabot/job.rb`).
+
+`currency.py` now makes the read. For every package and action the PR moves, it:
+- lists every release above the proposal, dated as the bot dates it;
+- labels each one *after the PR opened*, *inside the window*, or *outside it*;
+- names the plain-gap row the labels select, prefixed with the condition that
+  outranks it, a Security entry or a fix-mode fix in the gap;
+- prints what the default branch pins now. Both #438 replays under 0.57.0 had
+  improvised `git show origin/main:uv.lock | grep` for that (#179);
+- prints the `changelog.py` ranges, adopted and gap, for the loop to read.
+
+A pin to a moving major (`# v1`) gains a gap only at a higher major. The window is
+never assumed where it may not hold:
+- `cooldown: default-days: N` alone sets it (cli/cli's shape);
+- anything richer, a Renovate PR, or a config with no entry for the ecosystem
+  makes the labels `underivable`, and the output says why.
+
+The config is read at the merge base, which is the one the bot had and which the
+PR cannot choose. `--created-at` takes `$CREATED_AT` from the handoff and exits 2
+if it is not the PR's, the way `exercised.py` checks `--head-sha`.
+
+What it replaces, and the prose that came out with it:
+- `SKILL.md` Phase 2's boundary block and its two paragraphs;
+- `actions.md`'s `releases/latest` read, which named the newest release and left
+  the gap to the run, and its current-pin `git grep` block;
+- `audit.py`'s hint to *"compare these against $CREATED_AT"*, now *"by first
+  upload; Phase 2's currency.py dates them as the bot does"*.
+
+The #167 guard's fixture now runs through `currency.workflow_pins`, and the
+integration suite re-derives the rule's evidence over the 19 PRs. That check was
+mutation-checked by switching the dating to the first file, and it failed on
+exactly `#443 rumdl 0.2.77`.
+
+### The prose's fix-mode lines are listed, and a gap names the follow-up's target (#185)
+
+`DESTRUCTIVE` reads `stop …` and `no longer …`, in commits only. rumdl writes the
+same bug the other way round, as what the fix now keeps: *"keep each line's ending
+when fixing a file with mixed line endings"*, *"withhold blank lines that would
+change how the lists parse"*. On #443's gap, v0.2.76…v0.2.78, 0.58.0 printed
+`security-shaped lines: none` and `RECONCILED`, and did not print the 9 KB of prose
+at all. Its closing line, *"None carries the destructive-fix shape"*, was about
+the unreconciled commits, and a replay read it as covering the prose.
+
+In write mode, `changelog.py` now lists the prose's fix-mode lines: the negation,
+the preservation (`keep`, `preserve`, `withhold`, `leave … alone`), and a write
+named outright (`when fixing`, `autofix`, `the fix`). Each is listed at its first
+line, with the rule ids the lines name. Without `--write-mode` they are counted,
+not listed. Measured in write mode, 34 of 46 listed lines were fixes to what a fix
+or a format writes:
+
+| Range | Listed | Fix-mode |
+|---|---|---|
+| rumdl v0.2.76…v0.2.78 | 23 | 20 |
+| ruff 0.16.0…0.16.9 | 10 | 6 |
+| ruff 0.15.20…0.16.0 | 7 | 3, one of them `ISC003` autofix stripping `+` from comments |
+| black 25.9.0…26.3.1 | 6 | 5 |
+
+The rest are CLI help text, `Stop recommending …` and `Document fix safety`. A
+rule's change worded as detection, *"MD077: move a fenced block as a whole"*, is
+not listed; the file has it. The scan reads the prose only: over ruff's commit
+range it would add about 80 `[ty] Preserve …` rows from ty. Only write mode lists
+it: uv's `Keep uv workspace metadata read-only` and pytest's `no longer` entries are
+behaviour, and a repo that does not write with the tool has no fix to lose.
+
+**The first replay pair on this version still split, and the fix is folded in.**
+Both runs listed the 37 fix-mode lines in rumdl's gap. One followed up to 0.2.78;
+the other left rumdl out, reading Phase 7's *"it takes neither the Hold row nor the
+follow-up row by default"* as no target at all. Both rows end at the fixed version,
+and they differ only in whether the PR merges first. So `changelog.py --gap`, on a
+gap range with fix-mode lines in write mode or with a Security heading or advisory
+id, prints that the follow-up's target is the fixed version, cooldown
+notwithstanding. `currency.py` marks gap ranges `--gap`, the supplied loop passes
+the flag on, and Phase 7 gains one sentence saying the same. A guard runs the loop
+as written, with `gh` and `changelog.py` stubbed.
+
+### A release with no wheel is underivable (#188)
+
+On `fpga-board-sim` #444, `vendored.py` printed `NOTHING VENDORED -- none of 1
+moved package(s) is compiled` and exited 0. actionlint-py 1.7.12.25 publishes one
+12,438-byte sdist and no wheel, and its build downloads the compiled actionlint Go
+binary, checked against a sha256 in `checksums.cfg`. The skip could not tell a
+pure-Python wheel from no wheel at all. A release with no wheel is now
+`underivable`: it is built from source at install, and its build decides what it
+ships. The verdict on #444 does not move, because the binary stays at 1.7.12.
+
+Reading that path found a second instance. When PyPI would not serve the one moved
+package's release, the loop printed `UNDERIVABLE` and never counted the package as
+read. The script then ended `RESULT: NOTHING VENDORED`, exit 0, two lines below its
+own `UNDERIVABLE`. A finding now outranks *nothing read*.
+
+### A GitHub route is not a repository (#183)
+
+`resolve_repo` took the first GitHub link in `project_urls`, and a `Funding` link
+comes first often enough to matter. Measured 2026-09-30 over 44 packages'
+metadata (`fpga-board-sim`'s 37 registry packages and seven more), six resolved to
+`sponsors/<user>`:
+- attrs, jsonschema-specifications, referencing, rpds-py and virtualenv, all in
+  that lockfile;
+- pydantic, where #183 saw the script exit 2 on `gh api repos/sponsors/…`.
+
+A GitHub route that sits where an owner would (`sponsors`, `orgs`, `users`,
+`apps`, `marketplace`, `advisories`) is no longer taken as an owner. All six now
+resolve to their repositories. The host comparison is as strict as it was.
+
+### The replays
+
+Each ran from a fresh clone planted at the PR's base, with `claude -p --plugin-dir`
+on this branch, a denylist over every mutating `gh`/`git` command, and a $5 cap.
+Six runs cost $7.04 in total, with 0 permission denials:
+
+| Run | Plugin | Verdict | Follow-up target | Confidence |
+|---|---|---|---|---|
+| #438, 1 | first cut | merge, then follow up | rumdl 0.2.78, ruff 0.16.9 | low |
+| #438, 2 | first cut | merge, then follow up | ruff 0.16.9 only | medium |
+| #438, 3 | final | merge, then follow up | ruff 0.16.9 and rumdl 0.2.78 | low |
+| #438, 4 | final | merge, then follow up | rumdl 0.2.78 and ruff 0.16.9 | medium |
+| #436, 1 | final | merge as-is | none: v10.2.0 postdates the PR, and #442 proposes it | high |
+| #436, 2 | final | merge as-is | none, for the same reason | high |
+
+Every run called `currency.py` once. The two final #438 runs passed `--gap` through
+the supplied loop. No run improvised a `releases/latest` read or
+`git show origin/main:uv.lock`. Each run counted 4 to 8 commands the procedure did
+not specify, where Rick's real #438 audit on 0.54.0 counted 37. The two final #438
+runs still disagree on confidence, low against medium, on the same underivable
+question. That is filed for the next version rather than folded in.
+
 ## [0.58.0] — 2026-09-29
 
 This version fixes how `changelog.py` reads a reStructuredText changelog (#177),
@@ -7308,7 +7467,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.58.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.59.0...HEAD
+[0.59.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.55.0...v0.56.0

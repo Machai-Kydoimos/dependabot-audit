@@ -6,8 +6,8 @@ Three checks, no judgment:
   provenance  every artifact the lockfile pins for the changed packages, compared
               byte-for-byte against what PyPI serves today (sha256, size, URL,
               yanked)
-  currency    the registry's actual latest version and its publish time, so the
-              caller can compare against when the PR was opened
+  currency    the registry's actual latest version and the gap to it, dated by
+              first upload (Phase 2's currency.py dates them as the bot does)
   vulns       an OSV batch query across every PyPI-sourced package in the lock
 
 Usage:
@@ -981,9 +981,9 @@ def render(report: dict[str, Any]) -> None:
         )
 
     for cur in report["currency"]:
-        # How old the pin is, alongside how old the gap is. Phase 2 compares
-        # release times against the PR's `$CREATED_AT`, and a report that names
-        # only when the *newer* release landed gives the reader one end of that.
+        # How old the pin is, alongside how old the gap is, by first upload. The
+        # cooldown comparison is currency.py's, with the dates the bot reads; a
+        # report that names only when the *newer* release landed gives one end.
         since = f" (published {cur['locked_published']})" if cur["locked_published"] else ""
         if cur["current"]:
             print(f"=== {cur['name']}: locked {cur['locked']}{since} IS the latest\n")
@@ -1014,7 +1014,10 @@ def render(report: dict[str, Any]) -> None:
         for rel in cur["gap"]:
             mark = " (yanked)" if rel["yanked"] else ""
             print(f"      {rel['version']:12s} published {rel['published']}{mark}")
-        print("      earliest first; compare these against $CREATED_AT, the PR's own\n")
+        # Dated by first upload, which is not the date Dependabot's cooldown reads:
+        # it keeps the last file PyPI's JSON API lists, and rumdl 0.2.77's came three
+        # days after its first (#187). So the comparison is currency.py's, not this.
+        print("      by first upload; Phase 2's currency.py dates them as the bot does\n")
 
     # A forked package is checked in full and installed in part, and nothing in
     # the output said so. Phase 1 verifies the artifacts of every fork it audits;

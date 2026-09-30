@@ -433,7 +433,7 @@ discarded unread rather than saved.
 | `$SCRATCH/base-<N>` | worktree at the merge base — **Phase 4 measures in it**, and the reason is below. Same condition, and not a second exception |
 | the repo's gates | read at a ref, **once per tree they will run in**: `pr-<N>` for Phase 5, `$BASE_SHA` for Phase 4. A gate on only one side is a finding |
 | `$OWNER`, `$NAME` | the repo's owner and name, for Phase 6's GraphQL variables |
-| `$CREATED_AT` | when the PR was opened, ISO-8601. **Phase 2 compares release publish times against it** — the cooldown asks whether a release was three days old *then*, not now |
+| `$CREATED_AT` | when the PR was opened, ISO-8601. **Phase 2's `currency.py` labels every gap release against it** — the cooldown asks whether a release was three days old *then*, not now |
 | `$BRANCH_POINT` | `ok`, `rewritten`, `suspect` or `underivable` — **the tip-worktree block below gates on it**, and the table there says what each one means |
 | `$MAY_EXECUTE` | `yes` or `no` — **Phases 4 and 5 gate on it**, and the gate tests for `yes` so an unset value refuses. The classification below is what sets it |
 | `$ECOSYSTEM` | `uv.lock`, `github-actions`, `pre-commit`, `unsupported`, `unknown` or `underivable` — **which Phase 1, 3, 4 and 5 method applies**, derived from the files the bump changed rather than inferred from the PR |
@@ -811,15 +811,29 @@ gate.
 
 ## Phase 2 — Currency
 
-*Requires from Phase 0: `$CREATED_AT`. Plus the Phase 1 script output.*
+*Requires from Phase 0: `$OWNER`, `$NAME`, `$BASE_SHA`, `$CREATED_AT`, `$DEFAULT`.
+Plus the Phase 1 script output.*
 
-**A bot's proposal is not evidence of "current".** Ask the registry what the
-latest version actually is, and compare publish timestamps against the PR's
-`createdAt`. What that comparison stopped settling on 2026-07-14 is *why*:
-Dependabot now holds a version update until the release is **three days old**, by
-default, with no `cooldown:` block required and nothing in the PR to show it. So
-read the *age* of the gap and not only its existence — inside that window the bot
-is waiting, outside it the bot is behind.
+**A bot's proposal is not evidence of "current".** Dependabot holds a version
+update until the release is **three days old**, by default, with no `cooldown:`
+block required and nothing in the PR to show it. So the *age* of the gap decides:
+inside that window when the PR opened the bot is waiting, outside it the bot is
+behind. `currency.py` lists every release above the proposal, dated the way the
+bot dates it, labels each one, and names the row of Phase 7's table it selects:
+
+```bash
+# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
+REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
+. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
+
+python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/currency.py" --owner "$OWNER" \
+  --name "$NAME" --number <N> --ref "pr-<N>" --base "$BASE_SHA" \
+  --created-at "$CREATED_AT" --default "origin/$DEFAULT"; echo "currency exit: $?"
+```
+
+Quote each row it names. `0` everything moved is the latest; `1` a gap, or a
+release it could not place, and why; `2` it could not run. It also prints what the
+default branch pins now, and the `changelog.py` ranges below.
 
 **For GitHub Actions "current" is a question about the tag line, not the pin** —
 a moving major tag picks up new releases on its own, so a newer patch is not a
@@ -840,10 +854,8 @@ that reads exactly like *current and clean*. `references/pre-commit.md` § Phase
 also says which registries this leaves covered: a `language: python` hook is
 PyPI and verified end to end, and anything else is the boundary again.
 
-Rule out the innocent explanations before reporting a gap: a yanked release; a
-**cooldown** (`cooldown:` in `dependabot.yml`, `minimumReleaseAge` in
-`renovate.json`), which now applies even when the file says nothing; or an
-`ignore` rule, which can name `"*"` and be scoped by `update-types`, so "no rule
+The script drops a yanked release and reads `cooldown:`. An `ignore` rule is
+yours to rule out: it can name `"*"` and be scoped by `update-types`, so "no rule
 names this dependency" is not "no rule covers it".
 
 **A gap inside the cooldown window does not earn a follow-up branch.**
@@ -853,24 +865,6 @@ phase reads for next: a `Security` entry or a destructive-fix bug in the gap. Th
 cooldown exempts Dependabot's *security updates* — the advisory-driven kind — and
 not a version update whose changelog happens to carry a privately disclosed fix,
 which is exactly the case below.
-
-**The cooldown boundary is a subtraction, so do it rather than eyeball it.** The
-window is measured from when the **PR opened**, not from now, so the same gap
-moves in and out of it as the audit ages — which is the failure Phase 7's table
-calls out in itself:
-
-```bash
-# Fresh call: nothing survives one, so re-derive $SCRATCH and re-source Phase 0.
-REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}/dbaudit-${REPO/\//-}-<N>}"
-. "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
-
-python3 -c 'import datetime,sys; t=datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00")); print("cooldown boundary:", (t-datetime.timedelta(days=3)).isoformat())' "$CREATED_AT"
-```
-
-A gap release published **after** that boundary was inside the window when the
-bot decided; one published before it was not, and the bot is behind rather than
-waiting. `python3` rather than `date -d`, which is GNU-only — every script here
-already requires 3.11.
 
 **A bot's ignore state is not always in a config file.** `@dependabot ignore this
 major version` records the hold in the *PR*, not the repo, so a dependency can be
@@ -889,10 +883,10 @@ adopted. Look for two things, in this order:
 
 - **`Security` sections.** These outrank every vulnerability database. A privately
   disclosed fix ships with no CVE, and scanners will report clean.
-- **Destructive-fix bugs.** Entries like "stop deleting…" or "no longer removes…"
-  in a tool the repo runs in **write mode** (`--fix`, `--write`, `-i`) are
-  data-loss bugs in a mode that runs automatically. They never appear in a
-  security feed.
+- **Destructive-fix bugs.** Entries like "stop deleting…", "no longer removes…" or
+  "keep … when fixing" in a tool the repo runs in **write mode** (`--fix`,
+  `--write`, `-i`) are data-loss bugs in a mode that runs automatically. They never
+  appear in a security feed. `changelog.py --write-mode` lists them by line.
 
 **Then ask whether this repo is in the change's scope**, for either kind. Phase 7
 takes the verdict from that answer, so it is a finding and not a footnote: read
@@ -1665,6 +1659,8 @@ did not run** — `--no-execute`, `$MAY_EXECUTE=no`, or an ecosystem that cannot
 run the tool — the answer is **underivable**, and it takes neither the Hold row
 nor the follow-up row by default. It is not decided here, because deciding it
 means running the code under audit, and this phase runs under `--no-execute`.
+**The fixed version is the target either way**: both rows end there and differ
+only in whether this PR merges first, and `changelog.py --gap` names it.
 
 Where an advisory exists the answer is stronger and mechanical: run `audit.py`
 against the **base branch's** lockfile as well as the PR's, and compare the two

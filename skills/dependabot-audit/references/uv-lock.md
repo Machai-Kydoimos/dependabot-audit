@@ -57,10 +57,10 @@ version stands still. There are innocent explanations (a wheel added for a new
 platform, a re-resolution against a different index); confirm which, rather than
 assuming one.
 
-That one invocation covers this phase **plus the mechanical half of Phases 2 and
-3** — it also reports the registry's true latest with publish timestamps, PEP 740
-build provenance where PyPI has it, and the OSV batch across the whole lockfile.
-Read its output there rather than repeating those queries by hand.
+That one invocation covers this phase **plus the OSV half of Phase 3** — it also
+reports the registry's true latest, PEP 740 build provenance where PyPI has it,
+and the OSV batch across the whole lockfile. Its gap dates are first uploads, which
+is not the date the bot reads: Phase 2's `currency.py` dates and labels them.
 
 **`PUBLISHER CHANGED` outranks everything else in the output.** It means the
 release being adopted was built somewhere the previous one was not. Absence of an
@@ -131,9 +131,9 @@ expected to track the registry.
 
 ## Phase 2 — Currency
 
-The mechanical half — the registry's true latest, with publish timestamps — is
-**already done** by the Phase 1 script. What is left is the question `SKILL.md`
-sends here: this repo runs the tool, so is it in the change's scope?
+The mechanical half is `currency.py`, in `SKILL.md` § Phase 2: every release
+above the proposal, dated as the bot dates it. What is left is the question
+`SKILL.md` sends here: this repo runs the tool, so is it in the change's scope?
 
 ### Reaching the changelog at all
 
@@ -184,16 +184,16 @@ REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner); SCRATCH="${SCRATC
 . "$SCRATCH/phase0.env" || { echo "no handoff in $SCRATCH — re-run Phase 0" >&2; exit 2; }
 
 # One call per range, read whole: a `| tail` cuts the scan and the prose.
-for r in "<pkg> <locked> <proposed>"; do set -- $r
+for r in <currency.py's changelog.py ranges, adopted and gap>; do set -- $r
   python3 "${SCRIPTS:?not in the handoff — re-run Phase 0}/changelog.py" \
-    --scratch "$SCRATCH" --package "$1" --from "$2" --to "$3"
+    --scratch "$SCRATCH" --package "$1" --from "$2" --to "$3" ${4:+"$4"}
   echo "changelog exit: $?"
 done
 ```
 
 Add `--write-mode` when this repo runs the tool with `--fix`, `--write` or `-i`.
-It changes nothing about what is looked for, only how a destructive fix is
-reported.
+It changes nothing about what is looked for: it lists the prose's fix-mode lines
+by line, which it otherwise only counts, and reports a destructive fix as data loss.
 
 **Read the exit code; do not chain on it.** `0` the prose names every fix and
 bump, `1` it does not and the unreconciled commits are listed, `2` could not
@@ -551,7 +551,8 @@ clean.
 **`vendored.py`'s 0** means nothing that any wheel the PR moves ships carries an
 advisory, at the current, proposed or latest version. Its **1** names each
 advisory's place: fixed by this PR, fixed above it, introduced by it, or
-standing. A wheel with no SBOM is the fifth place, `underivable`. Fixed above is
+standing. A wheel with no SBOM, or a release with no wheel, is the fifth place,
+`underivable`. Fixed above is
 a follow-up whose release notes may never name it: ruff 0.16.9 fixed salsa's
 RUSTSEC-2026-0308 and said nothing.
 

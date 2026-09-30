@@ -37,6 +37,7 @@ import io
 import itertools
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -235,6 +236,87 @@ RUMDL_75_76 = [
     "fix(MD094): report invalid UTF-8 under --only-code-block-tools",
     "chore(changelog): list every change in the 0.2.76 section",
 ]
+
+# rvben/rumdl's CHANGELOG.md at tag v0.2.78, recorded 2026-09-30 through the contents
+# API and sliced, never retyped: the 0.2.78 heading, its `### Fixed` subsection, and
+# the whole 0.2.77 section. That is fpga-board-sim #443's gap above its proposal,
+# v0.2.76...v0.2.78, and every fix-mode entry in it is in 0.2.78's `### Fixed` (#185).
+RUMDL_78_77_CHANGELOG = (
+    "## [0.2.78](https://github.com/rvben/rumdl/compare/v0.2.77...v0.2.78) - 2026-09-29\n"
+    "\n"
+    "### Fixed\n"
+    "\n"
+    "- **MD013**: keep CJK sentences on separate lines in semantic-line-breaks mode ([ea2798d](https://github.com/rvben/rumdl/commit/ea2798d9c91669aee55ba9dda3a2b3b7e488f26d))\n"
+    "- **MD013**: join soft breaks in MkDocs admonitions and tabs with one space ([962f1ee](https://github.com/rvben/rumdl/commit/962f1eeea569f9d2db060d69e2a6ab4782128b08))\n"
+    "- **code-block-tools**: invalidate cached results when a lint tool changes ([5ff393b](https://github.com/rvben/rumdl/commit/5ff393b24b4b11dee58c78ac9b19c8cb32bc6580))\n"
+    "- **code-block-tools**: treat empty formatter output as a tool failure ([8e1a0e7](https://github.com/rvben/rumdl/commit/8e1a0e7ec624a930e0b94ea710e5397750a718c2))\n"
+    "- **code-block-tools**: report lint tool failures at their block and honor on-error in check ([9f3ea71](https://github.com/rvben/rumdl/commit/9f3ea7165274207032a1b0fed2c14616fc767d2c))\n"
+    "- **playground**: build the playground engine from the repository at deploy time ([e342590](https://github.com/rvben/rumdl/commit/e342590f2494cf12e6e79b736d0807ae054ecdf6))\n"
+    "- keep each line's ending when fixing a file with mixed line endings ([6491db8](https://github.com/rvben/rumdl/commit/6491db8edce7c04b9426a58673d148ca394ced01))\n"
+    "- **lsp**: apply every content change in a didChange notification ([499d132](https://github.com/rvben/rumdl/commit/499d13213e564ac889cf6d2a700db526e1c5b949))\n"
+    "- **output**: map rule severity onto GitLab Code Quality severity ([9e795b9](https://github.com/rvben/rumdl/commit/9e795b9922ac99b648d8d2d87005582d7a1295a3))\n"
+    "- **MD032**: withhold blank lines that would change how the lists parse ([0db96d9](https://github.com/rvben/rumdl/commit/0db96d9198a0637153dee45c53f63b56f2c33cce))\n"
+    "- **MD032**: keep the blank line after a quoted list inside the quote ([f5b594d](https://github.com/rvben/rumdl/commit/f5b594d4c3c9f64cb7a21560c58df81baadde7f7))\n"
+    "- **MD032**: keep a split list's continuation lines before the blank line ([910f6fb](https://github.com/rvben/rumdl/commit/910f6fbfbbe9366a2a3f22824b3568704cc0742e))\n"
+    "- **lists**: read an over-indented backtick line as paragraph text ([9818039](https://github.com/rvben/rumdl/commit/9818039539875273aed633b092841131a15a58e3))\n"
+    "- **MD005**: judge a list after a blockquoted list on its own ([d6b5fee](https://github.com/rvben/rumdl/commit/d6b5fee19bc9d1a46e02ba2c791fee6c40a0e6d1))\n"
+    "- **MD046**: fence code after a quoted list at the document margin ([58f9e4f](https://github.com/rvben/rumdl/commit/58f9e4f80b4836f9d0f182f96d728d7cf6bbbe81))\n"
+    "- **MD077**: move a fenced block as a whole when it follows indented code ([d6b6e92](https://github.com/rvben/rumdl/commit/d6b6e924e43a4b8f3d1e1de42052697308ca9b33))\n"
+    "- **MD077**: end an item at a marker left of its content column ([5172347](https://github.com/rvben/rumdl/commit/5172347bb9a4698100508fdff2bb6877647c85f3))\n"
+    "- **reflow**: keep blank lines at the end of text passed to reflow_markdown ([ae72579](https://github.com/rvben/rumdl/commit/ae72579e112b09febf0e2137b67a5c92a923ac11))\n"
+    "- **code-block-tools**: keep trailing blank lines when formatting embedded markdown ([e2bb275](https://github.com/rvben/rumdl/commit/e2bb275d1dbbd197288f822bdc0e28dd1a642163))\n"
+    "- **lsp**: keep trailing blank lines when trimming trailing whitespace ([c5b6b35](https://github.com/rvben/rumdl/commit/c5b6b358dbb8ae9a06548b1d5c2a9f1672cc500c))\n"
+    "- keep a file's trailing blank lines when MD018, MD020, MD022 or MD071 fix it ([fe006a5](https://github.com/rvben/rumdl/commit/fe006a5c01b2d97ad8bb64cd36cbccd6455c9014))\n"
+    "- **MD077**: end an item at a blockquote opened left of its content ([801195a](https://github.com/rvben/rumdl/commit/801195aa390496ea0dbb347fd6a0480113060e5e))\n"
+    "- **MD077**: leave fence-like text in indented code blocks alone ([f11b6e6](https://github.com/rvben/rumdl/commit/f11b6e672112dc00e5210eb884abd3630b3cb798))\n"
+    "- **lists**: keep list fixes from changing the parsed structure ([fd94de0](https://github.com/rvben/rumdl/commit/fd94de0f5c6369a8ec5cdbbf906d017bfd480107))\n"
+    "- **lsp**: complete fence languages inside blockquotes and list items ([7ff9a2a](https://github.com/rvben/rumdl/commit/7ff9a2a2c7169789cd8be004534eefa28ac21eb3))\n"
+    "- **lsp**: render hover previews of markdown targets faithfully ([4ccac59](https://github.com/rvben/rumdl/commit/4ccac59ddf666e593bc347ca32b27c931cef4f6c))\n"
+    "- **lsp**: limit range formatting to the lines in the range ([b12e1fc](https://github.com/rvben/rumdl/commit/b12e1fc828159631bdb7b904da7dcee919c6a996))\n"
+    "- **lsp**: keep hard line breaks when trimming trailing whitespace ([4edfb17](https://github.com/rvben/rumdl/commit/4edfb17e3874d800327a398ac1ef012a86289b87))\n"
+    "- **lsp**: match requested code action kinds by whole segment ([f609907](https://github.com/rvben/rumdl/commit/f60990742fce509057c9588135f3ac3e0a42ef30))\n"
+    "- **lsp**: position references by character after multibyte text ([8d579b1](https://github.com/rvben/rumdl/commit/8d579b152c40e691a3c66d7f9fb9e28493ee505e))\n"
+    "- **lsp**: percent-encode file paths inserted by link completion ([df1eef6](https://github.com/rvben/rumdl/commit/df1eef6e669f88614d29209c581a5c74425c1f8c))\n"
+    "- **lsp**: resolve percent-encoded link destinations in navigation ([2b81128](https://github.com/rvben/rumdl/commit/2b81128b9d2d404c606ad18980db245e68e1439a))\n"
+    "- **lsp**: reindex a document from disk when it closes unsaved ([2672986](https://github.com/rvben/rumdl/commit/2672986fdb54b8308dfe39f5b3c19ae7d55d6157))\n"
+    "- **lsp**: apply configuration changes that set a flag back to its default ([24b557d](https://github.com/rvben/rumdl/commit/24b557d585271645904e16defe171d3750385a70))\n"
+    "- **output**: write JSON fix replacements with the file's line ending ([baf7d8e](https://github.com/rvben/rumdl/commit/baf7d8e2835c69e48c573d9590d6fd19c5e2e8ed))\n"
+    "- **MD046**: attach each block's conversion to its style warning ([d7b78e0](https://github.com/rvben/rumdl/commit/d7b78e07501f865c9b466c5c497349379a0c50c7))\n"
+    "- **lint_context**: recognize HTML blocks opened by any complete tag ([3e27b59](https://github.com/rvben/rumdl/commit/3e27b598f94c3dfde8be5795d761ebdbd5452d0d))\n"
+    "- **lint_context**: read a `>` line inside an HTML block as HTML text ([4bd0b65](https://github.com/rvben/rumdl/commit/4bd0b656a2855fc7465148ba3287028a76e9bc3f))\n"
+    "- **MD064**: skip spaces inside inline HTML comments and tags ([1f393f8](https://github.com/rvben/rumdl/commit/1f393f8d02d4debf4b0faef186c49e463f0ea85a))\n"
+    "- **MD049**: skip emphasis markers inside HTML blocks ([8921857](https://github.com/rvben/rumdl/commit/8921857ab5b13397f0519b8ef6a8b6f5f944fff7))\n"
+    "- **lists**: keep a parent's content out of a shifted or renumbered child item ([180ae66](https://github.com/rvben/rumdl/commit/180ae66b54875a9accd3ca6400ef379746511f54))\n"
+    "- **cli**: use the singular noun for a count of one ([13bfd48](https://github.com/rvben/rumdl/commit/13bfd4810a1bd6693107812fbaf899d6452286ac))\n"
+    "- **cli**: keep the --config help examples on separate lines ([9bc2752](https://github.com/rvben/rumdl/commit/9bc275253ebf84cf53046b85177044fe09d925f1))\n"
+    "- **config**: align provenance labels per section by display width ([5bf42a2](https://github.com/rvben/rumdl/commit/5bf42a2742fb72cee16ec25d48c4088898aa3798))\n"
+    "- **MD010**: report the tab column after multi-byte characters ([0c8698c](https://github.com/rvben/rumdl/commit/0c8698ca0e5220a88d3ee5d94e152aeb37b4f261))\n"
+    "- **cli**: honor --color and NO_COLOR in warning labels ([43e7518](https://github.com/rvben/rumdl/commit/43e75180afa160dc2c69a046b3563e7d46f76fac))\n"
+    "- **init**: never install the editor extension without a terminal ([a9c97f7](https://github.com/rvben/rumdl/commit/a9c97f7bd998bdc2a5457c9af976b435616634ba))\n"
+    "- **playground**: say when pasted or opened CRLF text is shown as LF ([d825f12](https://github.com/rvben/rumdl/commit/d825f122ee00681255372ded9d764af1a7f77a47))\n"
+    "- **playground**: count characters as code points, not UTF-16 units ([bb9f7de](https://github.com/rvben/rumdl/commit/bb9f7deee7b5b9ba763f57f1b035bb35fe920319))\n"
+    "- **playground**: let Retry reload the engine after a failed load ([33d9fc1](https://github.com/rvben/rumdl/commit/33d9fc166150b1a6ad1566d1537eebc2030bbab6))\n"
+    "- **wasm**: reject an unknown flavor instead of linting as standard ([7aac766](https://github.com/rvben/rumdl/commit/7aac7669017722870389704388c65d97ccde77ff))\n"
+    "- **MD077**: leave paragraph text that would open a block where it is ([f11438e](https://github.com/rvben/rumdl/commit/f11438ea6a1a254394dd59dba33a889f63f3eb89))\n"
+    "- **MD077**: keep a nested item open across a lazy continuation line ([b071275](https://github.com/rvben/rumdl/commit/b0712756d18bb5d7c766a221f6f11785d3b0cca3))\n"
+    "- **MD034**: keep trailing emphasis delimiters and colons out of the autolink ([187d50b](https://github.com/rvben/rumdl/commit/187d50bb043c75daa931b1073a1dc3d6ae226791))\n"
+    "- move a list item's owned lines when a fix moves its content column ([7f4c41e](https://github.com/rvben/rumdl/commit/7f4c41ece6978f9bfb904fbb5818deff5e922d9d))\n"
+    "- **lint**: apply inline config and severity overrides in Rust doc comments ([2e805b2](https://github.com/rvben/rumdl/commit/2e805b244f058bc2b0c411965e27242ed493928a))\n"
+    "- **MD051**: check cross-file fragments in the file MD057 resolves ([a0c869d](https://github.com/rvben/rumdl/commit/a0c869d6bc3848611744a8822d0028f6b2265c6a))\n"
+    "- **MD057**: resolve links to directories implied by a stdin batch ([9b63e4e](https://github.com/rvben/rumdl/commit/9b63e4e81c0ec31d48c1bf1334eeb3d6e7a9a6d2))\n"
+    "\n"
+    "## [0.2.77](https://github.com/rvben/rumdl/compare/v0.2.76...v0.2.77) - 2026-09-23\n"
+    "\n"
+    "### Fixed\n"
+    "\n"
+    "- **release**: never replace published GitHub Release assets ([471d97e](https://github.com/rvben/rumdl/commit/471d97ee93aaf8e71e116213731157aebb5e0ec1))\n"
+    "\n"
+    "### Performance\n"
+    "\n"
+    "- **release**: cut published wheel size 6% with fat LTO ([7605780](https://github.com/rvben/rumdl/commit/7605780a4c45aecf83d1d12e399edc1fd7dccc58))\n"
+    "\n"
+)
+
 
 MYPY_CHANGELOG = """\
 # Mypy Release Notes
@@ -1439,6 +1521,163 @@ class TestShortProseIsPrintedWhereItCannotBeSkipped(ChangelogHarness):
         self.assertRegex(out, r"Rung 1 says something else in lines \d+-\d+")
 
 
+class TestFixModeLinesInTheProseAreListed(ChangelogHarness):
+    """#185. rumdl writes a bug in its fix mode as what the fix now keeps, and on
+    `fpga-board-sim` #443's gap, v0.2.76...v0.2.78, none of it reached the screen.
+    The prose is 9 KB, `DESTRUCTIVE` reads negations in commits only, and 0.58.0
+    printed `security-shaped lines: none` and exited 0, `RECONCILED`. Two replays
+    of #438 then gave the rumdl follow-up different urgencies: one never weighed
+    the list-structure fixes at all."""
+
+    SPLIT = "## [0.2.77]"
+
+    def rumdl(self) -> Repo:
+        notes_78, rest = RUMDL_78_77_CHANGELOG.split(self.SPLIT)
+        return Repo(
+            "rvben/rumdl",
+            # rung 1 carries rung 2 verbatim, as rumdl's release notes do
+            releases=[("v0.2.78", notes_78), ("v0.2.77", self.SPLIT + rest), ("v0.2.76", "")],
+            files={"CHANGELOG.md": RUMDL_78_77_CHANGELOG, "Cargo.toml": ""},
+            commits=[
+                "fix: keep each line's ending when fixing a file with mixed line endings",
+                "fix(MD032): withhold blank lines that would change how the lists parse",
+                "chore: bump version to v0.2.78",
+            ],
+        )
+
+    def listed(self, out: str) -> list[tuple[int, str]]:
+        lines = out.splitlines()
+        start = next(
+            i for i, ln in enumerate(lines) if ln.startswith("fix-mode lines in the prose")
+        )
+        found = []
+        for ln in lines[start + 1 :]:
+            match = re.match(r"^  line +(\d+)  (.*)$", ln)
+            if match:
+                found.append((int(match.group(1)), match.group(2)))
+            elif found:
+                break
+        return found
+
+    def test_the_fix_mode_lines_of_a_long_gap_are_listed_in_write_mode(self):
+        status, out, text = self.run_main(
+            self.rumdl(), "--from", "v0.2.76", "--to", "v0.2.78", "--write-mode"
+        )
+        self.assertEqual(status, 0, out)
+        self.assertIn(f"over the {INLINE_BYTES} bytes this prints", " ".join(out.split()))
+        shown = [entry for _, entry in self.listed(out)]
+        for entry in (
+            "keep each line's ending when fixing a file with mixed line endings",
+            "MD032: withhold blank lines that would change how the lists parse",
+            "lists: keep list fixes from changing the parsed structure",
+            "keep a file's trailing blank lines when MD018, MD020, MD022 or MD071 fix it",
+            "move a list item's owned lines when a fix moves its content column",
+            "MD077: leave paragraph text that would open a block where it is",
+        ):
+            self.assertIn(entry, shown, f"{entry!r} was not listed")
+        for entry in (
+            "cli: use the singular noun for a count of one",
+            "MD010: report the tab column after multi-byte characters",
+            "release: never replace published GitHub Release assets",
+        ):
+            self.assertNotIn(entry, shown, f"{entry!r} is not a fix-mode line")
+        evidence = text.split("\n")
+        for number, entry in self.listed(out):
+            self.assertIn(entry.split(": ", 1)[-1][:40], evidence[number - 1], number)
+        self.assertRegex(out, r"rules they name: [^\n]*MD032")
+        self.assertRegex(out, r"rules they name: [^\n]*MD077")
+
+    def test_a_line_the_release_notes_repeat_is_listed_once(self):
+        _, out, _ = self.run_main(
+            self.rumdl(), "--from", "v0.2.76", "--to", "v0.2.78", "--write-mode"
+        )
+        shown = [entry for _, entry in self.listed(out)]
+        self.assertEqual(
+            shown.count("keep each line's ending when fixing a file with mixed line endings"), 1
+        )
+
+    def test_without_write_mode_the_lines_are_counted_not_listed(self):
+        """uv's `Keep uv workspace metadata read-only` and pytest's `no longer`
+        entries are about behaviour: a repo that does not write with the tool has
+        no fix to lose, and the list would be noise there."""
+        _, out, _ = self.run_main(self.rumdl(), "--from", "v0.2.76", "--to", "v0.2.78")
+        self.assertRegex(out, r"fix-mode lines in the prose: \d+, not listed")
+        self.assertNotIn("keep each line's ending when fixing", out)
+
+    def test_the_commit_range_is_not_read_for_it(self):
+        """ruff's range carries ~80 `[ty] Preserve ...` commits, from ty, the second
+        product under its tags. Two of them, recorded 2026-09-30 from ruff
+        0.16.0...0.16.9, beside a real ruff fix entry from the same notes."""
+        repo = Repo(
+            "astral-sh/ruff",
+            releases=[
+                (
+                    "0.16.1",
+                    "### Bug fixes\n\n- [`flake8-simplify`] Preserve operand order in `SIM109` fix\n",
+                ),
+                ("0.16.0", ""),
+            ],
+            commits=[
+                "[ty] Preserve receiver constraints when binding overloaded methods (#27038)",
+                "[ty] Preserve Self in `__new__` calls (#27003)",
+            ],
+        )
+        status, out, _ = self.run_main(repo, "--from", "0.16.0", "--to", "0.16.1", "--write-mode")
+        self.assertEqual(status, 1, out)
+        shown = [entry for _, entry in self.listed(out)]
+        self.assertEqual(shown, ["[`flake8-simplify`] Preserve operand order in `SIM109` fix"])
+
+    def test_in_the_gap_the_follow_ups_target_is_named(self):
+        """The 0.59.0 replays of #438 both listed rumdl's 37 fix-mode lines, and
+        one still left rumdl out of the follow-up: Phase 7 says an underivable
+        fix above the proposal takes neither row by default. Both rows end at the
+        fixed version, so the target is named whichever applies."""
+        _, out, _ = self.run_main(
+            self.rumdl(), "--from", "v0.2.76", "--to", "v0.2.78", "--write-mode", "--gap"
+        )
+        flat = " ".join(out.split())
+        self.assertIn(
+            "IN THE GAP: 19 fix-mode line(s) in a tool this repo runs in write mode", flat
+        )
+        self.assertIn("The follow-up's target is v0.2.78, cooldown notwithstanding", flat)
+
+    def test_outside_the_gap_or_write_mode_no_target_is_set(self):
+        for argv in (("--write-mode",), ("--gap",)):
+            with self.subTest(argv=argv):
+                _, out, _ = self.run_main(
+                    self.rumdl(), "--from", "v0.2.76", "--to", "v0.2.78", *argv
+                )
+                self.assertNotIn("IN THE GAP", out)
+
+    def test_a_security_heading_in_the_gap_sets_the_target_too(self):
+        repo = Repo(
+            "example/tool",
+            releases=[
+                ("1.1", "### Security\n\n- escape the path in the config loader\n"),
+                ("1.0", ""),
+            ],
+            commits=["chore: bump version to 1.1"],
+        )
+        _, out, _ = self.run_main(repo, "--from", "1.0", "--to", "1.1", "--gap")
+        flat = " ".join(out.split())
+        self.assertIn("IN THE GAP: 1 security-shaped line(s)", flat)
+        self.assertIn("The follow-up's target is 1.1", flat)
+
+    def test_the_commit_verdict_says_it_is_about_the_commits(self):
+        """Replay 1 read `None carries the destructive-fix shape` as covering the
+        prose, where the three entries #185 names sat."""
+        repo = Repo(
+            "example/tool",
+            releases=[("1.1", "### Fixed\n\n- keep blank lines when fixing\n"), ("1.0", "")],
+            commits=["fix: handle a crash in the parser", "chore: bump version to 1.1"],
+        )
+        status, out, _ = self.run_main(repo, "--from", "1.0", "--to", "1.1", "--write-mode")
+        self.assertEqual(status, 1, out)
+        flat = " ".join(out.split())
+        self.assertIn("None of these unreconciled commits carries the destructive-fix shape", flat)
+        self.assertNotIn("None carries the destructive-fix shape", flat)
+
+
 class TestTheReconciliationCanAlsoSayYes(ChangelogHarness):
     """The anti-vacuity half. A matcher that never matches would pass every test
     above, and would be the same defect one layer down.
@@ -1768,6 +2007,17 @@ class TestItRefusesRatherThanGuessing(ChangelogHarness):
         self.assertIn("This is a bug, not a finding", err.getvalue())
 
 
+# attrs 26.1.0's `project_urls`, recorded from https://pypi.org/pypi/attrs/json on
+# 2026-09-30, in the order PyPI serves them. `Funding` comes before `GitHub`.
+ATTRS_PROJECT_URLS = {
+    "Changelog": "https://www.attrs.org/en/stable/changelog.html",
+    "Documentation": "https://www.attrs.org/",
+    "Funding": "https://github.com/sponsors/hynek",
+    "GitHub": "https://github.com/python-attrs/attrs",
+    "Tidelift": "https://tidelift.com/subscription/pkg/pypi-attrs?utm_source=pypi-attrs&utm_medium=pypi",
+}
+
+
 class TestThePackageCannotChooseWhichRepositoryAnswersForIt(unittest.TestCase):
     """`project_urls` is written by the package author.
 
@@ -1848,6 +2098,37 @@ class TestThePackageCannotChooseWhichRepositoryAnswersForIt(unittest.TestCase):
         with mock.patch("changelog.urllib.request.urlopen") as opened:
             opened.return_value.__enter__.return_value = io.StringIO(json.dumps(payload))
             self.assertEqual(resolve_repo("rumdl"), "rvben/rumdl")
+
+    def test_a_github_route_is_not_an_account(self):
+        """#183. `github.com/sponsors/<user>` is a page, not a repository.
+
+        Measured 2026-09-30 over 44 packages' PyPI metadata -- `fpga-board-sim`'s
+        37 registry packages and seven more: six resolved to a Sponsors page,
+        because their `Funding` link comes before the repository. Five are in
+        that lockfile: attrs, jsonschema-specifications, referencing, rpds-py and
+        virtualenv. On pydantic 2.11.9 -> 2.11.10, #183 saw the script exit 2 on
+        `gh api repos/sponsors/...`. The other routes have the same shape, one
+        link type over.
+        """
+        for url in (
+            "https://github.com/sponsors/hynek",
+            "https://github.com/Sponsors/hynek",
+            "https://github.com/orgs/pydantic/discussions",
+            "https://github.com/users/octocat/projects/1",
+            "https://github.com/apps/dependabot",
+            "https://github.com/marketplace/actions/setup-uv",
+            "https://github.com/advisories/GHSA-xc3w-55vh-cw3w",
+        ):
+            self.assertIsNone(github_slug(url), f"{url} resolved to a repository")
+        self.assertEqual(github_slug("https://github.com/python-attrs/attrs"), "python-attrs/attrs")
+
+    def test_a_funding_link_listed_first_does_not_answer_for_the_repo(self):
+        """attrs 26.1.0's `project_urls`, recorded from PyPI's JSON on
+        2026-09-30 in the order it serves them. 0.58.0 answered `sponsors/hynek`."""
+        payload = {"info": {"project_urls": ATTRS_PROJECT_URLS, "home_page": None}}
+        with mock.patch("changelog.urllib.request.urlopen") as opened:
+            opened.return_value.__enter__.return_value = io.StringIO(json.dumps(payload))
+            self.assertEqual(resolve_repo("attrs"), "python-attrs/attrs")
 
     def test_a_package_naming_only_a_lookalike_fails_rather_than_guessing(self):
         payload = {"info": {"project_urls": {"Homepage": "https://evil.invalid/github.com/a/b"}}}

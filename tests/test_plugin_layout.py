@@ -311,7 +311,11 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # v0.58.0, 2026-09-29 — `uv-lock.md` supplies `changelog.py`'s loop, with no
     # pipe (#178), paid for by a clause of reasoning that the script's docstring
     # already carries. The references come out 37 bytes lighter.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_607, "references": 133_390}
+    # v0.59.0, 2026-09-30 — Phase 2's cooldown boundary block, and `actions.md`'s
+    # `releases/latest` read and current-pin block, moved into `currency.py` (#187).
+    # Phase 7 gained one sentence (#185: the fixed version is the target either way),
+    # and the changelog loop passes `--gap` on. Both numbers are the 0.59.0 corpus.
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_447, "references": 132_140}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

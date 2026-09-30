@@ -41,7 +41,7 @@ named is unfalsifiable, which is the thing this whole report shape exists agains
 |---|---|---|
 | **Scope** | Which files the diff touches. | this run |
 | **Provenance** | N package(s), M artifact(s): hash, size, URL, yanked status — quote the script's own counts, plus anything it reported as unreachable. | this run |
-| **Currency** | Registry latest vs. proposed, with publish time vs. PR open time. Yank and ignore-rule status. | this run |
+| **Currency** | Registry latest vs. proposed, and `currency.py`'s label and row for each release in the gap. Ignore-rule status. | this run |
 | **Security** | Changelog `Security` sections and destructive-fix bugs across the gap — including their absence. For each, **whether this repo exercises the affected path**, with the config line that settles it: Phase 7's verdict turns on that, not on the cooldown. | this run *or* reused — release notes immutable |
 | **Vulnerabilities** | OSV result and the ecosystem auditor's, over N packages. | this run |
 | **Behavior change** | Added rules / changed defaults, whether config is opt-in or opt-out, and what running the tool actually showed. | this run *or* reused — head `<sha>` unchanged |

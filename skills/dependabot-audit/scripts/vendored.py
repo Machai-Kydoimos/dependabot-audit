@@ -35,16 +35,20 @@ current pin, the proposed one, and the registry's latest. An advisory is then:
 
 A wheel with no SBOM is `underivable`, never clean: PEP 770 is recent, and
 pydantic-core 2.41.5 carries none in any of its 120 wheels. A pure-Python wheel
-(`none-any`) vendors nothing and is skipped. An `unmaintained` notice is listed,
-and alone is not a finding: ruff ships two, both compile-time macro crates.
+(`none-any`) vendors nothing and is skipped. **A release with no wheel at all is
+not that**, and is `underivable` too (#188): an sdist ships whatever its build
+produces, and actionlint-py's build downloads the compiled actionlint Go binary.
+An `unmaintained` notice is listed, and alone is not a finding: ruff ships two,
+both compile-time macro crates.
 
     vendored.py --ref pr-<N> --base <merge base>            # every package uv.lock moves
     vendored.py --package NAME --current V --proposed V     # one, as a hook installs it
 
 Exit status: 0 = no advisory on anything these wheels ship, and every compiled
 wheel read carried an SBOM. 1 = an advisory -- fixed, introduced or standing -- or
-a compiled wheel whose shipped set could not be read; the output says which, per
-package and per wheel. 2 = could not run.
+a shipped set that could not be read: a compiled wheel's, a release with no wheel,
+or a release the registry would not serve. The output says which, per package and
+per wheel. 2 = could not run.
 
 Requires Python 3.11+ (tomllib), `git` for `--ref`, and the network: PyPI and OSV.
 """
@@ -498,6 +502,15 @@ def main() -> int:
                 )
                 for label, version in versions.items()
             }
+            if not wheels["proposed"]:
+                # No wheel at all is not a pure-Python wheel (#188). An sdist ships
+                # whatever its build produces: actionlint-py's downloads a Go binary.
+                print(
+                    f"\n{name} {target['proposed']}: UNDERIVABLE -- no wheel on PyPI, so it "
+                    "is built from source at install, and its build decides what it ships"
+                )
+                findings += 1
+                continue
             if not any(compiled(w[0]) for w in wheels["proposed"]):
                 continue
             read += 1
@@ -507,15 +520,21 @@ def main() -> int:
             findings += 1
 
     print()
-    if not read:
-        print(f"RESULT: NOTHING VENDORED -- none of {len(targets)} moved package(s) is compiled.")
+    # A finding outranks "nothing was read": an UNDERIVABLE row is one of them, and
+    # until 0.59.0 an unservable release printed that row and then this line, exit 0.
+    if not read and not findings:
+        print(
+            f"RESULT: NOTHING VENDORED -- none of {len(targets)} moved package(s) is "
+            "compiled: each ships pure-Python wheels only."
+        )
         return 0
     if not findings:
         print(f"RESULT: CLEAN -- no advisory on anything {read} compiled package(s) ship.")
         return 0
     print(
-        f"RESULT: FOUND -- {findings} row(s) above across {read} compiled package(s): "
-        "each advisory says whether this PR fixes it, introduces it, or leaves it."
+        f"RESULT: FOUND -- {findings} row(s) above across {len(targets)} moved package(s): "
+        "each advisory says whether this PR fixes it, introduces it, or leaves it, and "
+        "each UNDERIVABLE row says what could not be read."
     )
     return 1
 
