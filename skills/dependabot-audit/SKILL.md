@@ -1608,10 +1608,12 @@ there by exhaustion is indistinguishable in the report from no finding at all.
 | Evidence | Verdict |
 |---|---|
 | Phase 1's gate fired — scope, a provenance discrepancy, or `PUBLISHER CHANGED` | **Hold** |
-| OSV or GHSA reports a vulnerability in a version being **adopted** | **Hold** |
+| An advisory **introduced by this PR**: the proposal carries it and the current pin does not | **Hold.** Merging is what adopts it |
+| An advisory **standing** (the current pin carries it too), **fixed by this PR**, **introduced above this PR** or **underivable** | **Not a Hold on this bump.** Report it as its row words it |
 | A `Security` entry or a destructive-fix bug in the gap, and the bump moves **into** it — the version being adopted is affected where the **current pin** is not | **Hold.** Merging is what increases exposure here; take the fixed version instead |
 | A `Security` entry or a destructive-fix bug in the gap, **and this repo exercises the affected path** — cooldown notwithstanding | **Merge as-is, then follow up at once.** The bump is still an improvement; the urgency is the follow-up's |
 | A `Security` entry or a destructive-fix bug in the gap, **inert here** — cooldown notwithstanding | **Merge as-is, then follow up** on the merits. The evidence is real and the exposure is not |
+| An advisory **fixed above this PR**: the latest no longer carries it — cooldown notwithstanding | **Merge as-is, then follow up** to the release its row names, at once where this repo exercises the affected path |
 | Actions: the tag rolled **behind** the proposed SHA | **Hold.** Close the bot's PR and replace it by hand; a bot cannot express a downgrade |
 | Phase 4: base differs, PR differs — the change is real and unabsorbed | **Hold** |
 | Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
@@ -1661,18 +1663,6 @@ nor the follow-up row by default. It is not decided here, because deciding it
 means running the code under audit, and this phase runs under `--no-execute`.
 **The fixed version is the target either way**: both rows end there and differ
 only in whether this PR merges first, and `changelog.py --gap` names it.
-
-Where an advisory exists the answer is stronger and mechanical: run `audit.py`
-against the **base branch's** lockfile as well as the PR's, and compare the two
-vulnerability sets. A finding present in the PR's and absent from the base's is
-exactly this row; the reverse is the ordinary direction, and an identical pair
-means the bump neither helps nor harms on that axis.
-
-**The ordinary direction is *out of*, and that is why Hold reads wrong here.** A
-changelog gap is newer than the pin by definition, so a fix in it is a fix the
-repo does not yet have. Reaching for Hold on a `Security` heading without asking
-which way the entry points is how the cautious-looking answer becomes the one
-that leaves the repo on the affected version.
 
 **The cooldown decides Hold-versus-follow-up. It never decides whether to look.**
 The wait exempts Dependabot's *security updates* — the advisory-driven kind — and

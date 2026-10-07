@@ -171,11 +171,11 @@ class TestTheDocumentedCommandsActuallyRun(unittest.TestCase):
         got = self._run(
             self._line_after(
                 "python3 -c 'import json,sys,urllib.request as u; vs=sys.argv",
-                ("<pkg> <every version in the gap>", "ruff 0.16.2 0.16.5"),
+                ("<pkg> <the current pin> <every version in the gap>", "ruff 0.16.2 0.16.5 0.16.6"),
             )
         )
         self.assertEqual(got.returncode, 0, got.stderr[:400])
-        self.assertEqual(len(got.stdout.strip().splitlines()), 2, "one row per version in the gap")
+        self.assertEqual(len(got.stdout.strip().splitlines()), 3, "one row per version asked")
         self.assertIn("advisory(ies)", got.stdout)
 
     def test_the_ghsa_query_runs_and_discriminates(self):

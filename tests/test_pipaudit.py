@@ -32,7 +32,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(
@@ -199,17 +199,51 @@ class Fake:
         return self.done(argv, 1 if found else 0)
 
 
+class PyPI:
+    """pypi.org's JSON API, for the advisories on a release: what `pip-audit` reads.
+
+    `releases` maps (name, version) to that release's `vulnerabilities`, and `latest`
+    names each project's newest. Anything else answers 404, so a test that never
+    sets one finds the direction underivable rather than reaching the network.
+    """
+
+    def __init__(
+        self,
+        releases: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+        latest: dict[str, str] | None = None,
+    ) -> None:
+        self.releases = releases or {}
+        self.latest = latest or {}
+        self.asked: list[str] = []
+
+    def __call__(
+        self, url: str, *, data: bytes | None = None, headers: dict[str, str] | None = None
+    ) -> tuple[int, dict[str, str], bytes]:
+        self.asked.append(url)
+        parts = url.removeprefix("https://pypi.org/pypi/").removesuffix("/json").split("/")
+        name = parts[0]
+        version = parts[1] if len(parts) == 2 else self.latest.get(name)
+        if version is None or (name, version) not in self.releases:
+            return 404, {}, b""
+        body = {"info": {"version": version}, "vulnerabilities": self.releases[name, version]}
+        return 200, {}, json.dumps(body).encode()
+
+
 class Harness(unittest.TestCase):
-    def go(self, fake: Fake, scratch: pathlib.Path | None = None) -> tuple[int, str, str]:
+    def go(
+        self, fake: Fake, scratch: pathlib.Path | None = None, pypi: PyPI | None = None
+    ) -> tuple[int, str, str]:
         """(exit status, stdout, stderr), with the scratch directory kept for reading."""
         own = scratch is None
         holder = tempfile.TemporaryDirectory() if own else contextlib.nullcontext(str(scratch))
+        self.pypi = pypi or PyPI()
         with holder as where:
             self.scratch = pathlib.Path(where)
             argv = ["pipaudit.py", "--scratch", where, "--ref", PR, "--base", BASE]
             out, err = io.StringIO(), io.StringIO()
             with (
                 mock.patch("pipaudit.run", fake),
+                mock.patch("vendored._http", self.pypi),
                 mock.patch.object(sys, "argv", argv),
                 contextlib.redirect_stdout(out),
                 contextlib.redirect_stderr(err),
@@ -441,6 +475,98 @@ class TestTheAuditorsAnswerIsItsJsonNotItsStatus(Harness):
         self.assertIn("RESULT: CLEAN", out)
         self.assertIn("ruff==0.16.8   in the export", out)
         self.assertRegex(out, re.compile(r"OSV batch covers the whole lockfile"))
+
+
+class TestAnAdvisorySaysWhichWayItPoints(Harness):
+    """#196. A hit was tagged `<- a version this PR introduces`, which says the PR
+    brought the *version*, not the advisory: one the current pin carries too is no
+    reason to keep it. Each hit on a version the PR introduces is now looked up at
+    the base's pins and at the latest, in PyPI's own advisory data, which is what
+    `pip-audit` reads, and the row it selects is printed under it."""
+
+    VULN: ClassVar[dict[str, Any]] = {
+        "id": "PYSEC-2026-1",
+        "fix_versions": ["0.16.9"],
+        "aliases": ["CVE-2026-1", "GHSA-0001"],
+    }
+
+    def hit(self) -> Fake:
+        return Fake(vulns={("ruff", "0.16.8"): [self.VULN]})
+
+    def test_one_the_current_pin_carries_too_is_not_a_hold(self):
+        """Matched by alias: PyPI lists one flaw under its GHSA and PYSEC ids alike."""
+        flaw = [{"id": "GHSA-0001", "aliases": ["PYSEC-2026-1"]}]
+        pypi = PyPI({("ruff", "0.16.7"): flaw, ("ruff", "0.16.8"): flaw}, {"ruff": "0.16.8"})
+        _, out, _ = self.go(self.hit(), pypi=pypi)
+        self.assertIn('row: "standing" -> not a Hold on this bump', out)
+        self.assertNotIn("-> Hold", out)
+
+    def test_one_the_current_pin_does_not_carry_is_a_hold(self):
+        pypi = PyPI({("ruff", "0.16.7"): [], ("ruff", "0.16.8"): []}, {"ruff": "0.16.8"})
+        _, out, _ = self.go(self.hit(), pypi=pypi)
+        self.assertIn('row: "introduced by this PR" -> Hold', out)
+
+    def test_one_the_latest_clears_names_the_follow_up(self):
+        pypi = PyPI(
+            {
+                ("ruff", "0.16.7"): [{"id": "PYSEC-2026-1", "aliases": []}],
+                ("ruff", "0.16.9"): [],
+            },
+            {"ruff": "0.16.9"},
+        )
+        _, out, _ = self.go(self.hit(), pypi=pypi)
+        self.assertIn('row: "fixed above this PR" -> merge as-is, then follow up to 0.16.9', out)
+        self.assertIn("RESULT: FOUND -- 1 advisory in the export; the rows select 0 Hold, 1", out)
+
+    def test_one_on_a_pin_the_pr_left_alone_is_standing_without_asking(self):
+        vuln = {"id": "PYSEC-2026-2", "fix_versions": [], "aliases": []}
+        _, out, _ = self.go(Fake(vulns={("rpds-py", "0.30.0"): [vuln]}))
+        self.assertIn('row: "standing" -> not a Hold on this bump', out)
+        self.assertEqual(self.pypi.asked, [])
+
+    def test_one_pypi_will_not_place_is_underivable_and_says_what_it_decides(self):
+        _, out, _ = self.go(self.hit())
+        self.assertIn(
+            'row: "underivable" -> not a Hold on this bump, but which way it points '
+            "decides the verdict: confidence low",
+            out,
+        )
+
+    def test_requests_two_fixed_and_one_fixed_above(self):
+        """PyPI's own answer for requests, recorded 2026-10-07: 2.32.4 carries
+        GHSA-gc5v-m9x4-r6x2, so did 2.31.0, and 2.34.2 does not."""
+        base = LOCK_BASE.replace(
+            'name = "ruff"\nversion = "0.16.7"', 'name = "requests"\nversion = "2.31.0"'
+        )
+        pr = base.replace('version = "2.31.0"', 'version = "2.32.4"')
+        export = EXPORT_PR.replace("ruff==0.16.8", "requests==2.32.4")
+        flaw = {
+            "id": "GHSA-gc5v-m9x4-r6x2",
+            "aliases": ["CVE-2026-25645", "PYSEC-2026-2275"],
+            "fix_versions": ["2.33.0"],
+        }
+        fake = Fake(
+            locks={PR: pr, BASE: base}, export=export, vulns={("requests", "2.32.4"): [flaw]}
+        )
+        pypi = PyPI(
+            {
+                ("requests", "2.31.0"): [
+                    {"id": i, "aliases": a, "fixed_in": f, "withdrawn": None}
+                    for i, a, f in (
+                        ("GHSA-9wx4-h78v-vm56", ["CVE-2024-35195", "PYSEC-2026-1873"], ["2.32.0"]),
+                        ("GHSA-9hjg-9r4m-mvj7", ["CVE-2024-47081", "PYSEC-2026-1872"], ["2.32.4"]),
+                        ("GHSA-gc5v-m9x4-r6x2", ["CVE-2026-25645", "PYSEC-2026-2275"], ["2.33.0"]),
+                        ("PYSEC-2026-1873", ["CVE-2024-35195", "GHSA-9wx4-h78v-vm56"], ["2.32.0"]),
+                        ("PYSEC-2026-1872", ["CVE-2024-47081", "GHSA-9hjg-9r4m-mvj7"], ["2.32.4"]),
+                        ("PYSEC-2026-2275", ["CVE-2026-25645", "GHSA-gc5v-m9x4-r6x2"], ["2.33.0"]),
+                    )
+                ],
+                ("requests", "2.34.2"): [],
+            },
+            {"requests": "2.34.2"},
+        )
+        _, out, _ = self.go(fake, pypi=pypi)
+        self.assertIn('row: "fixed above this PR" -> merge as-is, then follow up to 2.34.2', out)
 
 
 if __name__ == "__main__":

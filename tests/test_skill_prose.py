@@ -38,6 +38,7 @@ Every one of those corresponds to a defect that shipped.
 from __future__ import annotations
 
 import ast
+import itertools
 import os
 import pathlib
 import re
@@ -52,8 +53,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "skills/dependabot-audit"
 SKILL = PLUGIN / "SKILL.md"
 
-# One class here pins SKILL.md's merge-state table against `ci_state.py`'s own
-# sets, so this file imports a script. At module scope rather than inside the
+# Two classes here pin SKILL.md's tables against scripts' own vocabularies
+# (`ci_state.py`'s merge states, `vendored.py`'s advisory places), so this file
+# imports scripts. At module scope rather than inside the
 # test: done lazily it passed only because `test_ci_state.py` had run first and
 # left the path behind, and the class failed when run alone — an order-dependent
 # green, which is the same defect as a guard that never fires.
@@ -3345,6 +3347,87 @@ class TestEveryDerivedLabelLandsInTheVerdictTable(SkillHarness):
             "row for it, so it lands on Merge as-is by exhaustion",
         )
 
+    @staticmethod
+    def _advisory_labels() -> dict[str, dict[str, bool | None] | None]:
+        """Every label `vendored.classify()` can print, and a placement that prints
+        it alone (None if it only ever comes paired). Run, not read: the vocabulary
+        is whatever the function returns over every placement a release ships the
+        advisory in, since no other kind reaches the output. `current` is absent for
+        a package the PR adds, `latest` where nothing is newer than the proposal.
+        `underivable at ...` is one label, and the clause after it names a version."""
+        found: dict[str, dict[str, bool | None] | None] = {}
+        for keys in (
+            ("current", "proposed", "latest"),
+            ("current", "proposed"),
+            ("proposed", "latest"),
+            ("proposed",),
+        ):
+            for values in itertools.product((True, False, None), repeat=len(keys)):
+                present: dict[str, bool | None] = dict(zip(keys, values, strict=True))
+                if True not in present.values():
+                    continue
+                parts = [
+                    p
+                    for p in vendored.classify(present).split(", ")
+                    if not p.startswith("and the latest")
+                ]
+                for part in parts:
+                    label = part.split(" at the ")[0]
+                    if len(parts) == 1 and found.get(label) is None:
+                        found[label] = present
+                    else:
+                        found.setdefault(label, None)
+        return found
+
+    def test_every_place_an_advisory_can_stand_has_a_verdict_row(self):
+        """#196. Row 2 held on "a vulnerability in a version being adopted", and
+        `vendored.py` placed each advisory in states no row named. A standing one
+        matched row 2, and both live audits that met one had to argue past it."""
+        labels = self._advisory_labels()
+        self.assertEqual(
+            set(labels),
+            {
+                "introduced by this PR",
+                "fixed by this PR",
+                "fixed above this PR",
+                "introduced above this PR",
+                "standing",
+                "underivable",
+            },
+            "classify()'s vocabulary moved; the table has to move with it",
+        )
+        for label in sorted(labels):
+            self._assert_row(
+                f"**{label}**",
+                "advisory",
+                f"vendored.py can place an advisory `{label}` and no verdict row names "
+                f"that place, so it falls through to Merge as-is or matches a Hold",
+            )
+
+    def test_each_advisory_row_gives_the_verdict_the_script_prints(self):
+        """The table and `vendored.verdict()` are one function written twice. The
+        scripts print the second under every advisory, so the table must agree."""
+        expected = {
+            vendored.HOLD: "**hold.**",
+            vendored.FOLLOW_UP: "**merge as-is, then follow up**",
+            vendored.NOT_A_HOLD: "**not a hold on this bump.**",
+        }
+        for label, present in sorted(self._advisory_labels().items()):
+            self.assertIsNotNone(present, f"`{label}` is never printed alone")
+            verdict = vendored.selects(present or {})
+            rows = [
+                r for r in self._verdict_rows() if f"**{label.lower()}**" in r and "advisory" in r
+            ]
+            with self.subTest(label=label):
+                self.assertEqual(len(rows), 1, f"`{label}` should be named by one row")
+                cells = [c.strip() for c in rows[0].strip("|").split("|")]
+                self.assertIn(
+                    expected[verdict],
+                    cells[-1],
+                    f"the scripts print `{label}` -> {verdict}, and the table's row for it "
+                    f"says otherwise: {cells[-1]}",
+                )
+
 
 class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
     """The gate read its file list through a pipe, so a failing git passed it.
@@ -6082,6 +6165,7 @@ class TestTheFetchIsAssertedAgainstThePin(SkillHarness):
 
 
 import ci_state  # noqa: E402  (needs the sys.path insert above)
+import vendored  # noqa: E402  (needs the sys.path insert above)
 
 
 class TestTheMergeStateProseMatchesTheScript(unittest.TestCase):
@@ -6493,7 +6577,11 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
             7,
             "and the mechanical form of the same question",
             "says",
-            "against the **base branch's** lockfile",
+            # Until 0.60.0, "run `audit.py` against the base branch's lockfile as
+            # well" and compare by hand. The scripts now place each advisory against
+            # the base and print its row (#196); the table says what the label
+            # means, which is also what a hand query has to ask both versions.
+            "the proposal carries it and the current pin does not",
         ),
     ]
 

@@ -1735,6 +1735,182 @@ wheels = [
         self.assertIn("not-a-version", out, "printed unsorted rather than dropped")
 
 
+class TestAVulnerabilitySaysWhichWayItPoints(unittest.TestCase):
+    """#196. Phase 7 read "OSV reports a vulnerability in a version being adopted" as
+    a Hold, and this script printed `VULN name==version` for the PR's lockfile alone.
+    `SKILL.md` then asked the run to repeat the query against the base's lockfile and
+    compare the two sets by hand. An advisory the current pin already carries is no
+    reason to keep it, so each hit is now asked about at the base's pins and the
+    latest too, and placed as `vendored.py` places a crate's, with the row it selects.
+    """
+
+    # OSV's answer for `requests`, recorded 2026-10-07T20:31:13Z from api.osv.dev.
+    REQUESTS: ClassVar[dict[str, list[str]]] = {
+        "2.31.0": [
+            "GHSA-9hjg-9r4m-mvj7",
+            "GHSA-9wx4-h78v-vm56",
+            "GHSA-gc5v-m9x4-r6x2",
+            "PYSEC-2026-1872",
+            "PYSEC-2026-1873",
+            "PYSEC-2026-2275",
+        ],
+        "2.32.4": ["GHSA-gc5v-m9x4-r6x2", "PYSEC-2026-2275"],
+        "2.34.2": [],
+    }
+
+    def _run(
+        self,
+        pr: str,
+        base: str,
+        osv: dict[tuple[str, str], list[str]],
+        versions: dict[str, list[str]],
+    ) -> tuple[int, str]:
+        """main() over two lockfiles, with OSV answering per (name, version) and
+        the Simple API listing `versions[name]`, newest last."""
+
+        def fake_get_json(url, payload=None, accept=None):
+            if "osv.dev" in url:
+                queries = json.loads(payload)["queries"]
+                return {
+                    "results": [
+                        {
+                            "vulns": [
+                                {"id": i} for i in osv.get((q["package"]["name"], q["version"]), [])
+                            ]
+                        }
+                        for q in queries
+                    ]
+                }
+            name = url.rstrip("/").rsplit("/", 1)[1]
+            releases = {v: [pypi_file(f"{name}-{v}.whl")] for v in versions.get(name, [])}
+            return pypi_meta("", [], releases=releases)
+
+        out = io.StringIO()
+        with (
+            mock.patch("audit._get_json", fake_get_json),
+            mock.patch.object(
+                sys,
+                "argv",
+                ["audit.py", write_lock(self, pr), "--changed-vs", write_lock(self, base)],
+            ),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            try:
+                code: int | str | None = main()
+            except SystemExit as exc:
+                code = exc.code
+        return int(code or 0), out.getvalue()
+
+    def test_requests_carries_a_fix_above_the_proposal_and_sheds_two(self):
+        """2.31.0 -> 2.32.4, latest 2.34.2: two advisories go, one stays and 2.34.2
+        clears it. Read as row 2 did, this was a Hold on the bump that removes two."""
+        osv = {("requests", v): ids for v, ids in self.REQUESTS.items()}
+        code, out = self._run(
+            wheel_lock("requests", "2.32.4"),
+            wheel_lock("requests", "2.31.0"),
+            osv,
+            {"requests": ["2.31.0", "2.32.4", "2.34.2"]},
+        )
+        self.assertEqual(code, 1, out)
+        self.assertIn("VULN requests==2.32.4: GHSA-gc5v-m9x4-r6x2, PYSEC-2026-2275", out)
+        self.assertIn('row: "fixed above this PR" -> merge as-is, then follow up to 2.34.2', out)
+        self.assertIn(
+            "FIXED BY THIS PR  requests 2.31.0 -> 2.32.4: GHSA-9hjg-9r4m-mvj7, "
+            "GHSA-9wx4-h78v-vm56, PYSEC-2026-1872, PYSEC-2026-1873",
+            out,
+        )
+        self.assertNotIn("-> Hold", out)
+
+    def test_an_advisory_the_pr_introduces_is_a_hold(self):
+        code, out = self._run(
+            wheel_lock("tool", "1.1"),
+            wheel_lock("tool", "1.0"),
+            {("tool", "1.1"): ["GHSA-0001"]},
+            {"tool": ["1.0", "1.1"]},
+        )
+        self.assertEqual(code, 1, out)
+        self.assertIn('row: "introduced by this PR" -> Hold', out)
+
+    def test_an_advisory_the_current_pin_carries_too_is_not_a_hold(self):
+        _, out = self._run(
+            wheel_lock("tool", "1.1"),
+            wheel_lock("tool", "1.0"),
+            {("tool", "1.0"): ["GHSA-0001"], ("tool", "1.1"): ["GHSA-0001"]},
+            {"tool": ["1.0", "1.1"]},
+        )
+        self.assertIn('row: "standing" -> not a Hold on this bump', out)
+        self.assertNotIn("-> Hold", out)
+
+    def test_a_package_the_pr_adds_introduces_its_advisories(self):
+        _, out = self._run(
+            wheel_lock("tool", "1.0") + wheel_lock("newdep", "2.0"),
+            wheel_lock("tool", "0.9"),
+            {("newdep", "2.0"): ["GHSA-0002"]},
+            {"tool": ["0.9", "1.0"], "newdep": ["2.0"]},
+        )
+        self.assertIn("VULN newdep==2.0: GHSA-0002", out)
+        self.assertIn('row: "introduced by this PR" -> Hold', out)
+
+    def test_an_advisory_on_a_pin_this_pr_does_not_move_is_standing(self):
+        """The OSV batch covers the whole lockfile, so it reports what the repo already
+        runs. That is a finding about the repo, not about this bump."""
+        unmoved = wheel_lock("other", "3.0")
+        _, out = self._run(
+            wheel_lock("tool", "1.1") + unmoved,
+            wheel_lock("tool", "1.0") + unmoved,
+            {("other", "3.0"): ["GHSA-0003"]},
+            {"tool": ["1.0", "1.1"], "other": ["3.0"]},
+        )
+        self.assertIn("VULN other==3.0: GHSA-0003", out)
+        self.assertIn('row: "standing" -> not a Hold on this bump', out)
+        self.assertNotIn("-> Hold", out)
+
+    def test_an_advisory_only_the_latest_carries_bars_it_as_a_follow_up_target(self):
+        _, out = self._run(
+            wheel_lock("tool", "1.1"),
+            wheel_lock("tool", "1.0"),
+            {("tool", "1.2"): ["GHSA-0004"]},
+            {"tool": ["1.0", "1.1", "1.2"]},
+        )
+        self.assertIn("ABOVE THIS PR  tool 1.2 carries what 1.1 does not: GHSA-0004", out)
+        self.assertIn(
+            'row: "introduced above this PR" -> not a Hold on this bump; '
+            "name no follow-up target that ships it, and 1.2 does",
+            out,
+        )
+
+    def test_a_fork_stands_only_where_every_base_pin_carries_it(self):
+        """Holding keeps the 1.0 fork on a version without the advisory; merging moves
+        it onto one with it. For that environment this PR introduces it."""
+        forked = wheel_lock("tool", "1.0").replace(
+            "[[package]]", '[[package]]\nresolution-markers = ["a"]'
+        ) + wheel_lock("tool", "1.1").replace(
+            "[[package]]", '[[package]]\nresolution-markers = ["b"]'
+        )
+        _, out = self._run(
+            wheel_lock("tool", "1.2"),
+            forked,
+            {("tool", "1.1"): ["GHSA-0005"], ("tool", "1.2"): ["GHSA-0005"]},
+            {"tool": ["1.0", "1.1", "1.2"]},
+        )
+        self.assertIn('row: "introduced by this PR" -> Hold', out)
+
+    def test_the_osv_line_counts_what_the_rows_select(self):
+        osv = {("requests", v): ids for v, ids in self.REQUESTS.items()}
+        _, out = self._run(
+            wheel_lock("requests", "2.32.4"),
+            wheel_lock("requests", "2.31.0"),
+            osv,
+            {"requests": ["2.31.0", "2.32.4", "2.34.2"]},
+        )
+        self.assertIn(
+            "OSV: 1 of 1 packages affected; the rows select 0 Hold, 1 follow-up, "
+            "0 not a Hold on this bump",
+            out,
+        )
+
+
 class TestOsvBatching(_MainHarness):
     """`querybatch` rejects a batch over 1000 queries with a 400.
 

@@ -315,7 +315,9 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # `releases/latest` read and current-pin block, moved into `currency.py` (#187).
     # Phase 7 gained one sentence (#185: the fixed version is the target either way),
     # and the changelog loop passes `--gap` on. Both numbers are the 0.59.0 corpus.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_447, "references": 132_140}
+    # v0.60.0, 2026-10-08 — Phase 7's row 2 split by direction, paid for by the two
+    # paragraphs its rows now carry (#196).
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_173, "references": 132_094}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

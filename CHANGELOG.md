@@ -11,6 +11,60 @@ patch.
 
 ## [Unreleased]
 
+## [0.60.0] — 2026-10-08
+
+This version makes Phase 7 read which way an advisory points, from what the scripts
+already know, instead of leaving the run to argue past a row. It is ordered by
+`fpga-board-sim`, this plugin's primary user. ruff ships crossbeam-epoch 0.9.18
+(RUSTSEC-2026-0204) in every wheel at 0.16.5, 0.16.9 and 0.16.10, and ruff is in 15
+of that repo's 19 `uv` PRs. Row 2 held on *"a vulnerability in a version being
+adopted"*, which that standing advisory matches on every ruff bump. Both live audits
+that met it reached merge only by reading a later paragraph as governing: this
+repo's #193 on 2026-10-01, and `fpga-board-sim` #451 on 2026-10-07, whose report
+said *"Read literally, … means hold."*
+
+### An advisory says which way it points, and Phase 7 reads that (#196)
+
+`vendored.py` placed each crate advisory: fixed by this PR, fixed above it,
+introduced by it, introduced above it, standing, or underivable. Nothing said what a
+place does to the verdict, and `SKILL.md` never named the script. `audit.py`'s OSV
+hits covered the PR's lockfile only, and Phase 7 asked the run to repeat the query
+against the base's lockfile and compare the sets by hand. `pipaudit.py` tagged a hit
+`<- a version this PR introduces`, which says the PR brought the version, not the
+advisory.
+
+Each source now prints, under every advisory, the row of Phase 7's table its place
+selects, as `currency.py` does for a gap:
+- **`vendored.py`** maps its places through one function, and its RESULT line
+  counts what the rows select.
+- **`audit.py`** asks OSV about each moved package at its base pins and its latest
+  too. A pin the PR left alone stands, and a package the PR adds introduces what it
+  carries. It lists what the bump sheds, and what the latest carries that the
+  proposal does not. For requests 2.31.0 → 2.32.4, with OSV's answer recorded
+  2026-10-07: two advisories are fixed by the PR, and GHSA-gc5v-m9x4-r6x2 is fixed
+  above it, so the row is a follow-up to 2.34.2. Row 2 had held that bump.
+- **`pipaudit.py`** looks up a hit on a version the PR introduces in PyPI's
+  per-version advisories, the data `pip-audit` reads, by id and alias.
+
+An advisory is standing only where every base pin carries it, because holding keeps a
+fork that does not. An unread release is tried both ways. Where the answers differ,
+the row says it decides the verdict and confidence is low. A shipped set nobody could
+read, such as mypy's and librt's SBOM-less wheels, caps confidence at medium.
+
+**A defect in `classify()` became verdict-bearing with this, and is fixed with it.**
+`main()` drops `current` for a package the base never pinned, and `classify()` read
+the missing key as unread: `shipped at the proposed pin, current pin unread`. Under
+the new table that is underivable, not a Hold, so an advisory in a newly added
+package would have merged.
+
+The table: row 2 becomes *introduced by this PR → Hold*; a reporting row takes
+standing, fixed by this PR, introduced above this PR and underivable as *not a Hold
+on this bump*; and *fixed above this PR → merge as-is, then follow up* sits with the
+`Security`-entry rows, as the stated precedence ranks OSV and GHSA. Two paragraphs
+the rows now carry came out. The prose suite runs `classify()` over every placement
+and requires a row naming each label with the verdict `verdict()` gives.
+`pre-commit.md`'s OSV one-liner now asks about the current pin too.
+
 ## [0.59.0] — 2026-09-30
 
 This version moves the follow-up's inputs out of the run's judgement and into the
@@ -7467,7 +7521,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.59.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.60.0...HEAD
+[0.60.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...v0.57.0
