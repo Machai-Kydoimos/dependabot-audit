@@ -73,6 +73,19 @@ close and reopen the PR under their own auth. On #451 Dependabot force-pushed at
 new head at 17:57:15Z and succeeded. The suppression is GitHub's rule for pushes made
 with a workflow's own `GITHUB_TOKEN`. The line is gone, and a guard keeps it out.
 
+### Confidence takes the lowest row that applies (#190, #197)
+
+Four #438 replays on 0.59.0 split two low and two medium on one open question, which
+fit the `--no-execute` row and the decisive-underivable row at once. The lowest row
+that applies now wins. **Decisive** is defined where confidence is: a finding in hand
+turns on the input. A source that read nothing and points at nothing, such as a wheel
+with no SBOM, is not, and caps confidence at medium.
+
+`report-template.md` restated the table and had drifted from it. It gave medium
+*"when something underivable sits outside the verdict's path"*, where `SKILL.md` says
+such a row *"does not lower confidence"*. It now states the rule in the table's own
+terms.
+
 ## [0.59.0] — 2026-09-30
 
 This version moves the follow-up's inputs out of the run's judgement and into the

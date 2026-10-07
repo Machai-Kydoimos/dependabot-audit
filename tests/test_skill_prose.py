@@ -1881,6 +1881,39 @@ class TestTheVerdictIsDerivedRatherThanJudged(SkillHarness):
         for level in ("high", "medium", "low"):
             self.assertIn(level, template)
 
+    def _confidence(self) -> str:
+        """Phase 7's `### Confidence` subsection, whitespace flattened."""
+        body = self._phase7()
+        start = body.index("### Confidence")
+        end = body.find("\n### ", start + 1)
+        return " ".join(body[start : end if end > 0 else None].split()).lower()
+
+    def test_confidence_takes_the_lowest_row_that_applies(self):
+        """#190. Four #438 replays split two low and two medium on one open question,
+        which fit the `--no-execute` row and the decisive-underivable row at once,
+        and nothing said which wins."""
+        self.assertIn("take the lowest row that applies", self._confidence())
+
+    def test_decisive_is_defined_where_confidence_is(self):
+        """With the lowest row winning, "decisive" decides between medium and low,
+        so it cannot be left to the reader: #451's SBOM-less mypy and librt wheels
+        came out medium under one reading and could be argued low under another."""
+        confidence = self._confidence()
+        self.assertIn("is **decisive** when a finding in hand turns on it", confidence)
+        self.assertIn("no sbom", confidence)
+
+    def test_the_template_states_confidence_in_the_tables_terms(self):
+        """#197 row 7. The template said **medium** *"when something underivable sits
+        outside the verdict's path"*, and `SKILL.md` that such a row *"does not lower
+        confidence"*: a restatement that drifted from its table. Its terms are now
+        the table's own, and these are the words that carry the rule."""
+        template = " ".join(
+            (PLUGIN / "references/report-template.md").read_text(encoding="utf-8").split()
+        ).lower()
+        for term in ("the lowest row that applies", "verdict-bearing", "none is decisive"):
+            self.assertIn(term, template)
+        self.assertNotIn("outside the verdict's path", template)
+
 
 class TestSecurityEvidenceOutranksTheCooldown(SkillHarness):
     """Phase 2's prose and Phase 7's table disagreed about Phase 2's own case.

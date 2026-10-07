@@ -1727,6 +1727,11 @@ no verdict rule reads does not lower confidence, and saying it does trains the
 reader to discount the field. Conversely a single underivable input that would
 flip the recommendation caps it at **low** however green everything else is.
 
+**Take the lowest row that applies.** An input is **decisive** when a finding in
+hand turns on it: an advisory whose row says so, a fix above the proposal whose
+start is unknown, a red check nothing attributed. A source that read nothing and
+points at nothing, such as a wheel with no SBOM, is not decisive: **medium**.
+
 If the user asked for `--comment`, print the report and offer to post it; posting
 is a separate, explicitly requested action.
 

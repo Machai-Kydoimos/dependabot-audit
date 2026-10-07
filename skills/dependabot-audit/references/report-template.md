@@ -28,12 +28,12 @@ tool verbatim are the ones worth keeping.
 **Confidence: \<high | medium | low>.** One or two sentences on what the verdict
 turns on.
 
-Confidence is derived, not felt — Phase 7 has the table. **high** only when every
-verdict-bearing input was derived and the executing phases ran; **medium** when
-something underivable sits outside the verdict's path, or `--no-execute` left a
-Phase 4-shaped question open; **low** when an input that would *change* the
-verdict could not be established, and then name it. A `low` whose cause is not
-named is unfalsifiable, which is the thing this whole report shape exists against.
+Confidence is derived, not felt — Phase 7 has the table, and the lowest row that
+applies wins. **high** only when every verdict-bearing input was derived and the
+executing phases ran; **medium** when one is underivable and none is decisive, or
+`--no-execute` left a Phase 4-shaped question open; **low** when a decisive one
+could not be established, and then name it. A `low` whose cause is not named is
+unfalsifiable, which is the thing this whole report shape exists against.
 
 ## Evidence
 
