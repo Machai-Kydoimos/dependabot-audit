@@ -318,6 +318,9 @@ RST_RULE = re.compile(r"^([!-/:-@\[-`{-~])\1*[ \t]*$")
 # `.. _v46-0-1:` names the title below it, so it belongs to the next section.
 RST_TARGET = re.compile(r"^\.\. _[^:]*:\s*$")
 VERSION_TOKEN = re.compile(r"\d+\.\d+")
+# A plain dotted release, as a heading token or a version asked for: no pre-release,
+# no local part, and at least one dot, so `## Step 2` names no release at all.
+RELEASE = re.compile(r"v?(\d+(?:\.\d+)+)")
 # A repo-relative path to something named like a changelog, bare or inside a
 # `github.com/<owner>/<repo>/blob/<ref>/` URL. Only ever followed from a file
 # that carries no version headings of its own -- see `changelog_at`.
@@ -873,6 +876,15 @@ def section_for(text: str, version: str, rst: bool = False) -> str:
     differently: `## [0.2.62](...) - 2026-08-27` and `## Mypy 2.3` both have to
     answer, and only one of them leads with the number.
 
+    **And the same release, not only the same string.** PyPI's mypy 2.4.0 is
+    `## Mypy 2.4` in its changelog, so asking for exactly "2.4.0" found nothing, and
+    `fpga-board-sim` #451's audit printed `0 section(s)` beside the 285-line section
+    naming the release's behaviour changes (#197). An exact heading still wins; a
+    heading equal but for trailing zeros answers when none is exact. A section found
+    that way leaves out what nests in it under a later patch's heading: mypy writes
+    `### Mypy 2.3.1` inside `## Mypy 2.3`, before its Acknowledgements, and 2.3.1
+    is not part of 2.3.0.
+
     In reStructuredText the lines just above the next title belong to it, or to
     no section: its overline, the `.. _v46-0-1:` target that names it, and a
     `----` transition. They are left off. A rule is four characters or more, as a
@@ -880,30 +892,60 @@ def section_for(text: str, version: str, rst: bool = False) -> str:
     """
     lines = text.splitlines()
     found = headings(lines, rst)
-    wanted = {version, f"v{version}"}
-    for index, (level, title) in sorted(found.items()):
+    tokens: dict[int, set[str]] = {}
+    for at, (_, title) in found.items():
         label = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", title)
-        tokens = {token.strip("[](){}<>,:;.") for token in label.split()}
-        if not (tokens & wanted):
-            continue
-        body = [lines[index]]
-        for position in range(index + 1, len(lines)):
-            nxt = found.get(position)
-            if nxt and nxt[0] <= level:
-                break
+        tokens[at] = {token.strip("[](){}<>,:;.") for token in label.split()}
+    wanted = {version, f"v{version}"}
+    release = _release(version)
+    index = next((i for i in sorted(found) if tokens[i] & wanted), None)
+    patch_of = None
+    if index is None and release:
+        index = next((i for i in sorted(found) if release in map(_release, tokens[i])), None)
+        patch_of = release
+    if index is None:
+        return ""
+    level = found[index][0]
+    body = [lines[index]]
+    skipping = 0  # the level of a later patch's heading, while its lines are left out
+    for position in range(index + 1, len(lines)):
+        nxt = found.get(position)
+        if nxt and nxt[0] <= level:
+            break
+        if nxt and skipping and nxt[0] <= skipping:
+            skipping = 0
+        if nxt and patch_of and any(_extends(_release(t), patch_of) for t in tokens[position]):
+            skipping = nxt[0]
+        if not skipping:
             body.append(lines[position])
-        while (
-            rst
-            and len(body) > 2
-            and (
-                not body[-1].strip()
-                or RST_TARGET.match(body[-1])
-                or (RST_RULE.match(body[-1]) and len(body[-1].strip()) >= 4)
-            )
-        ):
-            body.pop()
-        return "\n".join(body).rstrip()
-    return ""
+    while (
+        rst
+        and len(body) > 2
+        and (
+            not body[-1].strip()
+            or RST_TARGET.match(body[-1])
+            or (RST_RULE.match(body[-1]) and len(body[-1].strip()) >= 4)
+        )
+    ):
+        body.pop()
+    return "\n".join(body).rstrip()
+
+
+def _release(token: str) -> tuple[int, ...] | None:
+    """A plain release as numbers, trailing zeros dropped down to two: `2.4.0`,
+    `v2.4` and `2.4` are one release. None for anything else."""
+    got = RELEASE.fullmatch(token)
+    if not got:
+        return None
+    parts = [int(part) for part in got.group(1).split(".")]
+    while len(parts) > 2 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+def _extends(found: tuple[int, ...] | None, release: tuple[int, ...]) -> bool:
+    """`found` is a later patch of `release`: 2.3.1 of 2.3."""
+    return found is not None and len(found) > len(release) and found[: len(release)] == release
 
 
 def commits(slug: str, from_tag: str, to_tag: str) -> list[str]:

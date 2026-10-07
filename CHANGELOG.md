@@ -23,6 +23,10 @@ that met it reached merge only by reading a later paragraph as governing: this
 repo's #193 on 2026-10-01, and `fpga-board-sim` #451 on 2026-10-07, whose report
 said *"Read literally, … means hold."*
 
+Replayed twice on this version, #451 gives the same verdict row, follow-up target
+and confidence from both runs, and neither run argues with the table. `SKILL.md` goes
+from 120,447 to 120,251 bytes, and the references from 132,140 to 132,092.
+
 ### An advisory says which way it points, and Phase 7 reads that (#196)
 
 `vendored.py` placed each crate advisory: fixed by this PR, fixed above it,
@@ -85,6 +89,42 @@ with no SBOM, is not, and caps confidence at medium.
 *"when something underivable sits outside the verdict's path"*, where `SKILL.md` says
 such a row *"does not lower confidence"*. It now states the rule in the table's own
 terms.
+
+### A feature release headed x.y is read for x.y.0 (#197)
+
+`changelog.py` compared version strings. PyPI's mypy 2.4.0 is `## Mypy 2.4`, and
+mypy publishes no GitHub releases, so rung 2 read only that heading, missed it, and
+#451's audit printed `0 section(s)` beside the 285-line section that names the
+release's behaviour changes. A heading equal but for trailing zeros now answers when
+none is exact. A section found that way leaves out a later patch nested in it, since
+mypy writes `### Mypy 2.3.1` inside `## Mypy 2.3`. Bare numbers and pre-releases
+never match. Run on mypy 2.3.1 → 2.4.0, rung 2 finds the section and the unreconciled
+commits fall from 114 to 82.
+
+The unit test that had passed asked for `"2.3"`, which is how its docstring read the
+heading, and not how the script is ever called. Its fixture claimed mypy writes per
+minor release only. The new fixture is mypy's own file at v2.4.0, excerpted.
+
+### The replays
+
+Each ran from a fresh clone planted at the PR's base, with `claude -p --plugin-dir`
+on this branch, a denylist over every mutating `gh` and `git` command, a $5 cap, and
+its own `TMPDIR`, so the real audits' evidence in `/tmp` stayed as it was. Three runs
+cost $3.99 in total, with 0 permission denials:
+
+| Run | Verdict | Follow-up target | Confidence | Turns | Cost |
+|---|---|---|---|---|---|
+| #451 `--no-execute`, 1 | merge as-is | none | medium | 17 | $1.43 |
+| #451 `--no-execute`, 2 | merge as-is | none | medium | 16 | $1.52 |
+| #193 `--no-execute` | merge as-is | none | medium | 12 | $1.05 |
+
+Both #451 runs read the two crate advisories as standing, *"not a Hold on this
+bump"*, and the mypy and librt rows as underivable, and both gave the same two
+reasons for medium. Both read mypy 2.4's section from rung 2. #193 read salsa's
+RUSTSEC-2026-0308 as fixed by this PR and crossbeam-epoch as standing. The transcripts
+show `vendored.py`'s rows printed as written. One run's `verify_run.py` flagged a
+workflow read as a gate run. That rule's false positive predates this version and is
+filed as #198, with three observations the runs repeated.
 
 ## [0.59.0] — 2026-09-30
 
