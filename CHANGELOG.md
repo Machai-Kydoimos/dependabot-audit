@@ -65,6 +65,14 @@ the rows now carry came out. The prose suite runs `classify()` over every placem
 and requires a row naming each label with the verdict `verdict()` gives.
 `pre-commit.md`'s OSV one-liner now asks about the current pin too.
 
+### A bot's own rebase is not said to skip CI (#197)
+
+Phase 6 said *"A bot's own rebase does not re-trigger CI"*, and told the reader to
+close and reopen the PR under their own auth. On #451 Dependabot force-pushed at
+2026-10-07T17:57:10Z, and run 37663065692 (`CI`, `pull_request`) was created on the
+new head at 17:57:15Z and succeeded. The suppression is GitHub's rule for pushes made
+with a workflow's own `GITHUB_TOKEN`. The line is gone, and a guard keeps it out.
+
 ## [0.59.0] — 2026-09-30
 
 This version moves the follow-up's inputs out of the run's judgement and into the

@@ -1432,9 +1432,9 @@ the reader is owed the difference: the first names a cause, the second names a
 commit and an action. Phase 7's table has a row for each, and the second is
 **Hold, pending a re-run**.
 
-**Three CI-state traps the script does not cover**, because each is about what
-the answer *covers* rather than how to read it. Two are about it covering another
-commit; the third is about it covering fewer jobs than it looks like:
+**Two CI-state traps the script does not cover**, because each is about what the
+answer *covers* rather than how to read it. One is about it covering another
+commit; the other is about it covering fewer jobs than it looks like:
 
 - **A merge state can read `CLEAN` on stale checks.** Right after a push the API
   can serve the *previous* commit's results. Gate on a run reporting for the
@@ -1443,9 +1443,6 @@ commit; the third is about it covering fewer jobs than it looks like:
   having succeeded.** Only the latest run counts, a duplicate event can cancel an
   earlier one, and `cancelled` is not `failure` — but the gap that actually opens
   is `skipped`, and `exercised.py` above is what reads it, job and step.
-- **A bot's own rebase does not re-trigger CI** — push-recursion suppression on
-  the bot's token. So a green you are reading may belong to the commit before the
-  rebase. Close and reopen under your own auth, or ask the bot to recreate.
 
 ## Phase 7 — Report
 

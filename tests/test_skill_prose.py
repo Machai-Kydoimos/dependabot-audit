@@ -7218,3 +7218,19 @@ class TestTheOneSidedGateFindingHasACommand(SkillHarness):
     def test_the_whole_file_choice_is_justified(self) -> None:
         flat = self.flat(0)
         self.assertIn("whole file, not a filter on", flat)
+
+
+class TestABotsOwnRebaseIsNotSaidToSkipCI(SkillHarness):
+    """#197 row 11. Phase 6 said *"A bot's own rebase does not re-trigger CI —
+    push-recursion suppression on the bot's token"*, and told the reader to close
+    and reopen the PR under their own auth. Measured on `fpga-board-sim` #451: the
+    timeline has `head_ref_force_pushed` by `dependabot[bot]` at 2026-10-07T17:57:10Z,
+    and run 37663065692 (`CI`, event `pull_request`) was created on the new head at
+    17:57:15Z and succeeded. The suppression is GitHub's rule for pushes made with a
+    workflow's own `GITHUB_TOKEN`, and Dependabot pushes as an app. The trap sent a
+    read-only audit toward closing a PR to cure something that had not happened."""
+
+    def test_phase_6_does_not_say_a_bot_rebase_skips_ci(self) -> None:
+        flat = self.flat(6)
+        self.assertNotIn("does not re-trigger ci", flat)
+        self.assertNotIn("push-recursion", flat)
