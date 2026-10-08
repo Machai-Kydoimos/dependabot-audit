@@ -5294,6 +5294,16 @@ class TestAFixAboveTheProposalIsMeasuredWhereCodeMayRun(SkillHarness):
     `$MAY_EXECUTE` gate. The replay proposed putting the method in Phase 7 --
     which runs under `--no-execute` -- so it lives in Phase 4 instead, and Phase 7
     only asks the question.
+
+    0.60.0. Phase 7 said the underivable answer *"takes neither the Hold row nor
+    the follow-up row by default"*, and 0.59.0 answered a #438 run that read that
+    as no follow-up by adding *"the fixed version is the target either way"* beside
+    it. A #438 replay on 0.60.0 paraphrased the first and dropped rumdl again,
+    with `changelog.py --gap` printing the target. So the sentence is gone: the
+    Hold row's input was never established, and the follow-up row is the verdict.
+    The first replay of that text gave medium, saying the open question *"doesn't
+    change the outcome"* because both rows end at one target, so the paragraph
+    says the input could make it a Hold, and confidence is low.
     """
 
     def _uv_phase(self, number: int) -> str:
@@ -5311,8 +5321,14 @@ class TestAFixAboveTheProposalIsMeasuredWhereCodeMayRun(SkillHarness):
             "Phase 7 runs under --no-execute; it may not be where the code runs",
         )
         self.assertIn(
-            "the answer is **underivable**, and it takes neither the hold row nor the follow-up row by default",
+            "the hold row's input was never established, so the verdict is the follow-up row's",
             phase7,
+            "first match: with the Hold row's input unestablished, the follow-up row is next",
+        )
+        self.assertIn(
+            "and confidence is **low**: that input could make it a hold",
+            phase7,
+            "one target for both rows read as not decisive, and a #438 replay gave medium",
         )
         self.assertIn(
             "the fixed version is the target either way",
@@ -5320,6 +5336,12 @@ class TestAFixAboveTheProposalIsMeasuredWhereCodeMayRun(SkillHarness):
             "both rows end at the fixed version; a #438 replay under 0.59.0's first cut "
             "read 'neither row' as no follow-up at all",
         )
+        self.assertNotRegex(
+            phase7,
+            r"neither the hold row nor the follow-up row|nor the follow-up row by default",
+            "a #438 replay on 0.60.0 paraphrased this beside the target and dropped rumdl",
+        )
+        self.assertNotIn("differ only in whether this pr merges first", phase7)
 
     def test_the_cheap_route_comes_first(self):
         """pre-commit writes "Regressed in 4.6.1" under the entry itself."""

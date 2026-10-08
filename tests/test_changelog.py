@@ -1665,9 +1665,11 @@ class TestFixModeLinesInTheProseAreListed(ChangelogHarness):
 
     def test_in_the_gap_the_follow_ups_target_is_named(self):
         """The 0.59.0 replays of #438 both listed rumdl's 37 fix-mode lines, and
-        one still left rumdl out of the follow-up: Phase 7 says an underivable
-        fix above the proposal takes neither row by default. Both rows end at the
-        fixed version, so the target is named whichever applies."""
+        one still left rumdl out of the follow-up: Phase 7 said an underivable
+        fix above the proposal took neither row by default. Both rows end at the
+        fixed version, so the target is named whichever applies. Under 0.60.0 a
+        run read "differ only in whether this PR merges first" as not decisive,
+        so the print says that difference is the verdict."""
         _, out, _ = self.run_main(
             self.rumdl(), "--from", "v0.2.76", "--to", "v0.2.78", "--write-mode", "--gap"
         )
@@ -1676,6 +1678,9 @@ class TestFixModeLinesInTheProseAreListed(ChangelogHarness):
             "IN THE GAP: 19 fix-mode line(s) in a tool this repo runs in write mode", flat
         )
         self.assertIn("The follow-up's target is v0.2.78, cooldown notwithstanding", flat)
+        self.assertIn("Whether this PR merges first is the verdict", flat)
+        self.assertIn("decisive, and underivable without it", flat)
+        self.assertNotIn("differ only", flat)
 
     def test_outside_the_gap_or_write_mode_no_target_is_set(self):
         for argv in (("--write-mode",), ("--gap",)):

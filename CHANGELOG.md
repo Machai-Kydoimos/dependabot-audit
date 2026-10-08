@@ -23,9 +23,10 @@ that met it reached merge only by reading a later paragraph as governing: this
 repo's #193 on 2026-10-01, and `fpga-board-sim` #451 on 2026-10-07, whose report
 said *"Read literally, … means hold."*
 
-Replayed twice on this version, #451 gives the same verdict row, follow-up target
-and confidence from both runs, and neither run argues with the table. `SKILL.md` goes
-from 120,447 to 120,251 bytes, and the references from 132,140 to 132,092.
+Replayed twice each on this version, #451 and #438 give the same verdict row,
+follow-up target and confidence from both runs, and no run argues with the table.
+#438 got there with the last fix below. `SKILL.md` goes from 120,447 to 120,242
+bytes, and the references from 132,140 to 132,092.
 
 ### An advisory says which way it points, and Phase 7 reads that (#196)
 
@@ -105,18 +106,57 @@ The unit test that had passed asked for `"2.3"`, which is how its docstring read
 heading, and not how the script is ever called. Its fixture claimed mypy writes per
 minor release only. The new fixture is mypy's own file at v2.4.0, excerpted.
 
+### A fix above the proposal whose start is unknown is followed up
+
+#190's acceptance test replays #438 twice. On this version both runs gave low
+confidence and named the same decisive input: whether a rumdl `--fix` bug fixed in
+0.2.74–0.2.78 began in 0.2.73. They split on the follow-up instead: the first named
+ruff 0.16.10 alone, and the second ruff 0.16.10 and rumdl 0.2.78. The first said
+rumdl's question *"goes to neither Hold nor follow-up by default"*, which is Phase
+7's *"it takes neither the Hold row nor the follow-up row by default"*, and took
+*fixed above this PR* as the first row to match. `changelog.py --gap` had printed
+*"The follow-up's target is 0.2.78"* in that same run.
+
+0.59.0's first pair split the same way. 0.59.0 added that print, and a sentence
+beside this one saying *"the fixed version is the target either way"*, and left the
+sentence itself in place. It is now gone. The Hold row's input was never
+established, so the first row that matches is the follow-up row, and the fixed
+version is its target.
+
+The first replay of that wording named both targets and gave medium: the open
+question *"doesn't change the outcome. Both possible table rows end at the same
+target"*. The paragraph and the print had both said the rows *"differ only in
+whether this PR merges first"*. That difference is the verdict, and both now say so;
+the paragraph gives confidence low, because the input could make it a Hold.
+`SKILL.md` comes out 9 bytes lighter, and the guards refuse both phrasings.
+
 ### The replays
 
 Each ran from a fresh clone planted at the PR's base, with `claude -p --plugin-dir`
 on this branch, a denylist over every mutating `gh` and `git` command, a $5 cap, and
-its own `TMPDIR`, so the real audits' evidence in `/tmp` stayed as it was. Three runs
-cost $3.99 in total, with 0 permission denials:
+its own `TMPDIR`, so the real audits' evidence in `/tmp` stayed as it was. Every run
+was `--no-execute`, and none had a permission denied. The column says which wording
+of Phase 7's paragraph on a fix above the proposal each one read:
 
-| Run | Verdict | Follow-up target | Confidence | Turns | Cost |
-|---|---|---|---|---|---|
-| #451 `--no-execute`, 1 | merge as-is | none | medium | 17 | $1.43 |
-| #451 `--no-execute`, 2 | merge as-is | none | medium | 16 | $1.52 |
-| #193 `--no-execute` | merge as-is | none | medium | 12 | $1.05 |
+| Run | Paragraph | Verdict | Follow-up target | Confidence | Turns | Cost |
+|---|---|---|---|---|---|---|
+| #451, 1 | 0.59.0's | merge as-is | none | medium | 17 | $1.43 |
+| #451, 2 | 0.59.0's | merge as-is | none | medium | 16 | $1.52 |
+| #193 | 0.59.0's | merge as-is | none | medium | 12 | $1.05 |
+| #438, 1 | 0.59.0's | merge, then follow up | ruff 0.16.10 | low | 15 | $1.49 |
+| #438, 2 | 0.59.0's | merge, then follow up | ruff 0.16.10 and rumdl 0.2.78 | low | 16 | $1.55 |
+| #438, 3 | first rewording | merge, then follow up at once | ruff 0.16.10 and rumdl 0.2.78 | medium | 14 | $1.55 |
+| #438, 4 | final | merge, then follow up | ruff 0.16.10 and rumdl 0.2.78 | low | 15 | $1.52 |
+| #438, 5 | final | merge, then follow up | ruff 0.16.10 and rumdl 0.2.78 | low | 15 | $1.61 |
+
+The #451 and #193 runs never reached that paragraph: none of their transcripts has
+a `--gap` range or an `IN THE GAP` print. Both final #438 runs passed `--gap`,
+received *"Whether this PR merges first is the verdict"*, and named the same decisive
+input: whether 0.2.73 introduced a bug that 0.2.74–0.2.78 fix. Neither headline says
+*at once*, and both call the rumdl follow-up urgent, since the repo runs its `--fix`
+hook on every Markdown commit. One more launch, between the last two, was cut off by
+the account's session limit after 2 turns ($0.59) and repeated from a fresh clone.
+The #438 runs cost $8.32 with it, and all of them $12.31.
 
 Both #451 runs read the two crate advisories as standing, *"not a Hold on this
 bump"*, and the mypy and librt rows as underivable, and both gave the same two

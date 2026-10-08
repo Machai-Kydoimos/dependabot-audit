@@ -1522,7 +1522,10 @@ def main() -> int:
     # A fix above the proposal is Hold if the bump moved into the bug and a follow-up
     # if it did not. Both rows end at the fixed version, and the #438 replays under
     # 0.59.0 split on naming it: one took Phase 7's "neither row by default" as no
-    # target at all. So the target is printed here, where the gap's fixes are.
+    # target at all. So the target is printed here, where the gap's fixes are. Under
+    # 0.60.0 a run dropped it again with this line in hand, and the sentence came out.
+    # A run then read "differ only in whether this PR merges first" as not decisive and
+    # gave medium, so the print says that difference is the verdict.
     shapes = []
     if args.gap and args.write_mode and fixes:
         shapes.append(f"{len(fixes)} fix-mode line(s) in a tool this repo runs in write mode")
@@ -1532,8 +1535,9 @@ def main() -> int:
         print(
             f"IN THE GAP: {' and '.join(shapes)}.\n"
             f"The follow-up's target is {args.new}, cooldown notwithstanding: Phase 7's rows\n"
-            "for a fix above the proposal all end there, and differ only in whether this PR\n"
-            "merges first. That is Phase 4's reproducer question, underivable without it."
+            "for a fix above the proposal all end there. Whether this PR merges first is\n"
+            "the verdict and Phase 4's reproducer question: decisive, and underivable\n"
+            "without it."
         )
     prose = [(s, e) for s, e, label in index if label.startswith("rung ")]
     span = f"lines {prose[0][0]}-{prose[-1][1]}" if prose else "the prose rungs"

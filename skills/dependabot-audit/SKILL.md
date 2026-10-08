@@ -1655,11 +1655,11 @@ release that regressed, which settles it against the pin with nothing run; and
 otherwise the ecosystem's Phase 4 runs the fix's reproducer at the current,
 proposed and fixed versions (`references/uv-lock.md` § Phase 4). **Where Phase 4
 did not run** — `--no-execute`, `$MAY_EXECUTE=no`, or an ecosystem that cannot
-run the tool — the answer is **underivable**, and it takes neither the Hold row
-nor the follow-up row by default. It is not decided here, because deciding it
-means running the code under audit, and this phase runs under `--no-execute`.
-**The fixed version is the target either way**: both rows end there and differ
-only in whether this PR merges first, and `changelog.py --gap` names it.
+run the tool — the answer is **underivable**. It is not decided here, because
+deciding it means running the code under audit. The Hold row's input was never
+established, so the verdict is the follow-up row's, and confidence is **low**:
+that input could make it a Hold. **The fixed version is the target either
+way**, since both rows end there, and `changelog.py --gap` names it.
 
 **The cooldown decides Hold-versus-follow-up. It never decides whether to look.**
 The wait exempts Dependabot's *security updates* — the advisory-driven kind — and

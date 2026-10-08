@@ -318,8 +318,10 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # v0.60.0, 2026-10-08 — Phase 7's row 2 split by direction, paid for by the two
     # paragraphs its rows now carry (#196), and the false rebase trap came out (#197).
     # Then raised by what confidence's precedence and its definition of decisive cost
-    # (#190), out of the 517 those took out. Both numbers are the 0.60.0 corpus.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_251, "references": 132_092}
+    # (#190), out of the 517 those took out. Then 9 bytes lighter: the sentence that
+    # sent a fix above the proposal to neither row became one naming the follow-up
+    # row as the verdict. Both numbers are the 0.60.0 corpus.
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_242, "references": 132_092}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size
