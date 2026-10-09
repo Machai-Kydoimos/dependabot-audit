@@ -332,6 +332,42 @@ Some notes about the 2.3 feature release.
 Older notes.
 """
 
+# Recorded 2026-10-07 from python/mypy's CHANGELOG.md at v2.4.0 (352,850 bytes, the
+# same on the default branch that day): real lines, excerpted. A feature release is
+# headed `## Mypy 2.4` though PyPI calls it 2.4.0, and a later patch nests inside its
+# section as `### Mypy 2.3.1`, between the section's own subsections (#197 row 1).
+MYPY_24_EXCERPT = """\
+# Mypy Release Notes
+
+## Next Release
+
+## Mypy 2.4
+
+We've just uploaded mypy 2.4.0 to the Python Package Index ([PyPI](https://pypi.org/project/mypy/)).
+
+### Native Parser Enabled by Default
+
+Mypy now uses the new native parser by default. It's based on the Ruff
+
+## Mypy 2.3
+
+We've just uploaded mypy 2.3.0 to the Python Package Index ([PyPI](https://pypi.org/project/mypy/)).
+
+### Typeshed Updates
+
+Please see [git log](https://github.com/python/typeshed/commits/main?after=f76037a1eb3923c67a8bc0e302ee9c016ffb3431+0&branch=main&path=stdlib) for full list of standard library typeshed stub changes.
+
+### Mypy 2.3.1
+
+- Fix mypyc crash on double yielding Iterators (Daniël van Noord, PR [21826](https://github.com/python/mypy/pull/21826))
+
+### Acknowledgements
+
+Thanks to all mypy contributors who contributed to this release:
+
+## Mypy 2.2
+"""
+
 
 class Repo:
     """One repository as the five calls in `changelog.py` see it."""
@@ -1629,9 +1665,11 @@ class TestFixModeLinesInTheProseAreListed(ChangelogHarness):
 
     def test_in_the_gap_the_follow_ups_target_is_named(self):
         """The 0.59.0 replays of #438 both listed rumdl's 37 fix-mode lines, and
-        one still left rumdl out of the follow-up: Phase 7 says an underivable
-        fix above the proposal takes neither row by default. Both rows end at the
-        fixed version, so the target is named whichever applies."""
+        one still left rumdl out of the follow-up: Phase 7 said an underivable
+        fix above the proposal took neither row by default. Both rows end at the
+        fixed version, so the target is named whichever applies. Under 0.60.0 a
+        run read "differ only in whether this PR merges first" as not decisive,
+        so the print says that difference is the verdict."""
         _, out, _ = self.run_main(
             self.rumdl(), "--from", "v0.2.76", "--to", "v0.2.78", "--write-mode", "--gap"
         )
@@ -1640,6 +1678,9 @@ class TestFixModeLinesInTheProseAreListed(ChangelogHarness):
             "IN THE GAP: 19 fix-mode line(s) in a tool this repo runs in write mode", flat
         )
         self.assertIn("The follow-up's target is v0.2.78, cooldown notwithstanding", flat)
+        self.assertIn("Whether this PR merges first is the verdict", flat)
+        self.assertIn("decisive, and underivable without it", flat)
+        self.assertNotIn("differ only", flat)
 
     def test_outside_the_gap_or_write_mode_no_target_is_set(self):
         for argv in (("--write-mode",), ("--gap",)):
@@ -1843,9 +1884,64 @@ class TestTheChangelogSectionSurvivesItsOwnHeading(ChangelogHarness):
         self.assertIn("2.3 feature release", section_for(MYPY_CHANGELOG, "2.3"))
 
     def test_a_version_with_no_section_returns_nothing(self):
-        """mypy writes per *minor* release, so 2.3.1 has none. That is rung 2
-        running out, and it must be empty rather than approximately 2.3."""
+        """This fixture heads only 2.3, so 2.3.1 has no section in it. That is rung 2
+        running out, and it must be empty rather than approximately 2.3. (Its old
+        docstring said mypy writes per minor release only. The real file nests
+        `### Mypy 2.3.1` inside `## Mypy 2.3`: see `MYPY_24_EXCERPT`.)"""
         self.assertEqual(section_for(MYPY_CHANGELOG, "2.3.1"), "")
+
+    def test_a_feature_release_answers_for_its_dot_zero(self):
+        """#197 row 1. PyPI calls it 2.4.0 and mypy heads it `## Mypy 2.4`, so the
+        exact token never matched: `fpga-board-sim` #451's audit printed `0
+        section(s)` beside a 285-line section naming the release's behaviour
+        changes. The test above asks for "2.3", which is how a docstring read the
+        heading, and not how the script is ever called."""
+        found = section_for(MYPY_24_EXCERPT, "2.4.0")
+        self.assertTrue(found.startswith("## Mypy 2.4"), found[:60])
+        self.assertIn("Native Parser Enabled by Default", found)
+        self.assertNotIn("## Mypy 2.3", found)
+
+    def test_a_patch_nested_in_the_feature_section_is_left_out_of_its_dot_zero(self):
+        """`### Mypy 2.3.1` sits inside `## Mypy 2.3`, before the Acknowledgements.
+        It shipped later, so it is not 2.3.0's, and what follows it still is. Read
+        at the default branch once a patch exists, the section would otherwise
+        differ from the one read at the tag, and say the changelog was rewritten."""
+        found = section_for(MYPY_24_EXCERPT, "2.3.0")
+        self.assertIn("Typeshed Updates", found)
+        self.assertIn("Thanks to all mypy contributors", found)
+        self.assertNotIn("Mypy 2.3.1", found)
+        self.assertNotIn("double yielding Iterators", found)
+
+    def test_the_patch_is_read_by_its_own_heading(self):
+        found = section_for(MYPY_24_EXCERPT, "2.3.1")
+        self.assertTrue(found.startswith("### Mypy 2.3.1"), found[:60])
+        self.assertIn("double yielding Iterators", found)
+        self.assertNotIn("Acknowledgements", found)
+
+    def test_an_exact_heading_outranks_an_equivalent_one(self):
+        text = "## 2.4\n\nIntro.\n\n### 2.4.0\n\n- zero\n\n### 2.4.1\n\n- one\n"
+        self.assertEqual(section_for(text, "2.4.0"), "### 2.4.0\n\n- zero")
+
+    def test_a_bare_number_is_never_a_version_heading(self):
+        self.assertEqual(section_for("## Step 2\n\n- x\n", "2.0.0"), "")
+
+    def test_a_pre_release_is_not_its_final(self):
+        self.assertEqual(section_for("## 2.4.0rc1\n\n- x\n", "2.4.0"), "")
+        self.assertEqual(section_for("## 2.4\n\n- x\n", "2.4.0rc1"), "")
+
+    def test_rung_2_reads_the_section_451_missed(self):
+        """Driven through `main()`, with mypy's real shape: no GitHub releases, so
+        rung 2 reads `--to`'s section and nothing else."""
+        repo = Repo(
+            "python/mypy",
+            releases=[],
+            tags=["v2.4.0", "v2.3.1"],
+            files={"CHANGELOG.md": MYPY_24_EXCERPT},
+            commits=["Finalize mypy 2.4 changelog (#22080)"],
+        )
+        _, out, evidence = self.run_main(repo, "--from", "2.3.1", "--to", "2.4.0")
+        self.assertIn("rung 2 -- CHANGELOG.md: 1 section(s) for the versions in the gap", out)
+        self.assertIn("Native Parser Enabled by Default", evidence)
 
     def test_the_section_stops_at_the_next_heading_of_its_level(self):
         """Asserted on content, not on the version string: 0.2.62's own heading

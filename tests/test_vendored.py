@@ -352,7 +352,7 @@ class TestWhereAnAdvisoryStands(unittest.TestCase):
             "standing": {"current": True, "proposed": True, "latest": True},
             "introduced above this PR": {"current": False, "proposed": False, "latest": True},
             "underivable at the proposed pin": {"current": True, "proposed": None},
-            "shipped at the proposed pin, current pin unread": {"current": None, "proposed": True},
+            "underivable at the current pin": {"current": None, "proposed": True},
         }
         for expected, present in cases.items():
             with self.subTest(expected=expected):
@@ -363,6 +363,214 @@ class TestWhereAnAdvisoryStands(unittest.TestCase):
             classify({"current": False, "proposed": True, "latest": False}),
             "introduced by this PR, fixed above this PR",
         )
+
+    def test_a_package_the_pr_adds_has_no_current_pin_to_leave_unread(self):
+        """`main()` deletes `current` for a package the base never pinned, and 0.59.0
+        read the missing key as an unread one: `shipped at the proposed pin, current
+        pin unread`. There is nothing to read. The PR adds the package, so whatever
+        it ships, this PR introduces (#196)."""
+        self.assertEqual(classify({"proposed": True}), "introduced by this PR")
+        self.assertEqual(vendored.verdict({"proposed": True}), vendored.HOLD)
+
+
+class TestEachAdvisoryNamesItsRow(Harness):
+    """#196. Phase 7's row 2 Held on any advisory "in a version being adopted", and
+    `vendored.py` had placed each one -- fixed, introduced, standing -- without saying
+    what that place does to the verdict. Two live audits (this repo's #193, and
+    `fpga-board-sim` #451) met a standing advisory and reached merge only by arguing
+    past row 2. The row is now printed under each advisory, as `currency.py` prints
+    its own, so the table is a lookup and not a reading."""
+
+    def two_releases(self, shipped: dict[str, list[dict[str, Any]]], latest: str) -> None:
+        for version, crates in shipped.items():
+            self.world.release("tool", version, {p: crates for p in PLATFORMS})
+        self.world.latest["tool"] = latest
+
+    def test_a_standing_advisory_is_not_a_hold(self):
+        """`fpga-board-sim` #451: ruff 0.16.9 -> 0.16.10, crossbeam-epoch 0.9.18 in
+        all 17 wheels at both, 0.16.10 the latest (vendored.py, 2026-10-07)."""
+        epoch = [crate("crossbeam-epoch", "0.9.18")]
+        for version in ("0.16.9", "0.16.10"):
+            self.world.release("ruff", version, {p: epoch for p in PLATFORMS})
+        self.world.latest["ruff"] = "0.16.10"
+        self.world.advisory("RUSTSEC-2026-0204", "pkg:cargo/crossbeam-epoch@0.9.18")
+        code, out, _ = self.run_main(
+            ["--package", "ruff", "--current", "0.16.9", "--proposed", "0.16.10"]
+        )
+        self.assertEqual(code, 1, out)
+        self.assertIn("STANDING  RUSTSEC-2026-0204  crossbeam-epoch 0.9.18", out)
+        self.assertIn('row: "standing" -> not a Hold on this bump', out)
+        self.assertNotIn("-> Hold", out)
+
+    def test_a_fix_above_names_its_follow_up(self):
+        """ruff 0.16.9's salsa, seen from 0.16.7 -> 0.16.8 (#171)."""
+        self.ruff_like()
+        _, out, _ = self.run_main(
+            ["--package", "ruff", "--current", "0.16.7", "--proposed", "0.16.8"]
+        )
+        self.assertIn('row: "fixed above this PR" -> merge as-is, then follow up to 0.16.9', out)
+
+    def test_an_advisory_this_pr_introduces_is_a_hold(self):
+        self.two_releases(
+            {"1.0": [crate("regex", "1.12.0")], "1.1": [crate("lru", "0.18.0")]}, "1.1"
+        )
+        self.world.advisory("RUSTSEC-2026-0253", "pkg:cargo/lru@0.18.0", "unsound")
+        _, out, _ = self.run_main(["--package", "tool", "--current", "1.0", "--proposed", "1.1"])
+        self.assertIn("INTRODUCED BY THIS PR  RUSTSEC-2026-0253", out)
+        self.assertIn('row: "introduced by this PR" -> Hold', out)
+
+    def test_a_pr_that_introduces_what_the_latest_fixes_is_still_a_hold(self):
+        self.two_releases(
+            {
+                "1.0": [crate("regex", "1.12.0")],
+                "1.1": [crate("lru", "0.18.0")],
+                "1.2": [crate("lru", "0.18.1")],
+            },
+            "1.2",
+        )
+        self.world.advisory("RUSTSEC-2026-0253", "pkg:cargo/lru@0.18.0", "unsound")
+        _, out, _ = self.run_main(["--package", "tool", "--current", "1.0", "--proposed", "1.1"])
+        self.assertIn('row: "introduced by this PR" -> Hold; 1.2 does not ship it', out)
+
+    def test_a_fix_this_pr_makes_is_not_a_hold(self):
+        self.ruff_like()
+        _, out, _ = self.run_main(
+            ["--package", "ruff", "--current", "0.16.8", "--proposed", "0.16.9"]
+        )
+        self.assertIn("FIXED BY THIS PR  RUSTSEC-2026-0308", out)
+        self.assertIn('row: "fixed by this PR" -> not a Hold: this PR removes it', out)
+
+    def test_an_advisory_only_the_latest_ships_bars_it_as_a_follow_up_target(self):
+        self.two_releases(
+            {
+                "1.0": [crate("regex", "1.12.0")],
+                "1.1": [crate("regex", "1.12.0")],
+                "1.2": [crate("lru", "0.18.0")],
+            },
+            "1.2",
+        )
+        self.world.advisory("RUSTSEC-2026-0253", "pkg:cargo/lru@0.18.0", "unsound")
+        _, out, _ = self.run_main(["--package", "tool", "--current", "1.0", "--proposed", "1.1"])
+        self.assertIn("INTRODUCED ABOVE THIS PR  RUSTSEC-2026-0253", out)
+        self.assertIn(
+            'row: "introduced above this PR" -> not a Hold on this bump; '
+            "name no follow-up target that ships it, and 1.2 does",
+            out,
+        )
+
+    def test_a_package_the_pr_adds_introduces_what_it_ships(self):
+        """The ref path, where the missing current pin comes from: `moved()` gives a
+        package new to the lockfile `current: None`, and `main()` drops the key."""
+        self.world.release("newdep", "1.0", {p: [crate("lru", "0.18.0")] for p in PLATFORMS})
+        self.world.latest["newdep"] = "1.0"
+        self.world.advisory("RUSTSEC-2026-0253", "pkg:cargo/lru@0.18.0", "unsound")
+        pr = [
+            {
+                "name": "newdep",
+                "version": "1.0",
+                "source": {"registry": "https://pypi.org/simple"},
+                "wheels": [
+                    {"url": f"https://files/{f}", "size": len(b)}
+                    for f, b in self.world.releases[("newdep", "1.0")]
+                ],
+            }
+        ]
+        locks: dict[str, list[dict[str, Any]]] = {"pr-1": pr, "base": []}
+        with mock.patch("vendored.lock_at", lambda ref: locks[ref]):
+            code, out, _ = self.run_main(["--ref", "pr-1", "--base", "base"])
+        self.assertEqual(code, 1, out)
+        self.assertIn("INTRODUCED BY THIS PR  RUSTSEC-2026-0253", out)
+        self.assertIn('row: "introduced by this PR" -> Hold', out)
+        self.assertNotIn("unread", out)
+
+    def test_an_unread_proposal_that_could_flip_the_verdict_says_confidence_is_low(self):
+        """The proposal's one unread wheel may ship what the latest ships. If it
+        does, this PR introduces it (Hold); if not, only the latest does."""
+        self.two_releases(
+            {
+                "1.0": [crate("regex", "1.12.0")],
+                "1.1": [crate("regex", "1.12.0")],
+                "1.2": [crate("lru", "0.18.0")],
+            },
+            "1.2",
+        )
+        self.world.broken.add("tool-1.1-py3-abi3-win_amd64.whl")
+        self.world.advisory("RUSTSEC-2026-0253", "pkg:cargo/lru@0.18.0", "unsound")
+        _, out, _ = self.run_main(["--package", "tool", "--current", "1.0", "--proposed", "1.1"])
+        self.assertIn("UNDERIVABLE AT THE PROPOSED PIN, AND THE LATEST SHIPS IT", out)
+        self.assertIn(
+            'row: "underivable" -> not a Hold on this bump, '
+            "but which way it points decides the verdict: confidence low",
+            out,
+        )
+
+    def test_an_unread_proposal_that_cannot_flip_the_verdict_says_so(self):
+        """The current pin ships it: whatever the unread wheel holds, the bump either
+        leaves it standing or removes it, and neither is a Hold."""
+        self.two_releases(
+            {"1.0": [crate("lru", "0.18.0")], "1.1": [crate("regex", "1.12.0")]}, "1.1"
+        )
+        self.world.broken.add("tool-1.1-py3-abi3-win_amd64.whl")
+        self.world.advisory("RUSTSEC-2026-0253", "pkg:cargo/lru@0.18.0", "unsound")
+        _, out, _ = self.run_main(["--package", "tool", "--current", "1.0", "--proposed", "1.1"])
+        self.assertIn("UNDERIVABLE AT THE PROPOSED PIN", out)
+        self.assertIn('row: "underivable" -> not a Hold on this bump, whichever way it points', out)
+
+    def test_a_shipped_set_nobody_could_read_caps_confidence_at_medium(self):
+        """mypy and librt on #451: no SBOM in any wheel, and no advisory points at
+        either. The run called that medium, and 0.59.0's table let it say low."""
+        bare = {f"plat{i}": None for i in range(5)}
+        for version in ("2.3.1", "2.4.0"):
+            self.world.release("mypy", version, bare)
+        self.world.latest["mypy"] = "2.4.0"
+        _, out, _ = self.run_main(
+            ["--package", "mypy", "--current", "2.3.1", "--proposed", "2.4.0"]
+        )
+        self.assertIn(
+            'row: "underivable" -> not a Hold on this bump; '
+            "a shipped set that was not read caps confidence at medium",
+            out,
+        )
+
+    def test_a_package_with_no_wheel_caps_confidence_at_medium_too(self):
+        self.world.release("actionlint-py", "1.7.12.24", {})
+        self.world.release("actionlint-py", "1.7.12.25", {})
+        self.world.latest["actionlint-py"] = "1.7.12.25"
+        _, out, _ = self.run_main(
+            ["--package", "actionlint-py", "--current", "1.7.12.24", "--proposed", "1.7.12.25"]
+        )
+        self.assertIn("a shipped set that was not read caps confidence at medium", out)
+
+    def test_the_result_line_counts_what_the_rows_select(self):
+        self.ruff_like()
+        self.world.advisory("RUSTSEC-2099-0003", "pkg:cargo/regex@1.12.0")
+        _, out, _ = self.run_main(
+            ["--package", "ruff", "--current", "0.16.7", "--proposed", "0.16.8"]
+        )
+        self.assertIn("rows select: 0 Hold, 1 follow-up, 1 not a Hold on this bump", out)
+
+
+class TestTheVerdictIsTheTablesFirstMatch(unittest.TestCase):
+    """`verdict()` is what `row()` prints and what the prose suite holds Phase 7's
+    table to, so it is checked over every way an advisory can be placed."""
+
+    def test_every_fully_read_placement(self):
+        seen = {}
+        for cur, pro, lat in (
+            (c, p, la) for c in (True, False) for p in (True, False) for la in (True, False, "-")
+        ):
+            present: dict[str, bool | None] = {"current": cur, "proposed": pro}
+            if lat != "-":
+                present["latest"] = bool(lat)
+            if not any(present.values()):
+                continue  # no release ships it, so no advisory reaches the output
+            seen[classify(present)] = vendored.verdict(present)
+        self.assertEqual(seen["introduced by this PR"], vendored.HOLD)
+        self.assertEqual(seen["introduced by this PR, fixed above this PR"], vendored.HOLD)
+        self.assertEqual(seen["fixed above this PR"], vendored.FOLLOW_UP)
+        for state in ("standing", "fixed by this PR", "introduced above this PR"):
+            self.assertEqual(seen[state], vendored.NOT_A_HOLD, state)
+        self.assertEqual(seen["fixed by this PR, introduced above this PR"], vendored.NOT_A_HOLD)
 
     def test_versions_order_numerically(self):
         self.assertGreater(_key("0.16.10"), _key("0.16.9"))

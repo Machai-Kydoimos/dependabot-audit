@@ -48,7 +48,13 @@ What this does instead:
      `python_full_version < '3.11'` forks, rpds-py's older one among them. A name
      pinned twice cannot share a file (*"duplicate requirements"*, exit 1, no
      JSON), hence the passes. Every exported pin must come back in some pass's
-     JSON, or the output names it as unaudited.
+     JSON, or the output names it as unaudited;
+  7. says which way each advisory points (#196). A hit on a pin the PR left alone
+     stands. One on a version the PR introduces is looked up, by id and alias, in
+     PyPI's advisories on the base's pins and on the latest -- the data `pip-audit`
+     reads -- and placed as `vendored.py` places a crate's, with the row of Phase
+     7's table it selects. Until 0.60.0 the tag said only that the PR brought the
+     *version*, and the table held any advisory on it.
 
 `uv export --frozen` never builds. Measured with a workspace member whose metadata
 is dynamic and whose build backend writes a file when imported: `uv lock` imported
@@ -72,7 +78,7 @@ Exit status:
 
     pipaudit.py --scratch DIR --ref pr-<N> --base <merge base>
 
-Requires Python 3.11+ (tomllib), `git`, `uv`, and network access for `uvx`.
+Requires Python 3.11+ (tomllib), `git`, `uv`, and network access: `uvx`, and PyPI.
 """
 
 from __future__ import annotations
@@ -86,6 +92,10 @@ import sys
 import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
+
+# Where an advisory stands, and the row of Phase 7's table that selects, as
+# audit.py and vendored.py place theirs; and PyPI's JSON, read as vendored.py does.
+import vendored
 
 TIMEOUT = 300
 
@@ -345,6 +355,58 @@ def audit(requirements: Path, report: Path, cwd: Path) -> tuple[str, dict[str, A
     return ("found" if found else "clean"), data, ""
 
 
+def advisories_at(
+    name: str, version: str | None, cache: dict[tuple[str, str | None], Any]
+) -> tuple[str, set[str]] | None:
+    """PyPI's advisories on one release, every id and alias, and the version they are
+    for: the latest when `version` is None. This is the data `pip-audit` reads, so a
+    match here is the auditor's own answer about that release. None when PyPI does not
+    answer, which leaves the direction underivable, never clean."""
+    if (name, version) not in cache:
+        tail = f"{name}/{version}/json" if version else f"{name}/json"
+        try:
+            data = vendored._json(f"{vendored.PYPI}/{tail}")
+        except (vendored.Unreadable, OSError):
+            cache[name, version] = None
+        else:
+            ids: set[str] = set()
+            for flaw in data.get("vulnerabilities") or []:
+                if isinstance(flaw, dict) and not flaw.get("withdrawn"):
+                    ids |= {str(flaw.get("id")), *map(str, flaw.get("aliases") or [])}
+            info = data.get("info") or {}
+            cache[name, version] = (str(info.get("version") or version or ""), ids)
+    found: tuple[str, set[str]] | None = cache[name, version]
+    return found
+
+
+def place(
+    dep: dict[str, Any],
+    vuln: dict[str, Any],
+    base: dict[str, set[str]],
+    cache: dict[tuple[str, str | None], Any],
+) -> tuple[dict[str, bool | None], str]:
+    """Where an advisory on a version this PR introduces stands, and the latest's
+    version, as `vendored.classify()` reads them (#196). Standing only where every
+    base pin carries it: merging moves a fork that did not onto one that does."""
+    name, version = str(dep.get("name", "")), str(dep.get("version", ""))
+    names = {str(vuln.get("id")), *map(str, vuln.get("aliases") or [])}
+    present: dict[str, bool | None] = {"proposed": True}
+    before = sorted(base.get(normalise(name), set()))
+    if before:
+        each = []
+        for was in before:
+            answer = advisories_at(name, was, cache)
+            each.append(None if answer is None else bool(names & answer[1]))
+        present["current"] = False if False in each else (None if None in each else True)
+    top = advisories_at(name, None, cache)
+    if top is None:
+        present["latest"] = None
+        return present, "the latest"
+    if vendored._key(top[0]) > vendored._key(version):
+        present["latest"] = bool(names & top[1])
+    return present, top[0]
+
+
 def version_of_auditor(cwd: Path) -> str:
     proc = run(["uvx", "pip-audit", "--version"], cwd=cwd)
     return first_line(text_of(proc)) or "pip-audit (version unknown)"
@@ -432,6 +494,9 @@ def main() -> int:
         print(f"  NOT AUDITED, absent from pip-audit's answer: {pin}")
 
     changed = set(new)
+    was = registry_pins(base)
+    cache: dict[tuple[str, str | None], Any] = {}
+    selected: list[str] = []
     advisories = 0
     for d in deps:
         seen: set[str] = set()
@@ -445,6 +510,14 @@ def main() -> int:
             aliases = " ".join(vuln.get("aliases") or [])
             pin = f"{d.get('name')}=={d.get('version')}"
             print(f"  {pin}  {vuln.get('id')}  {aliases}  fixed in {fixed}{tag}")
+            # A pin the PR left alone is the base's too, so it stands, and asking
+            # PyPI about it would only repeat what pip-audit just said.
+            present: dict[str, bool | None] = {"current": True, "proposed": True}
+            latest = ""
+            if key(d) in changed:
+                present, latest = place(d, vuln, was, cache)
+            print(f"      row: {vendored.row(present, latest)}")
+            selected.append(vendored.selects(present))
 
     uncovered = [
         *(f"{n}=={v} (not in the export)" for n, v in missing),
@@ -455,7 +528,11 @@ def main() -> int:
     print()
     if advisories:
         noun = "advisory" if advisories == 1 else "advisories"
-        print(f"RESULT: FOUND -- {advisories} {noun} in the export.")
+        print(
+            f"RESULT: FOUND -- {advisories} {noun} in the export; the rows select "
+            f"{selected.count(vendored.HOLD)} Hold, {selected.count(vendored.FOLLOW_UP)} "
+            f"follow-up, {selected.count(vendored.NOT_A_HOLD)} {vendored.NOT_A_HOLD}."
+        )
     if uncovered:
         print(f"RESULT: INCOMPLETE -- this row does not cover: {', '.join(uncovered)}")
     if not advisories and not uncovered:

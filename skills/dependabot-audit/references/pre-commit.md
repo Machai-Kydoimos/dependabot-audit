@@ -170,10 +170,9 @@ is silent.
 needs a lockfile. So the two queries are yours, and they are short:
 
 ```bash
-# OSV, across the whole gap rather than only the version being adopted: a bump
-# that steps over an affected release still spent time on it, and Phase 7's table
-# asks whether the bump moves *into* the advisory or past it.
-python3 -c 'import json,sys,urllib.request as u; vs=sys.argv[2:]; q={"queries":[{"package":{"name":sys.argv[1],"ecosystem":"PyPI"},"version":v} for v in vs]}; r=json.load(u.urlopen(u.Request("https://api.osv.dev/v1/querybatch",data=json.dumps(q).encode(),headers={"Content-Type":"application/json"}))); [print(sys.argv[1],v,len(x.get("vulns") or []),"advisory(ies)") for v,x in zip(vs,r["results"])]' <pkg> <every version in the gap>
+# OSV at the current pin and across the whole gap: Phase 7's table asks whether
+# the current pin carries an advisory too, or the bump moves *into* it.
+python3 -c 'import json,sys,urllib.request as u; vs=sys.argv[2:]; q={"queries":[{"package":{"name":sys.argv[1],"ecosystem":"PyPI"},"version":v} for v in vs]}; r=json.load(u.urlopen(u.Request("https://api.osv.dev/v1/querybatch",data=json.dumps(q).encode(),headers={"Content-Type":"application/json"}))); [print(sys.argv[1],v,len(x.get("vulns") or []),"advisory(ies)") for v,x in zip(vs,r["results"])]' <pkg> <the current pin> <every version in the gap>
 
 # GHSA, and note it is UNQUALIFIED by version. A version-qualified query reads
 # clean whether or not the package has advisories, which is the reassuring

@@ -38,6 +38,7 @@ Every one of those corresponds to a defect that shipped.
 from __future__ import annotations
 
 import ast
+import itertools
 import os
 import pathlib
 import re
@@ -52,8 +53,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "skills/dependabot-audit"
 SKILL = PLUGIN / "SKILL.md"
 
-# One class here pins SKILL.md's merge-state table against `ci_state.py`'s own
-# sets, so this file imports a script. At module scope rather than inside the
+# Two classes here pin SKILL.md's tables against scripts' own vocabularies
+# (`ci_state.py`'s merge states, `vendored.py`'s advisory places), so this file
+# imports scripts. At module scope rather than inside the
 # test: done lazily it passed only because `test_ci_state.py` had run first and
 # left the path behind, and the class failed when run alone — an order-dependent
 # green, which is the same defect as a guard that never fires.
@@ -1879,6 +1881,39 @@ class TestTheVerdictIsDerivedRatherThanJudged(SkillHarness):
         for level in ("high", "medium", "low"):
             self.assertIn(level, template)
 
+    def _confidence(self) -> str:
+        """Phase 7's `### Confidence` subsection, whitespace flattened."""
+        body = self._phase7()
+        start = body.index("### Confidence")
+        end = body.find("\n### ", start + 1)
+        return " ".join(body[start : end if end > 0 else None].split()).lower()
+
+    def test_confidence_takes_the_lowest_row_that_applies(self):
+        """#190. Four #438 replays split two low and two medium on one open question,
+        which fit the `--no-execute` row and the decisive-underivable row at once,
+        and nothing said which wins."""
+        self.assertIn("take the lowest row that applies", self._confidence())
+
+    def test_decisive_is_defined_where_confidence_is(self):
+        """With the lowest row winning, "decisive" decides between medium and low,
+        so it cannot be left to the reader: #451's SBOM-less mypy and librt wheels
+        came out medium under one reading and could be argued low under another."""
+        confidence = self._confidence()
+        self.assertIn("is **decisive** when a finding in hand turns on it", confidence)
+        self.assertIn("no sbom", confidence)
+
+    def test_the_template_states_confidence_in_the_tables_terms(self):
+        """#197 row 7. The template said **medium** *"when something underivable sits
+        outside the verdict's path"*, and `SKILL.md` that such a row *"does not lower
+        confidence"*: a restatement that drifted from its table. Its terms are now
+        the table's own, and these are the words that carry the rule."""
+        template = " ".join(
+            (PLUGIN / "references/report-template.md").read_text(encoding="utf-8").split()
+        ).lower()
+        for term in ("the lowest row that applies", "verdict-bearing", "none is decisive"):
+            self.assertIn(term, template)
+        self.assertNotIn("outside the verdict's path", template)
+
 
 class TestSecurityEvidenceOutranksTheCooldown(SkillHarness):
     """Phase 2's prose and Phase 7's table disagreed about Phase 2's own case.
@@ -3344,6 +3379,87 @@ class TestEveryDerivedLabelLandsInTheVerdictTable(SkillHarness):
             "actions.md makes a mutable pin a finding and the verdict table has no "
             "row for it, so it lands on Merge as-is by exhaustion",
         )
+
+    @staticmethod
+    def _advisory_labels() -> dict[str, dict[str, bool | None] | None]:
+        """Every label `vendored.classify()` can print, and a placement that prints
+        it alone (None if it only ever comes paired). Run, not read: the vocabulary
+        is whatever the function returns over every placement a release ships the
+        advisory in, since no other kind reaches the output. `current` is absent for
+        a package the PR adds, `latest` where nothing is newer than the proposal.
+        `underivable at ...` is one label, and the clause after it names a version."""
+        found: dict[str, dict[str, bool | None] | None] = {}
+        for keys in (
+            ("current", "proposed", "latest"),
+            ("current", "proposed"),
+            ("proposed", "latest"),
+            ("proposed",),
+        ):
+            for values in itertools.product((True, False, None), repeat=len(keys)):
+                present: dict[str, bool | None] = dict(zip(keys, values, strict=True))
+                if True not in present.values():
+                    continue
+                parts = [
+                    p
+                    for p in vendored.classify(present).split(", ")
+                    if not p.startswith("and the latest")
+                ]
+                for part in parts:
+                    label = part.split(" at the ")[0]
+                    if len(parts) == 1 and found.get(label) is None:
+                        found[label] = present
+                    else:
+                        found.setdefault(label, None)
+        return found
+
+    def test_every_place_an_advisory_can_stand_has_a_verdict_row(self):
+        """#196. Row 2 held on "a vulnerability in a version being adopted", and
+        `vendored.py` placed each advisory in states no row named. A standing one
+        matched row 2, and both live audits that met one had to argue past it."""
+        labels = self._advisory_labels()
+        self.assertEqual(
+            set(labels),
+            {
+                "introduced by this PR",
+                "fixed by this PR",
+                "fixed above this PR",
+                "introduced above this PR",
+                "standing",
+                "underivable",
+            },
+            "classify()'s vocabulary moved; the table has to move with it",
+        )
+        for label in sorted(labels):
+            self._assert_row(
+                f"**{label}**",
+                "advisory",
+                f"vendored.py can place an advisory `{label}` and no verdict row names "
+                f"that place, so it falls through to Merge as-is or matches a Hold",
+            )
+
+    def test_each_advisory_row_gives_the_verdict_the_script_prints(self):
+        """The table and `vendored.verdict()` are one function written twice. The
+        scripts print the second under every advisory, so the table must agree."""
+        expected = {
+            vendored.HOLD: "**hold.**",
+            vendored.FOLLOW_UP: "**merge as-is, then follow up**",
+            vendored.NOT_A_HOLD: "**not a hold on this bump.**",
+        }
+        for label, present in sorted(self._advisory_labels().items()):
+            self.assertIsNotNone(present, f"`{label}` is never printed alone")
+            verdict = vendored.selects(present or {})
+            rows = [
+                r for r in self._verdict_rows() if f"**{label.lower()}**" in r and "advisory" in r
+            ]
+            with self.subTest(label=label):
+                self.assertEqual(len(rows), 1, f"`{label}` should be named by one row")
+                cells = [c.strip() for c in rows[0].strip("|").split("|")]
+                self.assertIn(
+                    expected[verdict],
+                    cells[-1],
+                    f"the scripts print `{label}` -> {verdict}, and the table's row for it "
+                    f"says otherwise: {cells[-1]}",
+                )
 
 
 class TestTheScopeGateChecksWhatProducesItsEvidence(SkillHarness):
@@ -5178,6 +5294,16 @@ class TestAFixAboveTheProposalIsMeasuredWhereCodeMayRun(SkillHarness):
     `$MAY_EXECUTE` gate. The replay proposed putting the method in Phase 7 --
     which runs under `--no-execute` -- so it lives in Phase 4 instead, and Phase 7
     only asks the question.
+
+    0.60.0. Phase 7 said the underivable answer *"takes neither the Hold row nor
+    the follow-up row by default"*, and 0.59.0 answered a #438 run that read that
+    as no follow-up by adding *"the fixed version is the target either way"* beside
+    it. A #438 replay on 0.60.0 paraphrased the first and dropped rumdl again,
+    with `changelog.py --gap` printing the target. So the sentence is gone: the
+    Hold row's input was never established, and the follow-up row is the verdict.
+    The first replay of that text gave medium, saying the open question *"doesn't
+    change the outcome"* because both rows end at one target, so the paragraph
+    says the input could make it a Hold, and confidence is low.
     """
 
     def _uv_phase(self, number: int) -> str:
@@ -5195,8 +5321,14 @@ class TestAFixAboveTheProposalIsMeasuredWhereCodeMayRun(SkillHarness):
             "Phase 7 runs under --no-execute; it may not be where the code runs",
         )
         self.assertIn(
-            "the answer is **underivable**, and it takes neither the hold row nor the follow-up row by default",
+            "the hold row's input was never established, so the verdict is the follow-up row's",
             phase7,
+            "first match: with the Hold row's input unestablished, the follow-up row is next",
+        )
+        self.assertIn(
+            "and confidence is **low**: that input could make it a hold",
+            phase7,
+            "one target for both rows read as not decisive, and a #438 replay gave medium",
         )
         self.assertIn(
             "the fixed version is the target either way",
@@ -5204,6 +5336,12 @@ class TestAFixAboveTheProposalIsMeasuredWhereCodeMayRun(SkillHarness):
             "both rows end at the fixed version; a #438 replay under 0.59.0's first cut "
             "read 'neither row' as no follow-up at all",
         )
+        self.assertNotRegex(
+            phase7,
+            r"neither the hold row nor the follow-up row|nor the follow-up row by default",
+            "a #438 replay on 0.60.0 paraphrased this beside the target and dropped rumdl",
+        )
+        self.assertNotIn("differ only in whether this pr merges first", phase7)
 
     def test_the_cheap_route_comes_first(self):
         """pre-commit writes "Regressed in 4.6.1" under the entry itself."""
@@ -6082,6 +6220,7 @@ class TestTheFetchIsAssertedAgainstThePin(SkillHarness):
 
 
 import ci_state  # noqa: E402  (needs the sys.path insert above)
+import vendored  # noqa: E402  (needs the sys.path insert above)
 
 
 class TestTheMergeStateProseMatchesTheScript(unittest.TestCase):
@@ -6493,7 +6632,11 @@ class TestAPhaseSuppliesTheMeasurementsItAsksFor(SkillHarness):
             7,
             "and the mechanical form of the same question",
             "says",
-            "against the **base branch's** lockfile",
+            # Until 0.60.0, "run `audit.py` against the base branch's lockfile as
+            # well" and compare by hand. The scripts now place each advisory against
+            # the base and print its row (#196); the table says what the label
+            # means, which is also what a hand query has to ask both versions.
+            "the proposal carries it and the current pin does not",
         ),
     ]
 
@@ -7130,3 +7273,19 @@ class TestTheOneSidedGateFindingHasACommand(SkillHarness):
     def test_the_whole_file_choice_is_justified(self) -> None:
         flat = self.flat(0)
         self.assertIn("whole file, not a filter on", flat)
+
+
+class TestABotsOwnRebaseIsNotSaidToSkipCI(SkillHarness):
+    """#197 row 11. Phase 6 said *"A bot's own rebase does not re-trigger CI —
+    push-recursion suppression on the bot's token"*, and told the reader to close
+    and reopen the PR under their own auth. Measured on `fpga-board-sim` #451: the
+    timeline has `head_ref_force_pushed` by `dependabot[bot]` at 2026-10-07T17:57:10Z,
+    and run 37663065692 (`CI`, event `pull_request`) was created on the new head at
+    17:57:15Z and succeeded. The suppression is GitHub's rule for pushes made with a
+    workflow's own `GITHUB_TOKEN`, and Dependabot pushes as an app. The trap sent a
+    read-only audit toward closing a PR to cure something that had not happened."""
+
+    def test_phase_6_does_not_say_a_bot_rebase_skips_ci(self) -> None:
+        flat = self.flat(6)
+        self.assertNotIn("does not re-trigger ci", flat)
+        self.assertNotIn("push-recursion", flat)

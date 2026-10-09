@@ -28,10 +28,18 @@ whole wheel. ruff 0.16.8's 17 wheels are 175 MB, and their SBOMs read in 4 s.
 Every shipped component is queried in OSV by its purl, at three versions: the
 current pin, the proposed one, and the registry's latest. An advisory is then:
 
-  fixed by this PR      shipped at the current pin, not at the proposed one
-  fixed above this PR   shipped at the proposed pin, not at the latest
-  introduced            shipped at the proposed pin, not at the current one
-  standing              shipped at all of them
+  fixed by this PR          shipped at the current pin, not at the proposed one
+  fixed above this PR       shipped at the proposed pin, not at the latest
+  introduced by this PR     shipped at the proposed pin, not at the current one
+  introduced above this PR  shipped at the latest, not at the proposed pin
+  standing                  shipped at all of them
+
+and under each one is the row of Phase 7's table that place selects (#196): a Hold
+for what this PR introduces, a follow-up for what the latest fixes, and not a Hold
+on this bump for the rest. Until 0.60.0 the table read "a vulnerability in a version
+being adopted" as a Hold, so a standing advisory -- ruff ships crossbeam-epoch
+0.9.18 in every wheel at 0.16.5, 0.16.9 and 0.16.10 -- matched it on every ruff
+bump, and two live audits reached merge only by arguing past it.
 
 A wheel with no SBOM is `underivable`, never clean: PEP 770 is recent, and
 pydantic-core 2.41.5 carries none in any of its 120 wheels. A pure-Python wheel
@@ -48,7 +56,8 @@ Exit status: 0 = no advisory on anything these wheels ship, and every compiled
 wheel read carried an SBOM. 1 = an advisory -- fixed, introduced or standing -- or
 a shipped set that could not be read: a compiled wheel's, a release with no wheel,
 or a release the registry would not serve. The output says which, per package and
-per wheel. 2 = could not run.
+per wheel, and the RESULT line counts the verdicts the rows select. 2 = could not
+run.
 
 Requires Python 3.11+ (tomllib), `git` for `--ref`, and the network: PyPI and OSV.
 """
@@ -57,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import itertools
 import json
 import re
 import subprocess
@@ -355,39 +365,127 @@ def describe(advisory_id: str) -> dict[str, str]:
 # --- the answer ----------------------------------------------------------------------
 
 
+# The places `classify()` puts an advisory, and the verdicts they select. Phase 7's
+# table names each place, and the suite holds the table to `verdict()`: a table
+# written apart from the script is how row 2 came to Hold on a standing advisory
+# that two live audits had to argue their way past (#196).
+INTRODUCED, FIXED_BY, FIXED_ABOVE = (
+    "introduced by this PR",
+    "fixed by this PR",
+    "fixed above this PR",
+)
+INTRODUCED_ABOVE, STANDING, UNDERIVABLE = "introduced above this PR", "standing", "underivable"
+HOLD, FOLLOW_UP, NOT_A_HOLD = "Hold", "follow-up", "not a Hold on this bump"
+
+
 def classify(present: dict[str, bool | None]) -> str:
     """Where an advisory stands across the versions read. `None` is a release whose
-    shipped set was not read in full, so it neither ships nor clears anything."""
-    cur, pro, lat = present.get("current"), present.get("proposed"), present.get("latest")
+    shipped set was not read in full, so it neither ships nor clears anything.
+
+    **No current pin is not an unread one.** A package the PR adds has no `current`
+    at all, so it ships nothing there, and whatever the proposal ships, this PR
+    introduces. 0.59.0 read the missing key as `None` and said `current pin unread`,
+    which the table that names each place would read as underivable, not as the Hold
+    it is."""
+    cur = present.get("current", False)
+    pro, lat = present.get("proposed"), present.get("latest")
     if pro is None:
-        return "underivable at the proposed pin" + (", and the latest ships it" if lat else "")
+        return f"{UNDERIVABLE} at the proposed pin" + (", and the latest ships it" if lat else "")
     states = []
     if pro and cur is False:
-        states.append("introduced by this PR")
+        states.append(INTRODUCED)
     if not pro and cur:
-        states.append("fixed by this PR")
+        states.append(FIXED_BY)
     if pro and lat is False:
-        states.append("fixed above this PR")
+        states.append(FIXED_ABOVE)
     if not pro and lat:
-        states.append("introduced above this PR")
+        states.append(INTRODUCED_ABOVE)
     if pro and not states:
-        states.append("standing" if cur else "shipped at the proposed pin, current pin unread")
+        states.append(STANDING if cur else f"{UNDERIVABLE} at the current pin")
     return ", ".join(states) or "not shipped at the proposed pin"
+
+
+def verdict(present: dict[str, bool | None]) -> str:
+    """The verdict a fully read placement selects, first match as Phase 7 reads its
+    table: adopting an advisory is a Hold even when the latest clears it."""
+    cur = present.get("current", False)
+    pro, lat = present.get("proposed"), present.get("latest")
+    if pro and cur is False:
+        return HOLD
+    if pro and lat is False:
+        return FOLLOW_UP
+    return NOT_A_HOLD
+
+
+def _kinds(present: dict[str, bool | None]) -> set[str]:
+    """The verdicts this placement could select, with each unread release tried both
+    ways. More than one means what was not read decides the verdict: that is what
+    makes an underivable input decisive. One means it decides nothing."""
+    unknown = [k for k, v in present.items() if v is None]
+    return {
+        verdict({**present, **dict(zip(unknown, guess, strict=True))})
+        for guess in itertools.product((True, False), repeat=len(unknown))
+    }
+
+
+def selects(present: dict[str, bool | None]) -> str:
+    """The verdict `row()` gives: an undecided placement is not a Hold on this bump."""
+    kinds = _kinds(present)
+    return kinds.pop() if len(kinds) == 1 else NOT_A_HOLD
+
+
+def row(present: dict[str, bool | None], latest: str = "") -> str:
+    """The row of Phase 7's table this advisory selects, the label first, as
+    `currency.py` names its own."""
+    unknown = [k for k, v in present.items() if v is None]
+    kinds = _kinds(present)
+    if len(kinds) > 1:
+        return (
+            f'"{UNDERIVABLE}" -> {NOT_A_HOLD}, but which way it points decides the verdict: '
+            "confidence low"
+        )
+    kind = kinds.pop()
+    cur = present.get("current", False)
+    pro, lat = present.get("proposed"), present.get("latest")
+    if kind == HOLD:
+        return f'"{INTRODUCED}" -> Hold' + (f"; {latest} does not ship it" if lat is False else "")
+    if kind == FOLLOW_UP:
+        return f'"{FIXED_ABOVE}" -> merge as-is, then follow up to {latest}'
+    if unknown:
+        return f'"{UNDERIVABLE}" -> {NOT_A_HOLD}, whichever way it points'
+    if not pro and lat:
+        return (
+            f'"{INTRODUCED_ABOVE}" -> {NOT_A_HOLD}; name no follow-up target that ships it, '
+            f"and {latest} does"
+        )
+    if pro and cur:
+        return f'"{STANDING}" -> {NOT_A_HOLD}: the current pin ships it too'
+    return f'"{FIXED_BY}" -> not a Hold: this PR removes it'
+
+
+# A shipped set nobody could read points at no advisory, so no finding turns on it.
+# That is a gap in coverage, which Phase 7's confidence table caps at medium.
+UNREAD_ROW = (
+    f'  row: "{UNDERIVABLE}" -> {NOT_A_HOLD}; a shipped set that was not read caps '
+    "confidence at medium"
+)
 
 
 def audit(
     name: str, versions: dict[str, str], wheels: dict[str, list[tuple[str, str, int]]]
-) -> int:
+) -> tuple[int, list[str]]:
     """Print one package's rows. Returns the number of findings (advisories that are
-    not `unmaintained`, plus unread or SBOM-less wheels)."""
+    not `unmaintained`, plus unread or SBOM-less wheels), and the verdict each
+    advisory's row selects."""
     shown = " -> ".join(f"{versions[k]}" for k in ("current", "proposed") if versions.get(k))
     latest = versions.get("latest")
     print(f"\n{name} {shown}" + (f" (latest {latest})" if latest else ""))
     releases = {label: read_release(wheels[label]) for label in versions}
     if not any(r["wheels"] for r in releases.values()):
         print("  pure Python at every version read: no wheel vendors anything")
-        return 0
+        return 0, []
     findings = 0
+    selected: list[str] = []
     for label, release in releases.items():
         print(
             f"  {label} {versions[label]}: {len(release['wheels'])} compiled wheel(s), "
@@ -410,6 +508,7 @@ def audit(
         for line in release["unread"]:
             print(f"    UNDERIVABLE  {line}")
             findings += 1
+    unread = findings
     purls = sorted({p for r in releases.values() for p in r["by_purl"]})
     by_purl = osv_ids(purls)
     advisories: dict[str, list[str]] = {}
@@ -443,11 +542,15 @@ def audit(
                 now = sorted({v for p, (n, v) in release["names"].items() if n == crate}, key=_key)
                 where = f", ships {crate} {', '.join(now)}" if now else f", no {crate}"
                 print(f"{at} not shipped{where}")
+        print(f"    row: {row(present, latest or '')}")
+        selected.append(selects(present))
     if noted:
         print(f"  unmaintained, noted and not a finding: {'; '.join(noted)}")
     if not advisories:
         print("  no OSV advisory on any component shipped at any version read")
-    return findings
+    if unread:
+        print(UNREAD_ROW)
+    return findings, selected
 
 
 def releases_name(releases: dict[str, Any], purl: str) -> tuple[str, str]:
@@ -481,6 +584,7 @@ def main() -> int:
 
     findings = 0
     read = 0
+    selected: list[str] = []
     for target in targets:
         name = target["name"]
         try:
@@ -509,14 +613,18 @@ def main() -> int:
                     f"\n{name} {target['proposed']}: UNDERIVABLE -- no wheel on PyPI, so it "
                     "is built from source at install, and its build decides what it ships"
                 )
+                print(UNREAD_ROW)
                 findings += 1
                 continue
             if not any(compiled(w[0]) for w in wheels["proposed"]):
                 continue
             read += 1
-            findings += audit(name, versions, wheels)
+            found, chosen = audit(name, versions, wheels)
+            findings += found
+            selected += chosen
         except Unreadable as exc:
             print(f"\n{name}: UNDERIVABLE -- {exc}")
+            print(UNREAD_ROW)
             findings += 1
 
     print()
@@ -532,8 +640,9 @@ def main() -> int:
         print(f"RESULT: CLEAN -- no advisory on anything {read} compiled package(s) ship.")
         return 0
     print(
-        f"RESULT: FOUND -- {findings} row(s) above across {len(targets)} moved package(s): "
-        "each advisory says whether this PR fixes it, introduces it, or leaves it, and "
+        f"RESULT: FOUND -- {findings} row(s) above across {len(targets)} moved package(s). "
+        f"The advisories' rows select: {selected.count(HOLD)} Hold, "
+        f"{selected.count(FOLLOW_UP)} follow-up, {selected.count(NOT_A_HOLD)} {NOT_A_HOLD}; "
         "each UNDERIVABLE row says what could not be read."
     )
     return 1

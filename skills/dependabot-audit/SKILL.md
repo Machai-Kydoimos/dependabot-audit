@@ -1432,9 +1432,9 @@ the reader is owed the difference: the first names a cause, the second names a
 commit and an action. Phase 7's table has a row for each, and the second is
 **Hold, pending a re-run**.
 
-**Three CI-state traps the script does not cover**, because each is about what
-the answer *covers* rather than how to read it. Two are about it covering another
-commit; the third is about it covering fewer jobs than it looks like:
+**Two CI-state traps the script does not cover**, because each is about what the
+answer *covers* rather than how to read it. One is about it covering another
+commit; the other is about it covering fewer jobs than it looks like:
 
 - **A merge state can read `CLEAN` on stale checks.** Right after a push the API
   can serve the *previous* commit's results. Gate on a run reporting for the
@@ -1443,9 +1443,6 @@ commit; the third is about it covering fewer jobs than it looks like:
   having succeeded.** Only the latest run counts, a duplicate event can cancel an
   earlier one, and `cancelled` is not `failure` — but the gap that actually opens
   is `skipped`, and `exercised.py` above is what reads it, job and step.
-- **A bot's own rebase does not re-trigger CI** — push-recursion suppression on
-  the bot's token. So a green you are reading may belong to the commit before the
-  rebase. Close and reopen under your own auth, or ask the bot to recreate.
 
 ## Phase 7 — Report
 
@@ -1608,10 +1605,12 @@ there by exhaustion is indistinguishable in the report from no finding at all.
 | Evidence | Verdict |
 |---|---|
 | Phase 1's gate fired — scope, a provenance discrepancy, or `PUBLISHER CHANGED` | **Hold** |
-| OSV or GHSA reports a vulnerability in a version being **adopted** | **Hold** |
+| An advisory **introduced by this PR**: the proposal carries it and the current pin does not | **Hold.** Merging is what adopts it |
+| An advisory **standing** (the current pin carries it too), **fixed by this PR**, **introduced above this PR** or **underivable** | **Not a Hold on this bump.** Report it as its row words it |
 | A `Security` entry or a destructive-fix bug in the gap, and the bump moves **into** it — the version being adopted is affected where the **current pin** is not | **Hold.** Merging is what increases exposure here; take the fixed version instead |
 | A `Security` entry or a destructive-fix bug in the gap, **and this repo exercises the affected path** — cooldown notwithstanding | **Merge as-is, then follow up at once.** The bump is still an improvement; the urgency is the follow-up's |
 | A `Security` entry or a destructive-fix bug in the gap, **inert here** — cooldown notwithstanding | **Merge as-is, then follow up** on the merits. The evidence is real and the exposure is not |
+| An advisory **fixed above this PR**: the latest no longer carries it — cooldown notwithstanding | **Merge as-is, then follow up** to the release its row names, at once where this repo exercises the affected path |
 | Actions: the tag rolled **behind** the proposed SHA | **Hold.** Close the bot's PR and replace it by hand; a bot cannot express a downgrade |
 | Phase 4: base differs, PR differs — the change is real and unabsorbed | **Hold** |
 | Phase 5: the frozen install failed, or a repo gate failed | **Hold** |
@@ -1656,23 +1655,11 @@ release that regressed, which settles it against the pin with nothing run; and
 otherwise the ecosystem's Phase 4 runs the fix's reproducer at the current,
 proposed and fixed versions (`references/uv-lock.md` § Phase 4). **Where Phase 4
 did not run** — `--no-execute`, `$MAY_EXECUTE=no`, or an ecosystem that cannot
-run the tool — the answer is **underivable**, and it takes neither the Hold row
-nor the follow-up row by default. It is not decided here, because deciding it
-means running the code under audit, and this phase runs under `--no-execute`.
-**The fixed version is the target either way**: both rows end there and differ
-only in whether this PR merges first, and `changelog.py --gap` names it.
-
-Where an advisory exists the answer is stronger and mechanical: run `audit.py`
-against the **base branch's** lockfile as well as the PR's, and compare the two
-vulnerability sets. A finding present in the PR's and absent from the base's is
-exactly this row; the reverse is the ordinary direction, and an identical pair
-means the bump neither helps nor harms on that axis.
-
-**The ordinary direction is *out of*, and that is why Hold reads wrong here.** A
-changelog gap is newer than the pin by definition, so a fix in it is a fix the
-repo does not yet have. Reaching for Hold on a `Security` heading without asking
-which way the entry points is how the cautious-looking answer becomes the one
-that leaves the repo on the affected version.
+run the tool — the answer is **underivable**. It is not decided here, because
+deciding it means running the code under audit. The Hold row's input was never
+established, so the verdict is the follow-up row's, and confidence is **low**:
+that input could make it a Hold. **The fixed version is the target either
+way**, since both rows end there, and `changelog.py --gap` names it.
 
 **The cooldown decides Hold-versus-follow-up. It never decides whether to look.**
 The wait exempts Dependabot's *security updates* — the advisory-driven kind — and
@@ -1739,6 +1726,11 @@ which the three-state rule has already recorded per row:
 no verdict rule reads does not lower confidence, and saying it does trains the
 reader to discount the field. Conversely a single underivable input that would
 flip the recommendation caps it at **low** however green everything else is.
+
+**Take the lowest row that applies.** An input is **decisive** when a finding in
+hand turns on it: an advisory whose row says so, a fix above the proposal whose
+start is unknown, a red check nothing attributed. A source that read nothing and
+points at nothing, such as a wheel with no SBOM, is not decisive: **medium**.
 
 If the user asked for `--comment`, print the report and offer to post it; posting
 is a separate, explicitly requested action.

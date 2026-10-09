@@ -11,6 +11,161 @@ patch.
 
 ## [Unreleased]
 
+## [0.60.0] — 2026-10-09
+
+This version makes Phase 7 read which way an advisory points, from what the scripts
+already know, instead of leaving the run to argue past a row. It is ordered by
+`fpga-board-sim`, this plugin's primary user. ruff ships crossbeam-epoch 0.9.18
+(RUSTSEC-2026-0204) in every wheel at 0.16.5, 0.16.9 and 0.16.10, and ruff is in 15
+of that repo's 19 `uv` PRs. Row 2 held on *"a vulnerability in a version being
+adopted"*, which that standing advisory matches on every ruff bump. Both live audits
+that met it reached merge only by reading a later paragraph as governing: this
+repo's #193 on 2026-10-01, and `fpga-board-sim` #451 on 2026-10-07, whose report
+said *"Read literally, … means hold."*
+
+Replayed twice each on this version, #451 and #438 give the same verdict row,
+follow-up target and confidence from both runs, and no run argues with the table.
+#438 got there with the last fix below. `SKILL.md` goes from 120,447 to 120,242
+bytes, and the references from 132,140 to 132,092.
+
+### An advisory says which way it points, and Phase 7 reads that (#196)
+
+`vendored.py` placed each crate advisory: fixed by this PR, fixed above it,
+introduced by it, introduced above it, standing, or underivable. Nothing said what a
+place does to the verdict, and `SKILL.md` never named the script. `audit.py`'s OSV
+hits covered the PR's lockfile only, and Phase 7 asked the run to repeat the query
+against the base's lockfile and compare the sets by hand. `pipaudit.py` tagged a hit
+`<- a version this PR introduces`, which says the PR brought the version, not the
+advisory.
+
+Each source now prints, under every advisory, the row of Phase 7's table its place
+selects, as `currency.py` does for a gap:
+- **`vendored.py`** maps its places through one function, and its RESULT line
+  counts what the rows select.
+- **`audit.py`** asks OSV about each moved package at its base pins and its latest
+  too. A pin the PR left alone stands, and a package the PR adds introduces what it
+  carries. It lists what the bump sheds, and what the latest carries that the
+  proposal does not. For requests 2.31.0 → 2.32.4, with OSV's answer recorded
+  2026-10-07: two advisories are fixed by the PR, and GHSA-gc5v-m9x4-r6x2 is fixed
+  above it, so the row is a follow-up to 2.34.2. Row 2 had held that bump.
+- **`pipaudit.py`** looks up a hit on a version the PR introduces in PyPI's
+  per-version advisories, the data `pip-audit` reads, by id and alias.
+
+An advisory is standing only where every base pin carries it, because holding keeps a
+fork that does not. An unread release is tried both ways. Where the answers differ,
+the row says it decides the verdict and confidence is low. A shipped set nobody could
+read, such as mypy's and librt's SBOM-less wheels, caps confidence at medium.
+
+**A defect in `classify()` became verdict-bearing with this, and is fixed with it.**
+`main()` drops `current` for a package the base never pinned, and `classify()` read
+the missing key as unread: `shipped at the proposed pin, current pin unread`. Under
+the new table that is underivable, not a Hold, so an advisory in a newly added
+package would have merged.
+
+The table: row 2 becomes *introduced by this PR → Hold*; a reporting row takes
+standing, fixed by this PR, introduced above this PR and underivable as *not a Hold
+on this bump*; and *fixed above this PR → merge as-is, then follow up* sits with the
+`Security`-entry rows, as the stated precedence ranks OSV and GHSA. Two paragraphs
+the rows now carry came out. The prose suite runs `classify()` over every placement
+and requires a row naming each label with the verdict `verdict()` gives.
+`pre-commit.md`'s OSV one-liner now asks about the current pin too.
+
+### A bot's own rebase is not said to skip CI (#197)
+
+Phase 6 said *"A bot's own rebase does not re-trigger CI"*, and told the reader to
+close and reopen the PR under their own auth. On #451 Dependabot force-pushed at
+2026-10-07T17:57:10Z, and run 37663065692 (`CI`, `pull_request`) was created on the
+new head at 17:57:15Z and succeeded. The suppression is GitHub's rule for pushes made
+with a workflow's own `GITHUB_TOKEN`. The line is gone, and a guard keeps it out.
+
+### Confidence takes the lowest row that applies (#190, #197)
+
+Four #438 replays on 0.59.0 split two low and two medium on one open question, which
+fit the `--no-execute` row and the decisive-underivable row at once. The lowest row
+that applies now wins. **Decisive** is defined where confidence is: a finding in hand
+turns on the input. A source that read nothing and points at nothing, such as a wheel
+with no SBOM, is not, and caps confidence at medium.
+
+`report-template.md` restated the table and had drifted from it. It gave medium
+*"when something underivable sits outside the verdict's path"*, where `SKILL.md` says
+such a row *"does not lower confidence"*. It now states the rule in the table's own
+terms.
+
+### A feature release headed x.y is read for x.y.0 (#197)
+
+`changelog.py` compared version strings. PyPI's mypy 2.4.0 is `## Mypy 2.4`, and
+mypy publishes no GitHub releases, so rung 2 read only that heading, missed it, and
+#451's audit printed `0 section(s)` beside the 285-line section that names the
+release's behaviour changes. A heading equal but for trailing zeros now answers when
+none is exact. A section found that way leaves out a later patch nested in it, since
+mypy writes `### Mypy 2.3.1` inside `## Mypy 2.3`. Bare numbers and pre-releases
+never match. Run on mypy 2.3.1 → 2.4.0, rung 2 finds the section and the unreconciled
+commits fall from 114 to 82.
+
+The unit test that had passed asked for `"2.3"`, which is how its docstring read the
+heading, and not how the script is ever called. Its fixture claimed mypy writes per
+minor release only. The new fixture is mypy's own file at v2.4.0, excerpted.
+
+### A fix above the proposal whose start is unknown is followed up
+
+#190's acceptance test replays #438 twice. On this version both runs gave low
+confidence and named the same decisive input: whether a rumdl `--fix` bug fixed in
+0.2.74–0.2.78 began in 0.2.73. They split on the follow-up instead: the first named
+ruff 0.16.10 alone, and the second ruff 0.16.10 and rumdl 0.2.78. The first said
+rumdl's question *"goes to neither Hold nor follow-up by default"*, which is Phase
+7's *"it takes neither the Hold row nor the follow-up row by default"*, and took
+*fixed above this PR* as the first row to match. `changelog.py --gap` had printed
+*"The follow-up's target is 0.2.78"* in that same run.
+
+0.59.0's first pair split the same way. 0.59.0 added that print, and a sentence
+beside this one saying *"the fixed version is the target either way"*, and left the
+sentence itself in place. It is now gone. The Hold row's input was never
+established, so the first row that matches is the follow-up row, and the fixed
+version is its target.
+
+The first replay of that wording named both targets and gave medium: the open
+question *"doesn't change the outcome. Both possible table rows end at the same
+target"*. The paragraph and the print had both said the rows *"differ only in
+whether this PR merges first"*. That difference is the verdict, and both now say so;
+the paragraph gives confidence low, because the input could make it a Hold.
+`SKILL.md` comes out 9 bytes lighter, and the guards refuse both phrasings.
+
+### The replays
+
+Each ran from a fresh clone planted at the PR's base, with `claude -p --plugin-dir`
+on this branch, a denylist over every mutating `gh` and `git` command, a $5 cap, and
+its own `TMPDIR`, so the real audits' evidence in `/tmp` stayed as it was. Every run
+was `--no-execute`, and none had a permission denied. The column says which wording
+of Phase 7's paragraph on a fix above the proposal each one read:
+
+| Run | Paragraph | Verdict | Follow-up target | Confidence | Turns | Cost |
+|---|---|---|---|---|---|---|
+| #451, 1 | 0.59.0's | merge as-is | none | medium | 17 | $1.43 |
+| #451, 2 | 0.59.0's | merge as-is | none | medium | 16 | $1.52 |
+| #193 | 0.59.0's | merge as-is | none | medium | 12 | $1.05 |
+| #438, 1 | 0.59.0's | merge, then follow up | ruff 0.16.10 | low | 15 | $1.49 |
+| #438, 2 | 0.59.0's | merge, then follow up | ruff 0.16.10 and rumdl 0.2.78 | low | 16 | $1.55 |
+| #438, 3 | first rewording | merge, then follow up at once | ruff 0.16.10 and rumdl 0.2.78 | medium | 14 | $1.55 |
+| #438, 4 | final | merge, then follow up | ruff 0.16.10 and rumdl 0.2.78 | low | 15 | $1.52 |
+| #438, 5 | final | merge, then follow up | ruff 0.16.10 and rumdl 0.2.78 | low | 15 | $1.61 |
+
+The #451 and #193 runs never reached that paragraph: none of their transcripts has
+a `--gap` range or an `IN THE GAP` print. Both final #438 runs passed `--gap`,
+received *"Whether this PR merges first is the verdict"*, and named the same decisive
+input: whether 0.2.73 introduced a bug that 0.2.74–0.2.78 fix. Neither headline says
+*at once*, and both call the rumdl follow-up urgent, since the repo runs its `--fix`
+hook on every Markdown commit. One more launch, between the last two, was cut off by
+the account's session limit after 2 turns ($0.59) and repeated from a fresh clone.
+The #438 runs cost $8.32 with it, and all of them $12.31.
+
+Both #451 runs read the two crate advisories as standing, *"not a Hold on this
+bump"*, and the mypy and librt rows as underivable, and both gave the same two
+reasons for medium. Both read mypy 2.4's section from rung 2. #193 read salsa's
+RUSTSEC-2026-0308 as fixed by this PR and crossbeam-epoch as standing. The transcripts
+show `vendored.py`'s rows printed as written. One run's `verify_run.py` flagged a
+workflow read as a gate run. That rule's false positive predates this version and is
+filed as #198, with three observations the runs repeated.
+
 ## [0.59.0] — 2026-09-30
 
 This version moves the follow-up's inputs out of the run's judgement and into the
@@ -7467,7 +7622,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.59.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.60.0...HEAD
+[0.60.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.56.0...v0.57.0

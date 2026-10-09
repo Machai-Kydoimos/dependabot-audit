@@ -8,7 +8,10 @@ Three checks, no judgment:
               yanked)
   currency    the registry's actual latest version and the gap to it, dated by
               first upload (Phase 2's currency.py dates them as the bot does)
-  vulns       an OSV batch query across every PyPI-sourced package in the lock
+  vulns       an OSV batch query across every PyPI-sourced package in the lock;
+              each package the PR moves is also asked about at its base pins and
+              the latest, so each advisory says which way it points and which row
+              of Phase 7's table it selects (#196)
 
 Usage:
     audit.py <uv.lock> [--changed pkg[,pkg...] | --changed-vs <baseline.lock>] [--json]
@@ -43,6 +46,10 @@ import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from typing import Any, NoReturn
+
+# Where an advisory stands, and the row of Phase 7's table that selects: one place
+# for both, so this script and vendored.py cannot place the same advisory apart.
+import vendored
 
 # The Simple API's JSON form (PEP 691/700/714), not the legacy
 # /pypi/<name>/json. The legacy endpoint's `releases` key is its undocumented,
@@ -920,9 +927,9 @@ def _osv_ids(query: dict[str, Any], result: dict[str, Any]) -> tuple[list[str], 
     return ids, bool(token)
 
 
-def check_vulns(packages: list[dict[str, Any]]) -> dict[str, Any]:
-    pkgs = [(p["name"], p["version"]) for p in packages]
-    queries = [{"package": {"name": n, "ecosystem": "PyPI"}, "version": v} for n, v in pkgs]
+def _osv_answers(pins: list[tuple[str, str]]) -> dict[tuple[str, str], tuple[list[str], bool]]:
+    """OSV's ids for each (name, version), and whether the page cap cut them short."""
+    queries = [{"package": {"name": n, "ecosystem": "PyPI"}, "version": v} for n, v in pins]
 
     # OSV rejects a batch over the limit with a 400 (measured: 1000 ok, 1001 not).
     # Unchunked, a lockfile large enough to trip it loses the vulnerability phase
@@ -932,15 +939,122 @@ def check_vulns(packages: list[dict[str, Any]]) -> dict[str, Any]:
         chunk = queries[start : start + OSV_BATCH_LIMIT]
         results += _get_json(OSV_BATCH, json.dumps({"queries": chunk}).encode())["results"]
 
-    hits = []
+    answers: dict[tuple[str, str], tuple[list[str], bool]] = {}
     # strict=True catches a chunk that came back short, which is the failure this
     # pairing has to be protected from: the ids would silently shift packages.
-    for (name, version), query, result in zip(pkgs, queries, results, strict=True):
-        if not result.get("vulns"):
+    for pin, query, result in zip(pins, queries, results, strict=True):
+        answers[pin] = _osv_ids(query, result) if result.get("vulns") else ([], False)
+    return answers
+
+
+def check_vulns(
+    packages: list[dict[str, Any]],
+    moved: dict[str, list[str] | None] | None = None,
+    latest: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """OSV over every pin in the lockfile, and which way each advisory points.
+
+    Phase 7 read "a vulnerability in a version being adopted" as a Hold (#196), so an
+    advisory the current pin already carries held the bump, and comparing against
+    the base was a second run by hand. `moved` maps each package the PR moves, by
+    normalised name, to the versions the base pins it at: empty for a package the PR
+    adds, None where the base is unknown (`--changed`). A pin outside it is one the
+    base pins too. `latest` is the registry's latest per package. Each moved package
+    is asked about at its base pins and its latest as well, and every advisory is
+    placed as `vendored.py` places a crate's, with the row it selects.
+
+    **Standing means every base pin carries it.** Holding keeps a fork that does not
+    on its version, and merging moves it onto one that does, so for that environment
+    this PR introduces the advisory.
+    """
+    moved = moved or {}
+    latest = latest or {}
+    pins = [(p["name"], p["version"]) for p in packages]
+    answers = _osv_answers(pins)
+    asked: set[tuple[str, str]] = set()
+    for name, version in pins:
+        key = _normalize(name)
+        if key not in moved:
             continue
-        ids, truncated = _osv_ids(query, result)
-        hits.append({"name": name, "version": version, "ids": ids, "truncated": truncated})
-    return {"queried": len(pkgs), "hits": hits}
+        asked.update((name, v) for v in moved[key] or [])
+        top = latest.get(key)
+        if top and _version_key(top) > _version_key(version):
+            asked.add((name, top))
+    answers.update(_osv_answers(sorted(asked - set(answers))))
+
+    def carries(name: str, version: str, advisory: str) -> bool | None:
+        ids, truncated = answers.get((name, version), ([], False))
+        return True if advisory in ids else (None if truncated else False)
+
+    def place(name: str, version: str, advisory: str) -> dict[str, bool | None]:
+        key = _normalize(name)
+        before = moved.get(key, [version])
+        present: dict[str, bool | None] = {"proposed": True}
+        if before is None:
+            present["current"] = None
+        elif version in before:
+            present["current"] = True
+        elif before:
+            each = [carries(name, v, advisory) for v in before]
+            present["current"] = False if False in each else (None if None in each else True)
+        top = latest.get(key)
+        if key in moved and top and _version_key(top) > _version_key(version):
+            present["latest"] = carries(name, top, advisory)
+        return present
+
+    hits = []
+    for name, version in pins:
+        ids, truncated = answers[(name, version)]
+        if not ids:
+            continue
+        rows: dict[str, tuple[str, list[str]]] = {}
+        for advisory in ids:
+            present = place(name, version, advisory)
+            text = vendored.row(present, latest.get(_normalize(name), ""))
+            rows.setdefault(text, (vendored.selects(present), []))[1].append(advisory)
+        hits.append(
+            {
+                "name": name,
+                "version": version,
+                "ids": ids,
+                "truncated": truncated,
+                "rows": [{"row": t, "selects": s, "ids": i} for t, (s, i) in rows.items()],
+            }
+        )
+
+    # What the moved packages shed, and what their latest carries that they do not:
+    # the first strengthens the merge, the second bars a follow-up target.
+    fixed, above = [], []
+    for key, before in moved.items():
+        now = sorted({v for n, v in pins if _normalize(n) == key}, key=_version_key)
+        if not now:
+            continue
+        name = next(n for n, _ in pins if _normalize(n) == key)
+        after = {i for v in now for i in answers[(name, v)][0]}
+        if before:
+            gone = sorted(
+                {i for v in before for i in answers.get((name, v), ([], False))[0]} - after
+            )
+            if gone:
+                fixed.append(
+                    {"name": name, "was": ", ".join(before), "now": ", ".join(now), "ids": gone}
+                )
+        top = latest.get(key)
+        if top and _version_key(top) > _version_key(now[-1]):
+            new = sorted(set(answers.get((name, top), ([], False))[0]) - after)
+            if new:
+                only_above: dict[str, bool | None] = {"proposed": False, "latest": True}
+                above.append(
+                    {
+                        "name": name,
+                        "latest": top,
+                        "now": now[-1],
+                        "ids": new,
+                        "row": vendored.row(only_above, top),
+                        "selects": vendored.selects(only_above),
+                    }
+                )
+    return {"queried": len(pins), "hits": hits, "fixed": fixed, "above": above}
 
 
 def _state(value: bool | None) -> str:
@@ -1109,13 +1223,41 @@ def render(report: dict[str, Any]) -> None:
             print("      Systems matching these tags lose a wheel. Reported, not a verdict.\n")
 
     vulns = report["vulns"]
+    selected: list[str] = []
+    for hit in vulns["hits"]:
+        more = "  (MORE NOT LISTED — OSV paging cap)" if hit.get("truncated") else ""
+        print(f"  VULN {hit['name']}=={hit['version']}: {', '.join(hit['ids'])}{more}")
+        rows = hit.get("rows") or []
+        for found in rows:
+            # One row per pin when its advisories agree, which is the usual case:
+            # OSV lists one flaw under its GHSA and its PYSEC id alike.
+            which = f" -- {', '.join(found['ids'])}" if len(rows) > 1 else ""
+            print(f"      row: {found['row']}{which}")
+            selected.append(found["selects"])
+    for gone in vulns.get("fixed") or []:
+        print(
+            f"  FIXED BY THIS PR  {gone['name']} {gone['was']} -> {gone['now']}: "
+            f"{', '.join(gone['ids'])}"
+        )
+    for bar in vulns.get("above") or []:
+        print(
+            f"  ABOVE THIS PR  {bar['name']} {bar['latest']} carries what {bar['now']} does "
+            f"not: {', '.join(bar['ids'])}"
+        )
+        print(f"      row: {bar['row']}")
+        selected.append(bar["selects"])
+    counts = (
+        f"; the rows select {selected.count(vendored.HOLD)} Hold, "
+        f"{selected.count(vendored.FOLLOW_UP)} follow-up, "
+        f"{selected.count(vendored.NOT_A_HOLD)} {vendored.NOT_A_HOLD}"
+    )
     if vulns["hits"]:
-        for hit in vulns["hits"]:
-            more = "  (MORE NOT LISTED — OSV paging cap)" if hit.get("truncated") else ""
-            print(f"  VULN {hit['name']}=={hit['version']}: {', '.join(hit['ids'])}{more}")
-        print(f"\nOSV: {len(vulns['hits'])} of {vulns['queried']} packages affected")
+        print(f"\nOSV: {len(vulns['hits'])} of {vulns['queried']} packages affected{counts}")
     else:
-        print(f"OSV: no known vulnerabilities across {vulns['queried']} packages")
+        print(
+            f"OSV: no known vulnerabilities across {vulns['queried']} packages"
+            + (counts if selected else "")
+        )
 
     # The counts ride in the verdict line so it cannot overstate itself: a
     # reader who skims to RESULT must see the size of the evidence behind it.
@@ -1301,8 +1443,20 @@ def main() -> int:
             # how an epoch release fell out of the gap in the first place.
             fail(f"cannot audit {entry['name']}: {exc}")
 
+    # Which way an advisory points needs what the base pinned, which only
+    # `--changed-vs` knows; under `--changed` the base is unknown, and says so.
+    moved: dict[str, list[str] | None] = {}
+    if args.changed_vs:
+        for change in selection:
+            if change["kind"] in ("version", "added"):
+                moved[_normalize(change["name"])] = (
+                    change["was"].split(", ") if change["kind"] == "version" else []
+                )
+    else:
+        moved = {_normalize(name): None for name in changed}
+    latest_of = {_normalize(c["name"]): c["latest"] for c in report["currency"]}
     try:
-        report["vulns"] = check_vulns(packages)
+        report["vulns"] = check_vulns(packages, moved, latest_of)
     except (OSError, json.JSONDecodeError) as exc:
         # Left unhandled this exits 1, which the contract reserves for findings —
         # an outage would read as "OSV reported a vulnerability".
