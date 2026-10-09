@@ -905,7 +905,7 @@ confident `inert here` that was never established:
 | The entry names | Why the config cannot answer it | What does |
 |---|---|---|
 | a **dependency** rather than a rule or a flag | it is not in this repo's config, and for a compiled wheel it is not even in this repo's *ecosystem* — a Rust crate inside a Python package, where the advisory lives on crates.io and every PyPI-side scanner is correctly clean | `references/uv-lock.md` § Phase 2 — read the shipped set out of the wheel's own SBOM. `references/actions.md` § Phase 2 for the tag-line question |
-| a rule this repo **disables**, or never enables | the claim is then about the config *file*, and the verdict is about the *tool*. Config is interpreted: another file can win, a key can be spelled for a different version, a section can go unread | run the gate three ways, not twice: with the config; without it **with that rule selected by name** — `ruff --isolated --select <RULE>`, `rumdl --no-config --enable <RULE>` — and once more with no rule named. `references/uv-lock.md` § Phase 2 has the table, and why the named run needs the fix's own input as a control before its silence means anything |
+| a rule this repo **disables**, or never enables | the claim is then about the config *file*, and the verdict is about the *tool*. Config is interpreted: another file can win, a key can be spelled for a different version, a section can go unread | run the tool under this config as it is and **with that rule selected by name**, on the tree or an input it fires on: `rulecheck.py`, in `references/uv-lock.md` § Phase 2 |
 | a **file type** or a **document shape** rather than a setting | there is no config key to grep for. `stop rewriting Rust source when formatting doc comments` is about `.rs` files, and `stop reading a lazy continuation as a setext underline` is about a blockquote followed by a setext underline — neither is a line any config could carry, and "no config line matches" reads as `inert here` | grep the **content** of the tree instead, below |
 
 **The third row is the one with no command in the table**, because its commands
@@ -978,39 +978,6 @@ measured on git 2.55.0, and shipped in this block until 0.46.0. End on
 Exposure is how many files carry the shape, and **zero is a finding like any
 other** — the same `inert here` the first two rows earn by running something,
 rather than by finding nothing to grep.
-
-That second row is Phase 6's rule one phase over. A red check does not carry a
-verdict until it is attributed; a config line does not carry `inert` until the
-tool has been run both ways. Measured on `rumdl` 0.2.59's destructive `MD013`
-fix, against a repo that runs `rumdl check --fix` on every Markdown commit:
-`rumdl check README.md` is clean, `rumdl check --no-config README.md` finds 32.
-The suppression is real — and one command is the difference between reporting
-that and asserting it.
-
-**Name the rule in the second run, because dropping the config only falls back
-to the tool's own defaults.** Those are not every rule. Where the config is an
-allow-list — `select = [...]`, which never enables the rule rather than
-disabling it — both runs are then silent and the row reads `inert here` off two
-runs that tested nothing. Measured on ruff 0.16.7 and 0.16.8 against a `select`
-list carrying no `N`: `ruff check --isolated t.py` passes, while
-`ruff check --isolated --select N802 t.py` reports the `N802` in it. Round
-twenty-four met this on #437, whose `select` has no `SIM`, and forced the rules
-on by hand (#139). **The named run has to fire before the difference means
-anything**: silent in both, the file never exercised the rule, which is
-`underivable` and not `inert here` — take the input from the fix's own test, as
-Phase 4's reproducer does.
-
-**And run that input as a control, because a silent named run and a broken one
-are the same output.** rumdl 0.2.74 takes a rule name it does not know, warns on
-stderr and reports `Success: No issues found` at exit `0`; ruff 0.16.8 refuses
-the same mistake at exit `2`. So the named run has to be shown firing on an input
-that carries the violation before its silence on this tree is evidence of
-anything — one more run of the command already written, against the fix's own
-test rather than the repo. **Then run it once more naming no rule**, which asks
-whether the rule is on by default: a newly added rule can be opt-in under a
-disable-list config, neither disabled nor live, and that is a third state the
-config cannot be read for. Both were improvised by round twenty-nine, which is
-how they got here (#148, #149).
 
 ## Phase 3 — Known vulnerabilities
 

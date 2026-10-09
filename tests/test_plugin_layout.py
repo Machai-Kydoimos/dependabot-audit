@@ -321,7 +321,10 @@ class TestTheCorpusIsFrozen(unittest.TestCase):
     # (#190), out of the 517 those took out. Then 9 bytes lighter: the sentence that
     # sent a fix above the proposal to neither row became one naming the follow-up
     # row as the verdict. Both numbers are the 0.60.0 corpus.
-    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 120_242, "references": 132_092}
+    # v0.61.0, 2026-10-09 — Phase 2's rule check moved into `rulecheck.py` (#181):
+    # `uv-lock.md`'s section (8,963 -> 1,522 bytes) and `SKILL.md`'s three paragraphs
+    # and table cell restating it. The script's docstring carries the traps.
+    BUDGET: ClassVar[dict[str, int]] = {"SKILL.md": 117_868, "references": 124_651}
 
     def test_the_skill_does_not_grow(self) -> None:
         size = (SKILLS / "SKILL.md").stat().st_size

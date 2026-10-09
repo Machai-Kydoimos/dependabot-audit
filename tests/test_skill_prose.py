@@ -4204,14 +4204,18 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
         )
 
     def test_a_disabled_rule_is_proven_by_running_the_tool_both_ways(self):
-        phase2 = self.material(2)
-        self.assertIn(
-            "--no-config",
-            phase2,
-            "an `inert here` resting on a config line is an assertion about the "
-            "file while the verdict is about the tool — the same gap Phase 6 "
-            "closed for a red check by attributing it",
-        )
+        """Since 0.61.0 the runs are `rulecheck.py`'s, so the flags are in the code
+        `reachable(2)` follows into, and the prose names the script."""
+        runs = self.reachable(2)
+        for flag in ("--no-config", "--isolated"):
+            self.assertIn(
+                flag,
+                runs,
+                "an `inert here` resting on a config line is an assertion about the "
+                "file while the verdict is about the tool — the same gap Phase 6 "
+                "closed for a red check by attributing it",
+            )
+        self.assertIn("rulecheck.py", self.material(2))
 
     def test_the_second_run_names_the_rule_rather_than_only_dropping_the_config(self):
         """Dropping the config falls back to the tool's own defaults, which are
@@ -4225,20 +4229,20 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
         Round twenty-four met it on #437, whose `select` has no `SIM`, and forced
         the rules on by hand (#139).
         """
-        phase2 = self.material(2)
+        runs = self.reachable(2)
         for flag in ("--select", "--enable"):
             self.assertIn(
                 flag,
-                phase2,
+                runs,
                 f"the second run has to name the rule ({flag}); without it an "
                 "allow-list config and a tool that never runs the rule are the "
                 "same silence",
             )
         self.assertRegex(
             self.flat(2),
-            r"silent[^.]{0,120}underivable",
-            "and two silent runs are `underivable` — the file never exercised the "
-            "rule — rather than the `inert here` they read as",
+            r"underivable[^.]{0,40}a control did not fire",
+            "and a control that never fired is `underivable` — the input never "
+            "exercised the rule — rather than the `inert here` it reads as",
         )
 
     def test_the_scope_row_covers_the_config_that_never_enables_the_rule(self):
@@ -4247,11 +4251,12 @@ class TestExposureIsEstablishedRatherThanAssumed(SkillHarness):
         without being named anywhere."""
         row = self._scope_table()[2]  # header, dependency, rule
         self.assertIn("never enables", row, "the row still covers only the disabling case")
-        self.assertRegex(
+        self.assertIn(
+            "with that rule selected by name",
             row,
-            r"--select|--enable",
             "and its method has to name the rule in the second run",
         )
+        self.assertIn("rulecheck.py", row, "and say what runs it")
 
     COUNTS: ClassVar[dict[str, int]] = {
         "one": 1,
@@ -5195,19 +5200,22 @@ class TestEveryBlockThatRunsTheCodeUnderAuditIsGated(unittest.TestCase):
     RUNS = re.compile(
         r"\buv (?:run|sync|pip)\b|gate_diff\.py|\bpre-commit (?:run|try-repo)\b"
         r"|\$PC (?:run|try-repo)\b|\bpytest\b|\buvx \S+@|\bnpm (?:ci|install)\b"
-        r"|/bin/python3? -c\b"
+        r"|/bin/python3? -c\b|\brulecheck\.py\b"
     )
     # Ten, measured: the `uv run`/`sync`/gate blocks, and two Phase 5 blocks that
     # read the environment -- counted because `uv pip list` runs installed `.pth`
     # code. The second of those was ungated until the widening found it.
     FLOOR = 10
     # The one execution form allowed outside Phases 4 and 5: the tool at the
-    # version the repo *already* runs, never the proposal, with `--no-project`
-    # so the audited project is never installed. `uv-lock.md` § Phase 2 uses it
-    # under `--no-execute` on purpose. Re-measured 2026-09-19 on uv 0.12.17: with
-    # `--no-project` a probe project's `setup.py` does not run and no `.venv`
-    # appears; without it, both happen.
-    LOCKED_TOOL = re.compile(r"^\s*uv run(?: -q)? --no-project --with \S+==<locked>\s")
+    # version the repo *already* runs, never the proposal, and never the project.
+    # Until 0.61.0 that was `uv run --no-project --with <tool>==<locked>` in
+    # `uv-lock.md` § Phase 2. Now it is `rulecheck.py`, which reads the pin from
+    # `uv.lock` at `--base`, so the call has to pass the merge base there: given the
+    # PR's ref, the PR would choose what runs. Read per command, continuations
+    # joined, because the call spans three lines and `--base` is on the second.
+    LOCKED_TOOL = re.compile(
+        r'^\s*python3 "\$\{SCRIPTS:\?[^}]*\}/rulecheck\.py"\s.*--base "\$BASE_SHA"(?:\s|$)'
+    )
 
     def _documents(self) -> list[tuple[str, str]]:
         docs = [("SKILL.md", SKILL.read_text(encoding="utf-8"))]
@@ -5251,7 +5259,7 @@ class TestEveryBlockThatRunsTheCodeUnderAuditIsGated(unittest.TestCase):
         for name, number, block in self._executing_blocks({0, 1, 2, 3, 6, 7, 8}):
             offending = [
                 line
-                for line in block.splitlines()
+                for line in re.sub(r"\\\n\s*", " ", block).splitlines()
                 if self.RUNS.search(line) and not self.LOCKED_TOOL.match(line)
             ]
             allowed += not offending
@@ -5271,16 +5279,19 @@ class TestEveryBlockThatRunsTheCodeUnderAuditIsGated(unittest.TestCase):
 
     def test_the_exception_does_not_stretch_to_the_proposal(self):
         """The exemption is for the version the repo already trusts. The same
-        line at `<proposed>` runs the code under audit."""
+        call with the PR's ref as `--base` reads the pin the PR chose."""
+        call = 'python3 "${SCRIPTS:?not in the handoff}/rulecheck.py" --scratch "$SCRATCH"'
         for line in (
-            "uv run --no-project --with ruff==<proposed> ruff check x.py",
-            "uv run --with ruff==<locked> ruff check x.py",
+            f'{call} --ref "pr-<N>" --base "pr-<N>" --tool ruff --check X=f',
+            f'{call} --ref "pr-<N>" --base "$HEAD_SHA" --tool ruff --check X=f',
+            f'{call} --ref "pr-<N>" --base "$BASE_SHA_PR" --tool ruff --check X=f',
+            "uv run --no-project --with ruff==<locked> ruff check x.py",
             "uv run ruff check x.py",
         ):
             with self.subTest(line=line):
                 self.assertIsNone(self.LOCKED_TOOL.match(line))
         self.assertIsNotNone(
-            self.LOCKED_TOOL.match("uv run --no-project --with <tool>==<locked> <tool> check f")
+            self.LOCKED_TOOL.match(f'{call} --ref "pr-<N>" --base "$BASE_SHA" --tool ruff')
         )
 
 
@@ -6979,71 +6990,68 @@ class TestPhase2ProvesTheInstrumentBeforeReadingItsSilence(SkillHarness):
     things produce that same nothing: a run that never fired, and a rule that was
     never on. Neither is visible in the exit code — and for rumdl, not in the exit
     code even when the rule name is wrong.
+
+    Since 0.61.0 the runs are `rulecheck.py`'s (#181), which reads the PR at its
+    ref so that `--no-execute` reaches them. What the prose carried as a table and
+    four traps is now the script's, tested in `tests/test_rulecheck.py`; what stays
+    here is the call, and what each exit means.
     """
 
     def test_the_control_is_a_command_not_an_instruction(self) -> None:
         """#127's class: a measurement whose failure mode is silence, asked for
-        in prose with nothing to run."""
+        in prose with nothing to run. Since 0.61.0 the call takes the rule alone
+        and the script finds the control: the tree, or the tool's own page. An
+        input from the fix's own test was the cost the first replays declined."""
         runs = self.reachable(2)
-        self.assertIn("<the fix's own input>", runs)
+        self.assertIn("--check <RULE> --check <RULE>", runs)
+        self.assertIn("tool.examples(rule)", runs)
 
-    def test_the_default_state_run_names_no_rule(self) -> None:
-        """Run 3 differs from run 2 by an omission, so it is easy to write as a
-        duplicate of it and answer nothing.
-
-        The input is under `$SCRATCH` since 0.55.0, when the block moved into the
-        PR's worktree: a relative control file would land in the tree run 2 scans,
-        and its own violation would read as exposure."""
-        runs = self.reachable(2)
-        self.assertRegex(runs, r"<tool> check <no-config> \"\$SCRATCH/<the fix's own input>\"")
-
-    def _uv_lock_phase_2(self) -> str:
-        """The reference's own § Phase 2, which is where the decision table is.
-
-        Asserting against `flat(2)` alone let a mutation deleting the third state
-        from the table pass, because SKILL.md's one-sentence version of the same
-        claim kept the phrase in the pooled material. The claim and the table it
-        is read off are two separate things to lose.
-        """
-        return next(s for name, s in self._handoffs(2) if name == "uv-lock.md").lower()
-
-    def test_the_third_state_is_named(self) -> None:
-        self.assertIn("opt-in under a disable-list", self.flat(2))
-        self.assertIn("opt-in under a disable-list", self._uv_lock_phase_2())
-
-    def test_silence_at_exit_zero_is_shown_to_be_a_real_output(self) -> None:
-        """rumdl takes a rule name it does not know and reports success."""
-        flat = self.flat(2)
-        self.assertIn("unknown rule in --enable", flat)
-        self.assertIn("unknown rule selector", flat)
-
-    def test_the_family_prefix_is_ruled_out_as_an_answer(self) -> None:
-        """The cheap wrong shortcut: assuming a rule's default state follows from
-        its linter group. Measured otherwise on one ruff version."""
-        flat = self.flat(2)
-        self.assertIn("n802", flat)
-        self.assertIn("sim117", flat)
+    def test_the_check_reads_the_pr_at_its_ref_and_the_pin_at_the_base(self) -> None:
+        """The prose ran in `$SCRATCH/pr-<N>`, which exists only where Phase 4 or 5
+        runs; and a pin read at the PR's ref would let the PR choose what runs."""
+        self.assertRegex(
+            self.material(2),
+            r'rulecheck\.py"?\s*\\?\s*--scratch "\$SCRATCH" --ref "pr-<N>" --base "\$BASE_SHA"',
+            "Phase 2 must name the ref it reads and the base whose pin it runs",
+        )
 
     def test_a_silent_control_is_underivable_not_inert(self) -> None:
         flat = self.flat(2)
-        self.assertIn("the **instrument**, not the tree", flat)
+        self.assertIn("**exit 0** is `inert here`, earned: the rule fired", flat)
+        self.assertIn("**exit 2** is `underivable`: a control did not fire", flat)
 
-    def test_the_file_count_comes_from_the_same_isolation(self) -> None:
-        """A count taken with the repo's config describes a different file set,
-        measured 3 against 4 — so it is evidence about another run.
+    # Each guard this class carried before 0.61.0, and the test that holds the
+    # same property against the script now.
+    RETIRED: ClassVar[dict[str, str]] = {
+        "the default-state run names no rule": "TestTheReading."
+        "test_this_config_not_running_it_is_inert_and_says_what_it_spares",
+        "the third state is named": "TestTheReading.test_this_config_running_it_over_a_clean_tree_is_live",
+        "silence at exit 0 is a real output": "TestTheControlMustFireFirst."
+        "test_a_rule_the_pinned_version_lacks_is_refused_by_name",
+        "the family prefix is no answer": "TestTheControlMustFireFirst."
+        "test_a_silent_control_is_underivable_however_quiet_the_tree",
+        "a silent control is the instrument": "TestTheControlMustFireFirst."
+        "test_without_preview_the_same_rule_reads_as_a_silent_control",
+        "the file count is the same run's": "TestTheFileCountIsTheToolsOwn."
+        "test_the_count_and_the_tree_runs_read_the_same_config",
+        "the control is not in the tree it scans": "TestSeveralRules."
+        "test_the_tree_runs_never_see_the_control",
+    }
 
-        Asserting the flag and the sentence separately is not enough: a command
-        that drops `--isolated` still contains `--show-files`, and the prose
-        saying it matters stays true while the supplied command stops doing it.
-        The flags have to be on one line.
-        """
-        counts = [ln for ln in self.reachable(2).splitlines() if "--show-files" in ln]
-        self.assertTrue(counts, "Phase 2 names a file count and supplies no command for it")
-        self.assertTrue(
-            all("--isolated" in ln for ln in counts),
-            f"a file count taken without --isolated describes a different run: {counts}",
-        )
-        self.assertIn("same isolation", self.flat(2))
+    def test_what_moved_into_the_script_is_still_tested_there(self) -> None:
+        """Read, not imported: `import test_rulecheck` resolves only where `tests/`
+        is on the path, and an import error is an ERROR, which a mutation runner
+        counting FAILs reads as the guard holding."""
+        source = (ROOT / "tests" / "test_rulecheck.py").read_text(encoding="utf-8")
+        held = {
+            f"{node.name}.{item.name}"
+            for node in ast.parse(source).body
+            if isinstance(node, ast.ClassDef)
+            for item in node.body
+            if isinstance(item, ast.FunctionDef)
+        }
+        for claim, name in self.RETIRED.items():
+            self.assertIn(name, held, f"{claim!r} left this file for {name}, which is gone")
 
 
 class TestAScriptsProseIsNotReadAsItsCode(SkillHarness):
