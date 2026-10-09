@@ -11,7 +11,7 @@ patch.
 
 ## [Unreleased]
 
-## [0.61.0] — 2026-10-09
+## [0.61.0] — 2026-10-10
 
 This version runs Phase 2's rule check where the audit could not reach it. When a
 changelog entry names a rule this repo disables or never enables, the claim rests on
