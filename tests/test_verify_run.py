@@ -272,6 +272,19 @@ class TestInertNeedsNamedRun(unittest.TestCase):
             fired(["ruff check --isolated --select N802 ."]),
         )
 
+    def test_rulecheck_is_the_named_run_for_the_tool_it_names(self) -> None:
+        """0.61.0 moved the named run into `rulecheck.py`, which runs the tool itself,
+        so the record holds the script's call and not the tool's. Per tool still: the
+        procedure's block wraps the call, and `--tool` names one of the two."""
+        call = (
+            'python3 "$SCRIPTS/rulecheck.py" \\\n  --scratch "$SCRATCH" --ref "pr-438" '
+            '--base "$BASE_SHA" --tool rumdl \\\n  --check MD013="$SCRATCH/md013.md"'
+        )
+        rules = check(["rumdl check .", "ruff check .", call])
+        detail = " ".join(f.detail for f in rules if f.rule == "inert-needs-named-run")
+        self.assertIn("`ruff`", detail)
+        self.assertNotIn("`rumdl`", detail)
+
     def test_the_answer_is_per_tool(self) -> None:
         """Round twenty-six's exact shape: rumdl named a rule, ruff did not, and the
         claim in the report was about ruff."""

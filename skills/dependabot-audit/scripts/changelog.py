@@ -1517,8 +1517,19 @@ def main() -> int:
             print(f"  ... and {len(fixes) - SHOWN_FIX_MODE} more, in the file")
         rules = sorted({rule for _, text in fixes for rule in RULE_ID.findall(text)})
         print(f"rules they name: {', '.join(rules) or 'none'}.")
-        print("A rule this repo's config turns off is inert here; a line that names no rule")
-        print("is the fix engine's own, and runs wherever the tool does.")
+        # Until 0.61.0 this said a rule the config turns off is inert here, and both
+        # #438 replays read the config, called MD013 inert off `disable = [...]`, and
+        # never ran rulecheck.py. A config line is the claim; the tool is the answer.
+        if rules:
+            name = args.package or (args.slug or "").rpartition("/")[2]
+            tool = name if name in ("ruff", "rumdl") else "<ruff|rumdl>"
+            checks = " ".join(f"--check {rule}" for rule in rules)
+            print("Which of them this repo's config runs is rulecheck.py's answer, never the")
+            print("config's: a rule it runs is a path these fixes take here (uv-lock.md")
+            print("§ Phase 2). It finds its own input, and names any rule it needs one for:")
+            print(f"  rulecheck.py --tool {tool} {checks}")
+        print("A line that names no rule is the fix engine's own, and runs wherever the tool")
+        print("does.")
     # A fix above the proposal is Hold if the bump moved into the bug and a follow-up
     # if it did not. Both rows end at the fixed version, and the #438 replays under
     # 0.59.0 split on naming it: one took Phase 7's "neither row by default" as no

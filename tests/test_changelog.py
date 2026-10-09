@@ -1623,6 +1623,26 @@ class TestFixModeLinesInTheProseAreListed(ChangelogHarness):
         self.assertRegex(out, r"rules they name: [^\n]*MD032")
         self.assertRegex(out, r"rules they name: [^\n]*MD077")
 
+    def test_the_rules_they_name_go_to_rulecheck_not_to_the_config(self) -> None:
+        """Until 0.61.0 this print said a rule the config turns off is inert here.
+        Both #438 replays on 0.61.0's first cut received it, read `disable =
+        ["MD013", "MD036"]`, and wrote MD013 off as inert without running the
+        script that settles it. A config line is the claim, and the tool's answer is
+        rulecheck.py's."""
+        _, out, _ = self.run_main(
+            self.rumdl(), "--from", "v0.2.76", "--to", "v0.2.78", "--write-mode"
+        )
+        flat = " ".join(out.split())
+        self.assertIn("this repo's config runs is rulecheck.py's answer, never the config's", flat)
+        self.assertRegex(out, r"rulecheck\.py --tool rumdl --check MD\d{3} --check MD\d{3}")
+        self.assertRegex(out, r"--check MD032(?: |$)")
+        self.assertNotIn(
+            "=<input>",
+            out,
+            "the script finds its own input; asking for one is the cost runs declined",
+        )
+        self.assertNotIn("turns off is inert", flat)
+
     def test_a_line_the_release_notes_repeat_is_listed_once(self):
         _, out, _ = self.run_main(
             self.rumdl(), "--from", "v0.2.76", "--to", "v0.2.78", "--write-mode"

@@ -11,6 +11,176 @@ patch.
 
 ## [Unreleased]
 
+## [0.61.0] — 2026-10-10
+
+This version runs Phase 2's rule check where the audit could not reach it. When a
+changelog entry names a rule this repo disables or never enables, the claim rests on
+a config line, and the verdict is about the tool. The check that settles it ran in
+`$SCRATCH/pr-<N>`, a worktree that exists only where Phase 4 or 5 runs, so under
+`--no-execute` it never ran, and the runs read the config instead. Replayed on
+0.60.0, `fpga-board-sim` #438 said *"The MD013 entries are config-off, but no named
+run backs that up"*, and #451 said UP052 *"shouldn't switch on. That's a reading of
+the config, never confirmed by running ruff with the rule named."* That repo runs
+ruff and rumdl with `--fix` in pre-commit, ruff is in 15 of its 19 `uv` PRs, and its
+ruff config combines an allow-list `select`, `preview = true` and
+`explicit-preview-rules`: every trap the prose described.
+
+`SKILL.md` goes from 120,242 to 117,868 bytes, and the references from 132,092 to
+124,651.
+
+### The rule check needs no worktree (#181)
+
+`rulecheck.py` replaces about 9 KB of `uv-lock.md` § Phase 2 and 2 KB of `SKILL.md`.
+It writes the PR's files from git at its ref, as `pipaudit.py` writes its manifests,
+and runs the tool at the version `uv.lock` pins **at the base**. A pin read at the
+PR's ref would let an untrusted PR choose what runs here; a test plants a PR that
+pins rumdl 0.2.60 against the base's 0.2.72, and every run is 0.2.72. For each rule
+it asks the tool's own `rule` command whether the rule exists at that version, then
+counts the rule by the code in the tool's JSON:
+
+| Run | Config | Rule | On |
+|---|---|---|---|
+| this config | this repo's | not named | the tree |
+| forced on | this repo's | named | the tree |
+| control | none | named | an input |
+| config state | this repo's | not named | the input, at the tree's root |
+| | this repo's | named | the same, to show it was read |
+
+Where the forced run reports the rule, the tree is the control: the rule fires here,
+under this config, and this config's own run either reports it or does not. Where the
+tree carries none of it, which is every rule a gate that fixes on each commit runs,
+the input answers whether this config runs it. The input is the run's, given as
+`--check <RULE>=<file>`, or else the first example the tool fires on from the rule's
+own page: ruff's `rule --output-format json`, or rumdl's `docs/<rule>.md` at the tag
+of the pinned version.
+
+On #438's tree, with bare rule ids, ten rumdl rules take 5.5 seconds, the pages
+included:
+
+| Reading | rumdl 0.2.72 | ruff 0.16.7 |
+|---|---|---|
+| live: this config runs it | MD005, MD018, MD020, MD022, MD032, MD034, MD071, MD077 | N802, PLW1514, UP035 |
+| inert here | MD013: forced on, 4,949 in 36 of 41 files | SIM109, SIM117 |
+| underivable | MD065: its page's *"Incorrect"* example is a setext heading, which no rule about horizontal rules fires on | UP040: neither example on its page fires at the default target version. UP052: not a rule at 0.16.7 |
+
+Every live rule there is one the gate runs with `--fix` on each Markdown or Python
+commit, and the tree carries none of them, which is how a gate that fixes keeps its
+tree. Whether this repo exercises the affected path is what Phase 7's row asks.
+
+Three things it reads differently from the prose it replaces:
+
+- **The verdict's question is whether this config runs the rule.** The prose called
+  a rule that fired with no config, over a tree that carries none of it, `inert
+  here`. Phase 7's row asks whether this repo *exercises the affected path*, and a
+  rule the config runs under `--fix` is the path, run on the next file that carries
+  it. That is now live, with the count saying "none today". The config state answers
+  it on the input, which also covers a rule that is opt-in under a disable-list: the
+  prose's run 3 asked that with no config, and the config is what decides it.
+- **The forced run keeps the config.** The prose's exposure run was isolated, and
+  `--isolated` drops the config's `exclude` too, so it counted files the gate never
+  reads. Measured on ruff 0.16.7, `--select` on the command line beats the config's
+  `ignore` and keeps its `per-file-ignores`; on rumdl 0.2.72, `--enable MD013` beats
+  `disable = ["MD013"]` and `--extend-enable` does not.
+- **A count is the JSON's code.** On #451 `grep -c UP052` counted ruff's own fixture
+  `UP052.py` by its filename, 45 where the rule fired 0 times (#197).
+
+A control that fired nowhere is underivable, and so is a run that read no files: on a
+tree with no Markdown, rumdl prints *"No markdown files found to check."* and exits 0.
+A fixture with a `.rumdl.toml` beside `pyproject.toml` showed why the config is run
+rather than read: rumdl warned *"using .rumdl.toml, ignoring pyproject.toml"*, and the
+`disable = ["MD013"]` in `pyproject.toml` never applied.
+
+### A rumdl config can run a command
+
+rumdl's `[code-block-tools]` runs an external command on fenced code. Its schema
+calls it *"disabled by default for safety - users must explicitly enable it"*, and a
+`ToolDefinition` takes any `command`. Measured on rumdl 0.2.72, a `.rumdl.toml`
+naming `sh -c` for Python blocks wrote its marker under `rumdl check`, and under
+`rumdl check --enable MD013` too. `--no-config` and `--no-code-block-tools` did not.
+The prose ran with the config only where Phase 4 or 5 runs, which execute the PR
+anyway. `rulecheck.py` reads the config under `--no-execute`, so every rumdl run
+that reads it passes `--no-code-block-tools`, which rumdl's changelog dates to
+0.2.65. With an older rumdl pinned, no run reads the config, and the rule is
+underivable. The live test plants the command, and with the flag removed it fails
+on the marker.
+
+Every lint run passes `--no-cache`, none passes `--fix`, `uvx --no-config` keeps the
+tree's `[tool.uv]` out of the fetch, and runs start outside the tree with an empty
+`XDG_CONFIG_HOME`.
+
+### The replays found the call unmade, twice
+
+**The first pair, on the first cut, never called `rulecheck.py`.** Both read the rumdl
+config by hand, and one wrote *"The repo disables only `MD013` and `MD036`, so the
+MD013 reflow fixes are also inert"*: the claim the script exists to earn. Both had
+received `changelog.py --write-mode`'s line under the gap's fix-mode lines, *"A rule
+this repo's config turns off is inert here"*. It said the opposite of `SKILL.md`'s
+row, at the moment the run reads the rules, and it came out.
+
+**The next run received the replacement and still did not call it.** Its hand-back
+said why: *"Omitted: `rulecheck.py` for SIM109/UP035/UP040 and the rumdl MD rules |
+Needs each fix's own test input, which I didn't fetch."* The first cut asked for an
+input on every rule. That is why the tree and the tool's own page now come first,
+and why the print gives the call with bare rule ids:
+
+```text
+rules they name: MD005, MD013, MD018, MD020, MD022, MD032, MD034, MD065, MD071, MD077.
+Which of them this repo's config runs is rulecheck.py's answer, never the
+config's: a rule it runs is a path these fixes take here (uv-lock.md
+§ Phase 2). It finds its own input, and names any rule it needs one for:
+  rulecheck.py --tool rumdl --check MD005 --check MD013 ...
+```
+
+A guard refuses the old sentence, and another refuses `=<input>` in the print. A
+control only has to prove the rule fires, so any input that carries a violation will
+do. Which shape a fix touches is Phase 4's and `setext.py`'s question.
+
+The first pair split on urgency too, as 0.60.0's did: one headline said *"follow up
+at once"* and the other did not. That split is the question the script answers per
+rule.
+
+### The replays
+
+Each ran from a fresh clone planted at #438's base, with `claude -p --plugin-dir` on
+this branch, a denylist over every mutating `gh` and `git` command, a $5 cap, and its
+own `TMPDIR`. Every run was `--no-execute`, and none had a permission denied:
+
+| Run | Cut | Called `rulecheck.py` | Verdict | Follow-up target | Confidence | Cost |
+|---|---|---|---|---|---|---|
+| 1 | first | no | merge, then follow up | ruff 0.16.10 and rumdl 0.2.78 | low | $1.56 |
+| 2 | first | no | merge, then follow up at once | ruff 0.16.10 and rumdl 0.2.78 | low | $1.66 |
+| 3 | second | no: *"Needs each fix's own test input"* | merge, then follow up promptly | rumdl 0.2.78 and ruff 0.16.10 | low | $1.43 |
+| 4 | final | yes, rumdl and ruff | merge, then follow up | ruff 0.16.10 and rumdl 0.2.79 | low | $1.57 |
+| 5 | final | yes, rumdl and ruff | merge, then follow up | ruff 0.16.10 and rumdl 0.2.79 | low | $1.65 |
+
+rumdl 0.2.79 was published at 15:35 UTC on the day of the final pair, after the first
+three runs, so their target was the latest when they ran. Both final runs passed the
+print's bare rule ids, one call per tool, and quoted the readings: MD013's reflow
+fixes, most of the gap, inert here; the list and heading fixes in rules this config
+runs with `--fix`. One run concluded *"That makes the follow-up urgent"*; neither
+headline says so, which is the template's missing slot 0.60.0 recorded. Both
+hand-backs asked for the gap's fix-mode lines grouped by the rules the script found
+live, filed for the next version. A launch between runs 3 and 4 was cut off by the
+account's session limit after 4 turns ($0.63) and repeated from a fresh clone. The
+six cost $8.51.
+
+### What else moved
+
+- **`verify_run.py`** counts a `rulecheck.py --tool <T>` call as T's named run, per
+  tool as before. Its closing line named a default-state run, and now names the
+  control in `rulecheck.py`'s output.
+- **The `--no-execute` guard** registered Phase 2's locked-tool `uv run` as the one
+  execution form allowed outside Phases 4 and 5. That form is gone, so the
+  exemption is now `rulecheck.py` with `--base "$BASE_SHA"`, and passing it the PR's
+  ref fails the guard.
+- **The prose guards** that held the table and the four traps now hold the call and
+  what each exit means. Each one retired names the `test_rulecheck.py` test that
+  holds its property, and a guard fails if that test is gone.
+
+Mutation-checked: 21 mutants of the script against their named tests, 9 of the
+prose and `verify_run.py` against theirs, the old `changelog.py` sentence restored,
+and the live marker test with the flag removed. Each one failed.
+
 ## [0.60.0] — 2026-10-09
 
 This version makes Phase 7 read which way an advisory points, from what the scripts
@@ -7622,7 +7792,8 @@ gives the read-only subset a name.
 - Repo specifics are derived every run and never cached; only non-derivable
   landmines are persisted, via the Phase 8 learning loop.
 
-[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.60.0...HEAD
+[Unreleased]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.61.0...HEAD
+[0.61.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/Machai-Kydoimos/dependabot-audit/compare/v0.57.0...v0.58.0

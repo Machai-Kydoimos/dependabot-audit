@@ -296,13 +296,16 @@ def check(cmds: list[str], opened: list[str] | None = None) -> list[Finding]:
         seen = re.compile(rf"(?<![\w-]){tool}\s+(?:check|format)(?![\w-])")
         named = re.compile(
             rf"(?<![\w-]){tool}\s+(?:check|format)[^;&|]*?{re.escape(flag)}(?![\w-])"
+            # Since 0.61.0 the named run is rulecheck.py's, which runs the tool itself.
+            rf"|rulecheck\.py[^;&|]*?--tool[=\s]+{tool}(?![\w-])"
         )
         used = [c for c in cmds if seen.search(c)]
         if used and not any(named.search(c) for c in cmds):
             findings.append(
                 Finding(
                     "inert-needs-named-run",
-                    f"{count(seen, used)} invocation(s) of `{tool}` named no rule (`{flag}`). "
+                    f"{count(seen, used)} invocation(s) of `{tool}` named no rule (`{flag}`), "
+                    f"and no `rulecheck.py --tool {tool}` ran. "
                     f"`inert here` is not derivable for {tool} from this record: where its "
                     "config is an "
                     "allow-list, the rule is enabled in neither run, both go silent, and "
@@ -419,8 +422,8 @@ def main(argv: list[str]) -> int:
             "four named "
             "rules, not every command against the procedure. And it reads what was issued, "
             "never what it printed — a named lint run recorded here is not thereby a named "
-            "run that fired, so its control and its default-state run are still yours to "
-            "read. See the docstring for the boundary."
+            "run that fired, so its control is still yours to read, in rulecheck.py's "
+            "output. See the docstring for the boundary."
         )
     if notes:
         print(f"         {len(notes)} note(s) above limit what the report may claim.")
