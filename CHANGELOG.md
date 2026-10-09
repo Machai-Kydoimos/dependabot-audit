@@ -11,7 +11,7 @@ patch.
 
 ## [Unreleased]
 
-## [0.60.0] — 2026-10-08
+## [0.60.0] — 2026-10-09
 
 This version makes Phase 7 read which way an advisory points, from what the scripts
 already know, instead of leaving the run to argue past a row. It is ordered by
