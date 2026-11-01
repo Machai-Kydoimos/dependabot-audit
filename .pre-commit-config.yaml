@@ -29,7 +29,7 @@ repos:
         exclude: ^integration/fixtures/
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.1
+    rev: v2.4.0
     hooks:
       # mirrors-mypy builds an isolated environment, which is normally the reason
       # to avoid it: a project's own dependencies are missing from it and
